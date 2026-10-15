@@ -17,7 +17,7 @@ const outputs = lines(process.argv[3]);
 let failures = golden.length === outputs.length ? 0 : 1;
 let worst = 0;
 golden.forEach((expected, i) => expected.forEach((g, column) => {
-  const o = outputs[i]?.[column];
+  const o = outputs[i][column];
   const alpha = expected[ROUGHNESS_COLUMN] ** 2;
   const tolerance = ABSOLUTE + (RELATIVE + (alpha > 0 ? ULPS * EPSILON / alpha ** 2 : 0)) * Math.abs(g);
   const error = Math.abs(o - g) / tolerance;

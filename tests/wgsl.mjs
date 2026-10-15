@@ -83,8 +83,7 @@ await readback.mapAsync(GPUMapMode.READ);
 const words = new Uint32Array(readback.getMappedRange());
 const floats = new Float32Array(words.buffer);
 lines.forEach((line, i) => {
-  const outputs = Array.from({ length: OUTPUTS }, (_, j) => UNSIGNED.includes(j) ? words[i * OUTPUTS + j]
-    : Number(floats[i * OUTPUTS + j].toPrecision(9)));
+  const outputs = Array.from({ length: OUTPUTS }, (_, j) => (UNSIGNED.includes(j) ? words : floats)[i * OUTPUTS + j]);
   console.log(line.slice(0, 21).concat(outputs).join(" "));
 });
 process.exit(0);

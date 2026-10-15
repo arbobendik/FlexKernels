@@ -2,7 +2,7 @@
 module bsdf;
 
 import math;
-__exported import random;
+import random;
 
 static const uint LOBE_DIFFUSE = 0u;
 static const uint LOBE_REFRACT = 1u;

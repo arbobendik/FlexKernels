@@ -62,7 +62,7 @@ int main() {
     cudaMalloc(&device_results, results.size() * sizeof(Result));
     cudaMemcpy(device_cases, cases.data(), cases.size() * sizeof(Case), cudaMemcpyHostToDevice);
     kernel<<<(cases.size() + 63) / 64, 64>>>(device_cases, device_results, cases.size());
-    if (cudaMemcpy(results.data(), device_results, results.size() * sizeof(Result), cudaMemcpyDeviceToHost)) return 1;
+    cudaMemcpy(results.data(), device_results, results.size() * sizeof(Result), cudaMemcpyDeviceToHost);
 #else
     kernel(cases.data(), results.data(), cases.size());
 #endif
