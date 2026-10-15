@@ -86,4 +86,3 @@ lines.forEach((line, i) => {
   const outputs = Array.from({ length: OUTPUTS }, (_, j) => (UNSIGNED.includes(j) ? words : floats)[i * OUTPUTS + j]);
   console.log(line.slice(0, 21).concat(outputs).join(" "));
 });
-process.exit(0);

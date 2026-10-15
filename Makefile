@@ -5,9 +5,9 @@ SLANGFLAGS = -line-directive-mode none
 MODULES = src/math.slang src/random.slang src/bsdf.slang
 NVCC ?= nvcc
 HIPCC ?= hipcc
-# Golden source, the BSDF the shared one replaces
-REFERENCE ?= ../flex-cuda-pt/src/shaders
 FLEX_CUDA_PT ?= ../flex-cuda-pt
+# Golden source, the BSDF the shared one replaces
+REFERENCE ?= $(FLEX_CUDA_PT)/src/shaders
 FLEXLIGHT ?= ../FlexLight
 
 all: build/cuda/bsdf.cuh build/cuda/slang-cuda-prelude.h build/hip/bsdf.cuh build/hip/slang-cuda-prelude.h \
