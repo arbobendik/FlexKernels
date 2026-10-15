@@ -150,6 +150,9 @@ to `alpha^2` at a lobe's peak: at roughness 0.05 one ulp moves a density by abou
 | `make test-cuda` | Generated CUDA on the local GPU | 288 / 288, worst 0.453 of the tolerance |
 | `make test-hip` | hipcc 7.2.4 compile only, CI | compiles |
 
+Worst relative error by roughness: 0, 0.5 and 1 stay within 3.1e-5 everywhere; 0.05 reaches 0.68 % in WGSL and
+7.0 % in CUDA on the GPU (fused multiply-adds), the C++ target matches bit for bit.
+
 ## HIP
 
 Slang 2026.19 has no HIP target, and its CUDA prelude does not build under hipcc (170 errors: PTX asm for surface
