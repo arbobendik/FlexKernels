@@ -149,6 +149,9 @@ to `alpha^2` at a lobe's peak: at roughness 0.05 one ulp moves a density by abou
 | `make test-wgsl` | Generated WGSL through Dawn on lavapipe, CI | 288 / 288, worst 0.044 of the tolerance |
 | `make test-cuda` | Generated CUDA on the local GPU | 288 / 288, worst 0.453 of the tolerance |
 
+Worst relative error by roughness: 0, 0.5 and 1 stay within 3.1e-5 everywhere; 0.05 reaches 0.68 % in WGSL and
+7.0 % in CUDA on the GPU (fused multiply-adds), the C++ target matches bit for bit.
+
 ## WebGL2
 
 `src/flexlight/webgl2/shaders/*.glsl` stays as it is. The BSDF could reach it through Slang → SPIR-V → SPIRV-Cross
