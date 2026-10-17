@@ -1,7 +1,90 @@
-module bsdf;
+module pathtracer;
 
-import math;
-import random;
+public static const float PI = 3.141592653589793;
+public static const float MAX_SAFE_INTEGER_FOR_F32 = 8388607.0;
+public static const uint UINT_MAX = 4294967295u;
+public static const float BIAS = 0.0000152587890625;
+
+public float3 normalize(float3 a) {
+    __target_switch {
+    case cuda: __intrinsic_asm "(($0) * make_float3(rnorm3df(($0).x, ($0).y, ($0).z)))";
+    case wgsl: __intrinsic_asm "normalize($0)";
+    default: return a * (1.0f / sqrt(dot(a, a)));
+    }
+}
+public float inverseSqrt(float x) {
+    __target_switch {
+    case cuda: __intrinsic_asm "rsqrtf($0)";
+    case wgsl: __intrinsic_asm "inverseSqrt($0)";
+    default: return 1.0f / sqrt(x);
+    }
+}
+[ForceInline] public float3 select(float3 f, float3 t, bool cond) { return select(cond, t, f); }
+[ForceInline] public float3 select(float3 f, float3 t, bool3 cond) { return select(cond, t, f); }
+public float unshared(float x) {
+    __target_switch {
+    case wgsl: __intrinsic_asm "$0";
+    default: return x;
+    }
+}
+public float3 negate(float3 x) {
+    __target_switch {
+    case wgsl: __intrinsic_asm "(-$0)";
+    default: return -x;
+    }
+}
+
+__extern_cpp public struct Random {
+    __extern_cpp public uint state;
+    __extern_cpp public float value;
+};
+
+__extern_cpp public struct RandomSphere {
+    __extern_cpp public uint state;
+    __extern_cpp public float3 value;
+};
+
+[CudaDeviceExport] public func rgb_to_greyscale(rgb: float3) -> float {
+    return dot(rgb, float3(0.299, 0.587, 0.114));
+}
+
+[CudaDeviceExport] public Random pcg(uint state) {
+    __target_switch {
+    case wgsl:
+    // PCG random number generator
+    // Reference: http://www.pcg-random.org/
+    return Random(state * 747796405u + 2891336453u, float(hash(state)) / float(UINT_MAX));
+    default:
+        const float value = ((state = hash(state)) >> 8) * 0x1p-24f;
+        return Random(state, value);
+    }
+}
+
+[CudaDeviceExport] public func normal_distribution(state: uint) -> Random {
+    let r1: Random = pcg(state);
+    let r2: Random = pcg(r1.state);
+    // Sample normal distribution
+    let theta: float = 2.0f * PI * r1.value;
+    let rho: float = sqrt(-2.0f * clamp(log(r2.value), - MAX_SAFE_INTEGER_FOR_F32, 0.0f));
+    return Random(r2.state, rho * cos(theta));
+}
+
+[CudaDeviceExport] public func random_sphere(state: uint) -> RandomSphere {
+    let x: Random = normal_distribution(state);
+    let y: Random = normal_distribution(x.state);
+    let z: Random = normal_distribution(y.state);
+    return RandomSphere(z.state, normalize(float3(x.value, y.value, z.value)));
+}
+
+[CudaDeviceExport] public func hash(x: uint) -> uint {
+    let state: uint = x * 747796405u + 2891336453u;
+    let word: uint = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+[CudaDeviceExport] public func stream(seed: uint, index: uint) -> uint {
+    return hash(seed ^ hash(index));
+}
 
 [CudaDeviceExport] public func trowbridgeReitz(alpha: float, n_dot_h: float) -> float {
     let numerator: float = alpha * alpha;
