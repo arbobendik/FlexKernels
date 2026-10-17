@@ -1,15 +1,16 @@
-// Evaluates the generated WGSL, concatenated in front of a kernel as FlexLight does, on the inputs of each golden line
-// through Dawn and prints them with its outputs in the golden format. Usage: node wgsl.mjs bsdf.wgsl < golden.txt
+// Evaluates the shared functions of a WGSL source, the generated one or FlexLight's unmodified pathtracer-compute.wgsl for
+// its goldens, on the inputs of each golden line through Dawn, the kernel appended as FlexLight prepends the shared code,
+// and prints them with its outputs in the golden format. Usage: node wgsl.mjs shader.wgsl < golden.txt
 import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
-const OUTPUTS = 25;
+const OUTPUTS = 37;
 const KERNEL = /* wgsl */ `
-struct Case { v: array<f32, 20>, random_state: u32 }
-@group(0) @binding(0) var<storage, read> cases: array<Case>;
-@group(0) @binding(1) var<storage, read_write> results: array<array<u32, ${OUTPUTS}>>;
+struct ParityCase { v: array<f32, 20>, random_state: u32 }
+@group(0) @binding(0) var<storage, read> parity_cases: array<ParityCase>;
+@group(0) @binding(1) var<storage, read_write> parity_results: array<array<u32, ${OUTPUTS}>>;
 
-fn put(r: ptr<function, array<u32, ${OUTPUTS}>>, i: u32, x: vec3<f32>) {
+fn parity_put(r: ptr<function, array<u32, ${OUTPUTS}>>, i: u32, x: vec3<f32>) {
     (*r)[i] = bitcast<u32>(x.x);
     (*r)[i + 1u] = bitcast<u32>(x.y);
     (*r)[i + 2u] = bitcast<u32>(x.z);
@@ -17,38 +18,49 @@ fn put(r: ptr<function, array<u32, ${OUTPUTS}>>, i: u32, x: vec3<f32>) {
 
 @compute @workgroup_size(64)
 fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
-    if (id.x >= arrayLength(&cases)) {
+    if (id.x >= arrayLength(&parity_cases)) {
         return;
     }
-    let v = cases[id.x].v;
-    let random_state = cases[id.x].random_state;
-    var s: Surface;
-    s.albedo = vec3<f32>(v[12], v[13], v[14]);
-    s.metallic = v[15];
-    s.roughness = v[16];
-    s.transparency = v[17];
+    let v = parity_cases[id.x].v;
+    let random_state = parity_cases[id.x].random_state;
     let in_dir = vec3<f32>(v[0], v[1], v[2]);
     let out_dir = vec3<f32>(v[3], v[4], v[5]);
     let n = vec3<f32>(v[6], v[7], v[8]);
-    let g_n = vec3<f32>(v[9], v[10], v[11]);
+    let albedo = vec3<f32>(v[12], v[13], v[14]);
+    let alpha = v[16] * v[16];
+    let n_i = n * sign(dot(n, - in_dir));
     var r: array<u32, ${OUTPUTS}>;
-    put(&r, 0u, BSDF(in_dir, out_dir, n, g_n, s, v[18], v[19]));
-    let sample = sampleBSDF(in_dir, n, s, v[18], v[19], random_state);
-    put(&r, 3u, sample.unit_direction);
-    put(&r, 6u, sample.throughput);
-    r[9] = sample.random_state;
-    r[10] = u32(sample.refracted);
-    r[11] = sample.lobe;
-    r[12] = bitcast<u32>(sample.pdf);
-    for (var lobe = 0u; lobe < 3u; lobe++) {
-        let l = evalLobe(in_dir, out_dir, n, s, v[18], v[19], lobe, random_state);
-        put(&r, 13u + 4u * lobe, l.f_cos);
-        r[16u + 4u * lobe] = bitcast<u32>(l.pdf);
-    }
-    results[id.x] = r;
+    let p = pcg(random_state);
+    r[0] = hash(random_state);
+    r[1] = stream(random_state, 64u);
+    r[2] = p.state;
+    r[3] = bitcast<u32>(p.value);
+    r[4] = bitcast<u32>(rgb_to_greyscale(albedo));
+    r[5] = bitcast<u32>(smithG1(alpha, abs(dot(n, in_dir))));
+    r[6] = bitcast<u32>(trowbridgeReitz(alpha, abs(dot(n, out_dir))));
+    r[7] = bitcast<u32>(fresnel(abs(dot(n, in_dir)), v[18], v[19]));
+    var h_state = random_state;
+    let h = sampleHalfVector(- in_dir, n_i, alpha, &h_state);
+    r[8] = h_state;
+    parity_put(&r, 9u, h);
+    parity_put(&r, 12u, sampleCosWeightedHemisphere(albedo.x, albedo.y));
+    parity_put(&r, 15u, tangentToWorld(out_dir, n));
+    parity_put(&r, 18u, worldToTangent(out_dir, n));
+    parity_put(&r, 21u, sampleGGXVNDF(vec3<f32>(out_dir.xy, abs(out_dir.z)), alpha, albedo.x, albedo.z));
+    parity_put(&r, 24u, safeDivide(albedo, vec3<f32>(v[15], v[17], v[16])));
+    let normal = normal_distribution(random_state);
+    let sphere = random_sphere(random_state);
+    let hemisphere = random_hemisphere(random_state, n);
+    r[27] = normal.state;
+    r[28] = bitcast<u32>(normal.value);
+    r[29] = sphere.state;
+    parity_put(&r, 30u, sphere.value);
+    r[33] = hemisphere.state;
+    parity_put(&r, 34u, hemisphere.value);
+    parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
-const UNSIGNED = [9, 10, 11];
+const UNSIGNED = [0, 1, 2, 8, 27, 29, 33];
 
 Object.assign(globalThis, globals);
 // Dawn tears the device down with the GPU object, so it stays referenced

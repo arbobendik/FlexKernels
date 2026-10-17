@@ -1,6 +1,6 @@
-// Goldens of the CUDA BSDF on a seeded grid of directions, normals, surfaces and IORs, one case per line: the inputs
-// in_dir out_dir n g_n albedo metallic roughness transparency eta_i eta_o random_state, then BSDF, sampleBSDF
-// (unit_direction throughput random_state refracted lobe pdf) and evalLobe of out_dir for each lobe (f_cos pdf)
+// Goldens of the CUDA functions FlexKernels shares on a seeded grid of directions, normals, surfaces and IORs, one case per
+// line: the inputs in_dir out_dir n g_n albedo metallic roughness transparency eta_i eta_o random_state, then the outputs
+// in the order of tests/parity.cpp
 #include "renderer.cu"
 #include <stdio.h>
 
@@ -25,23 +25,30 @@ int main() {
         if (kind == 3) out_dir = normalize(normalize(cross(n, out_dir)) + n * (0.003f * sign(dot(n, out_dir))));
         // Geometry normal apart from the smooth one
         if (kind % 2) g_n = normalize(n + unit(state) * 0.3f);
-        Surface s{};
-        s.albedo = make_float3(random(state), random(state), random(state));
-        s.metallic = metallic;
-        s.roughness = roughness;
-        s.transparency = transparency;
+        const float3 albedo = make_float3(random(state), random(state), random(state));
         const unsigned random_state = hash(state++);
-        print(in_dir); print(out_dir); print(n); print(g_n); print(s.albedo);
+        print(in_dir); print(out_dir); print(n); print(g_n); print(albedo);
         printf(" %.9g %.9g %.9g %.9g %.9g %u", metallic, roughness, transparency, eta[0], eta[1], random_state);
-        print(BSDF(in_dir, out_dir, n, g_n, s, eta[0], eta[1], make_float2(0, 0)));
-        const SampleBSDF sample = sampleBSDF(in_dir, n, s, eta[0], eta[1], random_state, make_float2(0, 0));
-        print(sample.unit_direction); print(sample.throughput);
-        printf(" %u %d %u %.9g", sample.random_state, sample.refracted, sample.lobe, sample.pdf);
-        for (unsigned lobe = 0; lobe < 3; lobe++) {
-            const Lobe l = evalLobe(in_dir, out_dir, n, s, eta[0], eta[1], lobe, random_state);
-            print(l.f_cos);
-            printf(" %.9g", l.pdf);
-        }
+        const float alpha = roughness * roughness;
+        const float3 v = - in_dir, n_i = n * sign(dot(n, v));
+        const Random p = pcg(random_state);
+        printf(" %u %u %u %.9g %.9g", hash(random_state), stream(random_state, 64u), p.state, p.value,
+            rgb_to_greyscale(albedo));
+        printf(" %.9g %.9g %.9g", smithG1(alpha, fabsf(dot(n, in_dir))), trowbridgeReitz(alpha, fabsf(dot(n, out_dir))),
+            fresnel(fabsf(dot(n, in_dir)), eta[0], eta[1]));
+        unsigned h_state = random_state;
+        const float3 h = sampleHalfVector(v, n_i, alpha, h_state);
+        printf(" %u", h_state); print(h);
+        print(sampleCosWeightedHemisphere(albedo.x, albedo.y));
+        print(tangentToWorld(out_dir, n)); print(worldToTangent(out_dir, n));
+        // From above the surface, as sampleHalfVector views it
+        print(sampleGGXVNDF(make_float3(out_dir.x, out_dir.y, fabsf(out_dir.z)), alpha, albedo.x, albedo.z));
+        print(safeDivide(albedo, make_float3(metallic, transparency, roughness)));
+        const Random normal = normal_distribution(random_state);
+        const RandomSphere sphere = random_sphere(random_state);
+        const RandomHemisphere hemisphere = random_hemisphere(random_state, n);
+        printf(" %u %.9g %u", normal.state, normal.value, sphere.state); print(sphere.value);
+        printf(" %u", hemisphere.state); print(hemisphere.value);
         printf("\n");
     }
 }
