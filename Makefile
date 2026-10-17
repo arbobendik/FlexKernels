@@ -1,7 +1,9 @@
 SLANG_VERSION ?= 2026.19
-SLANG_PATH ?= .deps/slang
+SLANG_PATH ?= .deps/slang-$(SLANG_VERSION)
 SLANGC ?= $(SLANG_PATH)/bin/slangc
 SLANGFLAGS = -line-directive-mode none -g2
+ACTIONLINT_VERSION ?= 1.7.7
+ACTIONLINT ?= .deps/actionlint
 MODULES = src/math.slang src/random.slang src/bsdf.slang
 NVCC ?= nvcc
 FLEX_CUDA_PT ?= ../flex-cuda-pt
@@ -41,7 +43,15 @@ build/parity-cpu: tests/parity.cpp build/cpp/bsdf.cpp
 build/parity-cuda: tests/parity.cpp build/cuda/bsdf.cuh build/cuda/slang-cuda-prelude.h
 	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda $< -o $@
 
-.PHONY: all test test-cpu test-wgsl test-cuda golden golden-wgsl deploy-local clean
+$(ACTIONLINT):
+	mkdir -p .deps
+	curl -sSfL https://github.com/rhysd/actionlint/releases/download/v$(ACTIONLINT_VERSION)/actionlint_$(ACTIONLINT_VERSION)_linux_amd64.tar.gz \
+		| tar -xz -C .deps actionlint
+
+.PHONY: all lint test test-cpu test-wgsl test-cuda golden golden-wgsl deploy-local clean
+lint: $(ACTIONLINT)
+	$(ACTIONLINT)
+
 test: test-cpu test-wgsl
 
 test-cpu: build/parity-cpu
