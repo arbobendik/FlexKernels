@@ -8,7 +8,7 @@ Line numbers refer to the current mains, the identity baseline: flex-cuda-pt `02
 A function, struct or constant in both mains is **shared** when (a) both produce the same outputs for the same inputs,
 random states included, proven by goldens of both, (b) sharing it changes neither consumer's data layout, bindings,
 random streams nor behavior and (c) each consumer's diff is a deletion, the include or prepend and trivial call-site
-adaptation. Everything else stays local, with the reason; **Shared** marks what `src/*.slang` now holds.
+adaptation. Everything else stays local, with the reason; **Shared** marks what `src/pathtracer.slang` now holds.
 
 ## Classification
 
@@ -21,7 +21,7 @@ adaptation. Everything else stays local, with the reason; **Shared** marks what 
 | `pcg` | cu:53 | wgsl:246 | **Shared**, per target | The generators differ: CUDA advances to the hash and draws its 24 high bits, FlexLight advances the LCG state and draws the hash over `UINT_MAX`, which reaches 1. Each target keeps its consumer's exactly (`__target_switch`), never unified |
 | `normal_distribution`, `random_sphere`, `random_hemisphere` | cu:67, 76, 83 | wgsl:257, 266, 273 | **Shared** | Same math on each target's `pcg`; CUDA has no caller |
 | `random` | cu:48 | – | Local | CUDA only, its draw is the CUDA branch of `pcg` |
-| `Random`, `RandomSphere`, `RandomHemisphere`, `rgb_to_greyscale`, `pcg`, `normal_distribution`, `random_sphere`, `random_hemisphere` of the rasterizer | – | `rasterizer-compute.wgsl`:226-282 (`5a313db`) | **Shared** | Identical copies; the rasterizer takes `random.wgsl`, as its own `trowbridgeReitz` and `fresnel` (other signatures, WGSL has no overloads) leave it no room for `bsdf.wgsl` |
+| `Random`, `RandomSphere`, `RandomHemisphere`, `rgb_to_greyscale`, `pcg`, `normal_distribution`, `random_sphere`, `random_hemisphere` of the rasterizer | – | `rasterizer-compute.wgsl`:226-282 (`5a313db`) | **Shared** | Identical copies; the rasterizer takes `pathtracer.wgsl` as the path tracer does, its `trowbridgeReitz` of two half vectors calls the shared one per vector, its own Schlick `fresnel` and direct lighting `BSDF`, of other signatures (WGSL has no overloads), are renamed `fresnelSchlick` and `directBSDF` |
 | `rgb_to_greyscale`, `safeDivide` | cu:57, 748 | wgsl:242, 1944 | **Shared** | Identical outputs (`select` vs ternaries) |
 | `brightest`, `tinted` | cu:59, 123 | – | Local | CUDA only: Principled specular tint and level |
 | `PI`, `BIAS`, `INV_PI`, `MAX_SAFE_INTEGER_FOR_F32` | cu:6-9 | wgsl:20-30 | Local, inlined | Equal as `f32`, but Slang inlines constants and can't export a named one (`[CudaDeviceExport]` is not valid on variables). `MAX_SAFE_INTEGER_FOR_F32` lost its only use to `normal_distribution` and is deleted in both |
@@ -99,19 +99,18 @@ adaptation. Everything else stays local, with the reason; **Shared** marks what 
 ## Toolchain decisions
 
 - Slang 2026.19, fetched into `.deps/slang-2026.19` by the `Makefile`, so that commits generated again by the
-  deployment each take their own. `src/bsdf.slang` imports `math.slang` and
-  `random.slang` and is compiled once per target, so dependencies are never duplicated across files. For WGSL,
-  `random.slang` is also compiled alone into `random.wgsl`, for shaders that take the random numbers only; no shader
-  takes both files, and the functions they share are the same text.
+  deployment each take their own. `src/pathtracer.slang` holds all shared code and is compiled once per target into
+  one output each, `pathtracer.cuh` for CUDA and HIP, `pathtracer.wgsl` and, for the parity tests, `pathtracer.cpp`;
+  every consumer shader takes the one file of its target.
 - Stable names: exported functions carry `[CudaDeviceExport]`, which keeps them alive and unmangled for CUDA, WGSL
   and C++ alike; structs and their fields carry `__extern_cpp`. Everything else gets Slang's `_0` suffix (CUDA
   `static`). None of the generated names (`Random_x24init_0`, `dot_0`, `cross_0`, ...) occurs in what stays in either
   consumer.
-- `src/*.slang` transpile FlexLight `5a313db` line for line, with its names, expressions, comments and order; in
+- `src/pathtracer.slang` transpiles FlexLight `5a313db` line for line, with its names, expressions, comments and order; in
   Slang's syntax, WGSL's `fn` reads `func`, `const` `static const` (`static let` would be an uninitialized private
   variable), struct members `__extern_cpp public T name;`, `f32`/`u32`/`vec3<f32>` `float`/`uint`/`float3`, and
   `ptr<function, u32>` `inout uint`, and WGSL's `select(f, t, cond)` keeps its argument order through an overload in
-  `math.slang`, Slang's own being `select(cond, t, f)`. Besides that, only target plumbing,
+  `pathtracer.slang`, Slang's own being `select(cond, t, f)`. Besides that, only target plumbing,
   marked so in the source: `pcg` keeps renderer.cu's generator outside WGSL; `normalize`, `inverseSqrt` and WGSL's
   `select` lower to each consumer's own (CUDA `rnorm3df` and `rsqrtf`, WGSL's builtins, C++ the host shims of the
   CUDA ones, against which the CUDA goldens are made); and in `sampleGGXVNDF`, `T1` is FlexLight's `select` for WGSL
@@ -284,5 +283,7 @@ Ranked by what they would share, with what blocks each:
   diff.
 - The GitHub repository starts with `main` at `5f244b9`, the last commit without a workflow, so that a pull request
   can target it and runs only the build; `main` then fast-forwards to the reviewed branch.
-- FlexLight's rasterizer shares the random numbers through a second vendored file, `random.wgsl`, and a second
-  composition site in `rasterizer.ts`: its own BSDF terms take the names `bsdf.wgsl` would bring.
+- FlexLight's rasterizer takes `pathtracer.wgsl` like the path tracer, through a second composition site in
+  `rasterizer.ts`. Its `trowbridgeReitz` of two half vectors calls the shared one per vector; its own Schlick
+  `fresnel` and direct lighting `BSDF`, a model of their own, are renamed `fresnelSchlick` and `directBSDF` to leave
+  the shared names free.
