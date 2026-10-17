@@ -39,7 +39,12 @@ import random;
     let Vh: float3 = normalize(float3(alpha * Ve.x, alpha * Ve.y, Ve.z));
     // Section 4.1: orthonormal basis (with special case if cross product is zero).
     let lensq: float = Vh.x * Vh.x + Vh.y * Vh.y;
-    let T1: float3 = select(float3(1.0, 0.0, 0.0), float3(-Vh.y, Vh.x, 0.0) * inverseSqrt(lensq), lensq > 0.0);
+    // Target plumbing: FlexLight's select for WGSL, renderer.cu's ternary elsewhere, whose branch nvcc fuses around
+    var T1: float3;
+    __target_switch {
+    case wgsl: T1 = select(float3(1.0, 0.0, 0.0), float3(-Vh.y, Vh.x, 0.0) * inverseSqrt(lensq), lensq > 0.0);
+    default: T1 = lensq > 0.0f ? float3(-Vh.y, Vh.x, 0.0f) * inverseSqrt(lensq) : float3(1.0f, 0.0f, 0.0f);
+    }
     let T2: float3 = cross(Vh, T1);
     // Section 4.2: parameterization of the projected area.
     let r: float = sqrt(U1);
