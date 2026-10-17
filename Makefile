@@ -1,13 +1,14 @@
 SLANG_VERSION ?= 2026.19
 SLANG_PATH ?= .deps/slang
 SLANGC ?= $(SLANG_PATH)/bin/slangc
-SLANGFLAGS = -line-directive-mode none
+SLANGFLAGS = -line-directive-mode none -g2
 MODULES = src/math.slang src/random.slang src/bsdf.slang
 NVCC ?= nvcc
 FLEX_CUDA_PT ?= ../flex-cuda-pt
 # Golden sources
 REFERENCE ?= $(FLEX_CUDA_PT)/src/shaders
 FLEXLIGHT ?= ../FlexLight
+WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
 all: build/cuda/bsdf.cuh build/cuda/slang-cuda-prelude.h \
 	build/wgsl/bsdf.wgsl
@@ -15,7 +16,7 @@ all: build/cuda/bsdf.cuh build/cuda/slang-cuda-prelude.h \
 build/cuda/bsdf.cuh: $(MODULES) $(SLANGC)
 	mkdir -p build/cuda
 	$(SLANGC) $(SLANGFLAGS) src/bsdf.slang -target cuda -o $@
-	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#include "slang-cuda-prelude.h"|' $@
+	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#define Matrix SlangMatrix\n#include "slang-cuda-prelude.h"\n#undef Matrix|' $@
 
 build/cuda/slang-cuda-prelude.h: $(SLANGC)
 	mkdir -p build/cuda
@@ -40,25 +41,28 @@ build/parity-cpu: tests/parity.cpp build/cpp/bsdf.cpp
 build/parity-cuda: tests/parity.cpp build/cuda/bsdf.cuh build/cuda/slang-cuda-prelude.h
 	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda $< -o $@
 
-.PHONY: all test test-cpu test-wgsl test-cuda golden deploy-local clean
+.PHONY: all test test-cpu test-wgsl test-cuda golden golden-wgsl deploy-local clean
 test: test-cpu test-wgsl
 
 test-cpu: build/parity-cpu
-	$< < tests/golden.txt > build/cpu.txt
-	node tests/compare.mjs tests/golden.txt build/cpu.txt
+	$< < tests/golden-cuda.txt > build/cpu.txt
+	node tests/compare.mjs tests/golden-cuda.txt build/cpu.txt
 
 test-wgsl: build/wgsl/bsdf.wgsl
-	node tests/wgsl.mjs $< < tests/golden.txt > build/wgsl.txt
-	node tests/compare.mjs tests/golden.txt build/wgsl.txt
+	node tests/wgsl.mjs $< < tests/golden-wgsl.txt > build/wgsl.txt
+	node tests/compare.mjs tests/golden-wgsl.txt build/wgsl.txt
 
 test-cuda: build/parity-cuda
-	$< < tests/golden.txt > build/cuda.txt
-	node tests/compare.mjs tests/golden.txt build/cuda.txt
+	$< < tests/golden-cuda.txt > build/cuda.txt
+	node tests/compare.mjs tests/golden-cuda.txt build/cuda.txt
 
 golden: tests/reference.cpp tests/shim/*.h $(REFERENCE)/renderer.cu $(REFERENCE)/renderer.h
 	mkdir -p build
 	$(CXX) -std=c++20 -O2 -Itests/shim -I$(REFERENCE) $< -o build/reference
-	build/reference > tests/golden.txt
+	build/reference > tests/golden-cuda.txt
+
+golden-wgsl: tests/wgsl.mjs tests/golden-cuda.txt $(WGSL_REFERENCE)
+	node tests/wgsl.mjs $(WGSL_REFERENCE) < tests/golden-cuda.txt > tests/golden-wgsl.txt
 
 deploy-local: all
 	mkdir -p $(FLEX_CUDA_PT)/src/shaders/flexkernels $(FLEXLIGHT)/src/flexlight/webgpu/shaders/flexkernels
