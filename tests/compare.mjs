@@ -6,7 +6,7 @@ const ABSOLUTE = 1e-5;
 const RELATIVE = 1e-3;
 const ULPS = 8;
 const EPSILON = 2 ** -23;
-const INTEGER_COLUMNS = [20, 30, 31, 32];
+const INTEGER_COLUMNS = [20, 21, 22, 23, 29, 48, 50, 54];
 const ROUGHNESS_COLUMN = 16;
 
 const lines = (path) => readFileSync(path, "utf8").trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number));
