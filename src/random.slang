@@ -24,6 +24,7 @@ __extern_cpp public struct RandomHemisphere {
 // Target plumbing: flex-cuda-pt's generator for every target but WGSL, as renderer.cu defines it
 float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f; }
 
+// Target plumbing: declared as in C, as random advances state in place, which func's parameters don't allow
 [CudaDeviceExport] public Random pcg(uint state) {
     // Target plumbing: FlexLight's generator for WGSL, flex-cuda-pt's for every other target
     __target_switch {
@@ -70,7 +71,7 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 }
 
 // Target plumbing: hash and stream here instead of among FlexLight's ReSTIR helpers (pathtracer-compute.wgsl:1854),
-// as random needs hash in this module
+// as random needs hash in this module, which compiles alone for the rasterizer and so can't import bsdf
 [CudaDeviceExport] public func hash(x: uint) -> uint {
     let state: uint = x * 747796405u + 2891336453u;
     let word: uint = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;

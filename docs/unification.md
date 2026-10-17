@@ -106,8 +106,10 @@ adaptation. Everything else stays local, with the reason; **Shared** marks what 
   and C++ alike; structs and their fields carry `__extern_cpp`. Everything else gets Slang's `_0` suffix (CUDA
   `static`). None of the generated names (`Random_x24init_0`, `dot_0`, `cross_0`, ...) occurs in what stays in either
   consumer.
-- `src/*.slang` transpile FlexLight `5a313db` line for line, with its names, expressions, comments and order; WGSL
-  `f32`/`vec3<f32>` read `float`/`float3`, and `ptr<function, u32>` `inout uint`. Besides that, only target plumbing,
+- `src/*.slang` transpile FlexLight `5a313db` line for line, with its names, expressions, comments and order; in
+  Slang's syntax, WGSL's `fn` reads `func`, `const` `static const` (`static let` would be an uninitialized private
+  variable), struct members `__extern_cpp public T name;`, `f32`/`u32`/`vec3<f32>` `float`/`uint`/`float3`, and
+  `ptr<function, u32>` `inout uint`. Besides that, only target plumbing,
   marked so in the source: `pcg` keeps renderer.cu's generator outside WGSL; `normalize`, `inverseSqrt` and WGSL's
   `select` lower to each consumer's own (CUDA `rnorm3df` and `rsqrtf`, WGSL's builtins, C++ the host shims of the
   CUDA ones, against which the CUDA goldens are made); and in `sampleGGXVNDF`, `T1` is FlexLight's `select` for WGSL
