@@ -159,6 +159,20 @@ Against the baselines flex-cuda-pt `02d0bf1` and FlexLight `5a313db`, `feat/flex
 - Independent verifier reviews of both diffs (call-site mapping, removed code still referenced, RNG consumption order)
   found no behavior change; the only difference is `0 - v` for `-v` in `random_hemisphere`, the sign of an exact zero.
 
+## Deployment
+
+Every push to `main` builds and tests the kernels, then the `deploy` job, one at a time over both consumers, runs
+`ci/deploy.sh` in a checkout of the consumer's `main` made with its write deploy key (`FLEX_CUDA_PT_DEPLOY_KEY`,
+`FLEXLIGHT_DEPLOY_KEY`; pushes with the default token would start none of the consumer's workflows): it replaces the
+vendored directory with `build/`, writes `VERSION`, builds the consumer with its own toolchain and commands, commits
+`chore(flexkernels): update kernels to <sha7>` with the FlexKernels commits since the last `VERSION` and pushes,
+rebasing once if `main` moved. The consumer's own workflows then release the extension and deploy the website.
+
+Rehearsed locally against bare clones of both `feat/flexkernels` branches with a comment committed to a `.slang`
+file on a scratch branch: both deploys pushed a commit changing only `VERSION`, fresh clones of both built, the
+flex-cuda-pt renders stayed bit-identical and FlexLight's WGSL validated, a second deploy committed nothing, and a
+push racing the deploy was rebased onto. The scratch branch was deleted.
+
 ## HIP
 
 Slang 2026.19 has no HIP target, and its CUDA prelude does not build under hipcc (170 errors: PTX asm for surface
@@ -239,3 +253,5 @@ Ranked by what they would share, with what blocks each:
 - The WGSL goldens are FlexLight's outputs on lavapipe, the device of CI, so that CI checks them bit for bit.
 - `MAX_SAFE_INTEGER_FOR_F32` is deleted in both consumers with its only use; `xzy` stays dead in CUDA for a minimal
   diff.
+- The GitHub repository starts with `main` at `3862740`, the last commit without a workflow, so that a pull request
+  can target it and runs only the build; `main` then fast-forwards to the reviewed branch.
