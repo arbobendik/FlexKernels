@@ -13,11 +13,12 @@ FLEXLIGHT ?= ../FlexLight
 all: build/cuda/bsdf.cuh build/cuda/slang-cuda-prelude.h build/hip/bsdf.cuh build/hip/slang-cuda-prelude.h \
 	build/wgsl/bsdf.wgsl
 
-# The prelude is included next to the header instead of from the Slang installation
+# The prelude is included next to the header instead of from the Slang installation, its Matrix template, which the
+# generated code doesn't use, renamed so that it leaves the name to the consumer's
 build/cuda/bsdf.cuh: $(MODULES) $(SLANGC)
 	mkdir -p build/cuda
 	$(SLANGC) $(SLANGFLAGS) src/bsdf.slang -target cuda -o $@
-	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#include "slang-cuda-prelude.h"|' $@
+	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#define Matrix SlangMatrix\n#include "slang-cuda-prelude.h"\n#undef Matrix|' $@
 
 build/cuda/slang-cuda-prelude.h: $(SLANGC)
 	mkdir -p build/cuda
