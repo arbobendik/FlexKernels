@@ -154,13 +154,16 @@ to `alpha^2` at a lobe's peak.
 
 ## Identity of the consumers
 
-Against the baselines flex-cuda-pt `02d0bf1` and FlexLight `5a313db`, `feat/flexkernels` vendoring FlexKernels
-`719529b`:
+Against the baselines flex-cuda-pt `6652e76` and FlexLight `5a313db`, `feat/flexkernels` vendoring FlexKernels
+`719529b`. flex-cuda-pt's `main` moved from `02d0bf1` during the port (readback through a shared in-memory file,
+`--use_fast_math`), with `renderer.cu` and `renderer.h` unchanged, so the line numbers above and the CUDA goldens still
+hold; the branch was rebased onto it and checked against both.
 
 - flex-cuda-pt: `make` and `make test` pass. The 9 renders of `src/test.py` (64 × 64, captured from each
-  `render.render`) are bit-identical to the baseline at the same seed, RMSE 0 in all, where the baseline against itself
-  at another seed (`scene.frame` from 2^20) has an RMSE of 0.653 overall (1.15, 1.19, 1.00, 0.283, 0, 0.0117, 0.0168,
-  0.00324, 0.169). `renderer.cu` lost 145 lines and gained 3, the `Makefile` its two prerequisites.
+  `render.render`) are bit-identical to the baseline at the same seed, RMSE 0 in all, against both `02d0bf1` and
+  `6652e76`, where the baseline against itself at another seed (`scene.frame` from 2^20) has an RMSE of 0.633 overall
+  (1.15, 1.11, 0.973, 0.286, 0, 0.0117, 0.0168, 0.00323, 0.169; 0.653 at `02d0bf1`). `renderer.cu` lost 145 lines
+  and gained 3, the `Makefile` its two prerequisites.
 - FlexLight: `bash ./build-script` passes. All 9 WGSL modules of the bundle compile in Dawn without errors and give a
   pipeline with `layout: "auto"` for every entry point (7 compute modules, ReSTIR's 10 passes included, and the depth
   and raster render pipelines), on the baseline and on the branch alike; the 8 modules besides the path tracer's are
