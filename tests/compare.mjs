@@ -7,8 +7,9 @@ const ABSOLUTE = 1e-5;
 const RELATIVE = 1e-3;
 const ULPS = 8;
 const EPSILON = 2 ** -23;
-// random_state of the inputs and random_state, refracted and lobe of sampleBSDF
-const INTEGER_COLUMNS = [20, 30, 31, 32];
+// random_state of the inputs and hash, stream and the random states of pcg, sampleHalfVector, normal_distribution,
+// random_sphere and random_hemisphere
+const INTEGER_COLUMNS = [20, 21, 22, 23, 29, 48, 50, 54];
 const ROUGHNESS_COLUMN = 16;
 
 const lines = (path) => readFileSync(path, "utf8").trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number));
