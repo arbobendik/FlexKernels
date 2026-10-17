@@ -2,49 +2,78 @@ module random;
 
 import math;
 
-[CudaDeviceExport] public uint hash(uint x) { // PCG
-    x = x * 747796405u + 2891336453u;
-    x = ((x >> ((x >> 28) + 4)) ^ x) * 277803737u;
-    return (x >> 22) ^ x;
+__extern_cpp public struct Random {
+    __extern_cpp public uint state;
+    __extern_cpp public float value;
+};
+
+__extern_cpp public struct RandomSphere {
+    __extern_cpp public uint state;
+    __extern_cpp public float3 value;
+};
+
+__extern_cpp public struct RandomHemisphere {
+    __extern_cpp public uint state;
+    __extern_cpp public float3 value;
+};
+
+[CudaDeviceExport] public func rgb_to_greyscale(rgb: float3) -> float {
+    return dot(rgb, float3(0.299, 0.587, 0.114));
 }
-__extern_cpp public struct Random { __extern_cpp public uint state; __extern_cpp public float value; };
-__extern_cpp public struct RandomSphere { __extern_cpp public uint state; __extern_cpp public float3 value; };
-__extern_cpp public struct RandomHemisphere { __extern_cpp public uint state; __extern_cpp public float3 value; };
-// The state advanced and the value drawn from it, by each consumer's own generator: CUDA advances to the hash and
-// draws its 24 high bits, FlexLight advances the LCG state and draws the hash over UINT_MAX
+
+// Target plumbing: flex-cuda-pt's generator for every target but WGSL, as renderer.cu defines it
+float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f; }
+
 [CudaDeviceExport] public Random pcg(uint state) {
     __target_switch {
-    case wgsl: return { state * 747796405u + 2891336453u, float(hash(state)) / float(4294967295u) };
+    case wgsl:
+        // PCG random number generator
+        // Reference: http://www.pcg-random.org/
+        var new_state: uint = state * 747796405u + 2891336453u;
+        let word: uint = ((new_state >> ((new_state >> 28u) + 4u)) ^ new_state) * 277803737u;
+        let result: uint = (word >> 22u) ^ word;
+        // Return random f32 between 0 and 1
+        let random: float = float(result) / float(UINT_MAX);
+        return Random(new_state, random);
     default:
-        const uint next = hash(state);
-        return { next, float(next >> 8) * 0x1p-24f };
+        const float value = random(state);
+        return Random(state, value);
     }
 }
-[CudaDeviceExport] public uint stream(uint seed, uint index) { return hash(seed ^ hash(index)); }
 
-[CudaDeviceExport] public Random normal_distribution(uint state) {
-    const Random r1 = pcg(state);
-    const Random r2 = pcg(r1.state);
+[CudaDeviceExport] public func normal_distribution(state: uint) -> Random {
+    let r1: Random = pcg(state);
+    let r2: Random = pcg(r1.state);
     // Sample normal distribution
-    const float theta = 2.0f * PI * r1.value;
-    const float rho = sqrt(-2.0f * min(max(log(r2.value), - MAX_SAFE_INTEGER_FOR_F32), 0.0f));
-    return { r2.state, rho * cos(theta) };
+    let theta: float = 2.0f * PI * r1.value;
+    let rho: float = sqrt(-2.0f * clamp(log(r2.value), - MAX_SAFE_INTEGER_FOR_F32, 0.0f));
+    return Random(r2.state, rho * cos(theta));
 }
 
-[CudaDeviceExport] public RandomSphere random_sphere(uint state) {
-    const Random x = normal_distribution(state);
-    const Random y = normal_distribution(x.state);
-    const Random z = normal_distribution(y.state);
-    return { z.state, normalize(float3(x.value, y.value, z.value)) };
+[CudaDeviceExport] public func random_sphere(state: uint) -> RandomSphere {
+    let x: Random = normal_distribution(state);
+    let y: Random = normal_distribution(x.state);
+    let z: Random = normal_distribution(y.state);
+    return RandomSphere(z.state, normalize(float3(x.value, y.value, z.value)));
 }
 
-[CudaDeviceExport] public RandomHemisphere random_hemisphere(uint state, float3 normal) {
-    const RandomSphere random_sphere = random_sphere(state);
+[CudaDeviceExport] public func random_hemisphere(state: uint, normal: float3) -> RandomHemisphere {
+    let random_sphere: RandomSphere = random_sphere(state);
     // If the random sphere is in the same hemisphere as the normal, return it
-    if (dot(random_sphere.value, normal) > 0.0f) {
-        return { random_sphere.state, random_sphere.value };
+    if(dot(random_sphere.value, normal) > 0.0f) {
+        return RandomHemisphere(random_sphere.state, random_sphere.value);
     } else {
         // Otherwise, return the opposite direction
-        return { random_sphere.state, - random_sphere.value };
+        return RandomHemisphere(random_sphere.state, - random_sphere.value);
     }
+}
+
+[CudaDeviceExport] public func hash(x: uint) -> uint {
+    let state: uint = x * 747796405u + 2891336453u;
+    let word: uint = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+[CudaDeviceExport] public func stream(seed: uint, index: uint) -> uint {
+    return hash(seed ^ hash(index));
 }

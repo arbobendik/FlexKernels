@@ -1,7 +1,8 @@
 SLANG_VERSION ?= 2026.19
 SLANG_PATH ?= .deps/slang
 SLANGC ?= $(SLANG_PATH)/bin/slangc
-SLANGFLAGS = -line-directive-mode none
+# Debug information keeps the statements of the source, which Slang folds into expressions otherwise
+SLANGFLAGS = -line-directive-mode none -g2
 ACTIONLINT_VERSION ?= 1.7.7
 ACTIONLINT ?= .deps/actionlint
 MODULES = src/math.slang src/random.slang src/bsdf.slang
