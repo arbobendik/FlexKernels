@@ -21,7 +21,7 @@ adaptation. Everything else stays local, with the reason; **Shared** marks what 
 | `pcg` | cu:53 | wgsl:246 | **Shared**, per target | The generators differ: CUDA advances to the hash and draws its 24 high bits, FlexLight advances the LCG state and draws the hash over `UINT_MAX`, which reaches 1. Each target keeps its consumer's exactly (`__target_switch`), never unified |
 | `normal_distribution`, `random_sphere`, `random_hemisphere` | cu:67, 76, 83 | wgsl:257, 266, 273 | **Shared** | Same math on each target's `pcg`; CUDA has no caller |
 | `random` | cu:48 | – | Local | CUDA only, its draw is the CUDA branch of `pcg` |
-| `Random`, `RandomSphere`, `RandomHemisphere`, `rgb_to_greyscale`, `pcg`, `normal_distribution`, `random_sphere`, `random_hemisphere` of the rasterizer | – | `rasterizer-compute.wgsl`:226-282 | Local | Identical copies, but the vendored WGSL also brings `trowbridgeReitz` and `fresnel`, which the rasterizer defines with other signatures (WGSL has no overloads), and FlexLight composes the shared code in one place, the path tracer's |
+| `Random`, `RandomSphere`, `RandomHemisphere`, `rgb_to_greyscale`, `pcg`, `normal_distribution`, `random_sphere`, `random_hemisphere` of the rasterizer | – | `rasterizer-compute.wgsl`:226-282 (`5a313db`) | **Shared** | Identical copies; the rasterizer takes `random.wgsl`, as its own `trowbridgeReitz` and `fresnel` (other signatures, WGSL has no overloads) leave it no room for `bsdf.wgsl` |
 | `rgb_to_greyscale`, `safeDivide` | cu:57, 748 | wgsl:242, 1944 | **Shared** | Identical outputs (`select` vs ternaries) |
 | `brightest`, `tinted` | cu:59, 123 | – | Local | CUDA only: Principled specular tint and level |
 | `PI`, `BIAS`, `INV_PI`, `MAX_SAFE_INTEGER_FOR_F32` | cu:6-9 | wgsl:20-30 | Local, inlined | Equal as `f32`, but Slang inlines constants and can't export a named one (`[CudaDeviceExport]` is not valid on variables). `MAX_SAFE_INTEGER_FOR_F32` lost its only use to `normal_distribution` and is deleted in both |
@@ -99,7 +99,9 @@ adaptation. Everything else stays local, with the reason; **Shared** marks what 
 ## Toolchain decisions
 
 - Slang 2026.19, fetched into `.deps/slang` by the `Makefile`. `src/bsdf.slang` imports `math.slang` and
-  `random.slang` and is compiled once per target, so dependencies are never duplicated across files.
+  `random.slang` and is compiled once per target, so dependencies are never duplicated across files. For WGSL,
+  `random.slang` is also compiled alone into `random.wgsl`, for shaders that take the random numbers only; no shader
+  takes both files, and the functions they share are the same text.
 - Stable names: exported functions carry `[CudaDeviceExport]`, which keeps them alive and unmangled for CUDA, WGSL
   and C++ alike; structs and their fields carry `__extern_cpp`. Everything else gets Slang's `_0` suffix (CUDA
   `static`). None of the generated names (`Random_x24init_0`, `dot_0`, `cross_0`, ...) occurs in what stays in either
@@ -160,6 +162,11 @@ hold; the branch was rebased onto it and checked against both.
   and raster render pipelines), on the baseline and on the branch alike; the 8 modules besides the path tracer's are
   byte-identical. The bundle differs in the shader text and the prepend site only. `pathtracer-compute.wgsl` lost
   164 lines, `pathtracer.ts` composes the shader once for the compute pipeline and ReSTIR.
+- FlexLight's rasterizer, against `f6ecd37` with FlexKernels `c64320f`: the build passes, all 9 WGSL modules validate
+  as above with the rasterizer's composed of `random.wgsl` and `rasterizer-compute.wgsl`, the bundle differs in the
+  shader text and its prepend site only, and `pcg`, `normal_distribution`, `random_sphere`, `random_hemisphere` and
+  `rgb_to_greyscale` of the composed shader return bit-identical words to the old one's through Dawn on the 288
+  inputs. `rasterizer-compute.wgsl` lost 58 lines.
 - Independent verifier reviews of both diffs (call-site mapping, removed code still referenced, RNG consumption order)
   found no behavior change; the only difference is `0 - v` for `-v` in `random_hemisphere`, the sign of an exact zero.
 
@@ -228,8 +235,6 @@ Shift walk<T : ITracer, S : IScene>(T tracer, S scene, Domain dom, Reservoir r, 
 
 Ranked by what they would share, with what blocks each:
 
-0. The random numbers of FlexLight's rasterizer: a second vendored WGSL file compiled from `random.slang` alone,
-   prepended to `rasterizer-compute.wgsl` as `pathtracer.ts` prepends `bsdf.wgsl`, the second composition site.
 1. The BSDF on top (`bsdfLobes`, `lobeThroughput`, `lobeDensity`, `sampleBSDF`, `connectBSDF`, `BSDF`, `neeDecision`,
    `G1`, `SampleBSDF`, `BSDFLobes`): the same structure, but the behaviors differ (Smith vs Schlick masking,
    Principled tint and level, diffuse dimming, albedo-colored refraction vs colorless reflection, clamped density).
@@ -261,5 +266,5 @@ Ranked by what they would share, with what blocks each:
   diff.
 - The GitHub repository starts with `main` at `3862740`, the last commit without a workflow, so that a pull request
   can target it and runs only the build; `main` then fast-forwards to the reviewed branch.
-- FlexLight's rasterizer keeps its copy of the random numbers: sharing them there takes a second vendored file and a
-  second composition site, against the single one the integration has.
+- FlexLight's rasterizer shares the random numbers through a second vendored file, `random.wgsl`, and a second
+  composition site in `rasterizer.ts`: its own BSDF terms take the names `bsdf.wgsl` would bring.
