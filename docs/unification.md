@@ -109,7 +109,8 @@ adaptation. Everything else stays local, with the reason; **Shared** marks what 
 - `src/*.slang` transpile FlexLight `5a313db` line for line, with its names, expressions, comments and order; in
   Slang's syntax, WGSL's `fn` reads `func`, `const` `static const` (`static let` would be an uninitialized private
   variable), struct members `__extern_cpp public T name;`, `f32`/`u32`/`vec3<f32>` `float`/`uint`/`float3`, and
-  `ptr<function, u32>` `inout uint`. Besides that, only target plumbing,
+  `ptr<function, u32>` `inout uint`, and WGSL's `select(f, t, cond)` keeps its argument order through an overload in
+  `math.slang`, Slang's own being `select(cond, t, f)`. Besides that, only target plumbing,
   marked so in the source: `pcg` keeps renderer.cu's generator outside WGSL; `normalize`, `inverseSqrt` and WGSL's
   `select` lower to each consumer's own (CUDA `rnorm3df` and `rsqrtf`, WGSL's builtins, C++ the host shims of the
   CUDA ones, against which the CUDA goldens are made); and in `sampleGGXVNDF`, `T1` is FlexLight's `select` for WGSL
