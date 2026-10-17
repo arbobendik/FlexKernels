@@ -5,7 +5,7 @@ SLANGC ?= $(SLANG_PATH)/bin/slangc
 SLANGFLAGS = -line-directive-mode none -g2
 ACTIONLINT_VERSION ?= 1.7.7
 ACTIONLINT ?= .deps/actionlint
-MODULES = src/math.slang src/random.slang src/bsdf.slang
+SOURCE = src/pathtracer.slang
 NVCC ?= nvcc
 HIPCC ?= hipcc
 FLEX_CUDA_PT ?= ../flex-cuda-pt
@@ -14,14 +14,14 @@ REFERENCE ?= $(FLEX_CUDA_PT)/src/shaders
 FLEXLIGHT ?= ../FlexLight
 WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
-all: build/cuda/bsdf.cuh build/cuda/slang-cuda-prelude.h build/hip/bsdf.cuh build/hip/slang-cuda-prelude.h \
-	build/wgsl/bsdf.wgsl build/wgsl/random.wgsl
+all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h build/hip/pathtracer.cuh build/hip/slang-cuda-prelude.h \
+	build/wgsl/pathtracer.wgsl
 
 # The prelude is included next to the header instead of from the Slang installation, its Matrix template, which the
 # generated code doesn't use, renamed so that it leaves the name to the consumer's
-build/cuda/bsdf.cuh: $(MODULES) $(SLANGC)
+build/cuda/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	mkdir -p build/cuda
-	$(SLANGC) $(SLANGFLAGS) src/bsdf.slang -target cuda -o $@
+	$(SLANGC) $(SLANGFLAGS) $< -target cuda -o $@
 	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#define Matrix SlangMatrix\n#include "slang-cuda-prelude.h"\n#undef Matrix|' $@
 
 build/cuda/slang-cuda-prelude.h: $(SLANGC)
@@ -29,7 +29,7 @@ build/cuda/slang-cuda-prelude.h: $(SLANGC)
 	cp $(SLANG_PATH)/include/slang-cuda-prelude.h $@
 
 # The same header for HIP, with the part of the prelude it uses
-build/hip/bsdf.cuh: build/cuda/bsdf.cuh
+build/hip/pathtracer.cuh: build/cuda/pathtracer.cuh
 	mkdir -p build/hip
 	cp $< $@
 
@@ -37,28 +37,23 @@ build/hip/slang-cuda-prelude.h: src/hip-prelude.h
 	mkdir -p build/hip
 	cp $< $@
 
-build/wgsl/bsdf.wgsl: $(MODULES) $(SLANGC)
+build/wgsl/pathtracer.wgsl: $(SOURCE) $(SLANGC)
 	mkdir -p build/wgsl
-	$(SLANGC) $(SLANGFLAGS) src/bsdf.slang -target wgsl -o $@
+	$(SLANGC) $(SLANGFLAGS) $< -target wgsl -o $@
 
-# The random numbers and helpers alone, for shaders that define BSDF terms of their own under the same names
-build/wgsl/random.wgsl: src/math.slang src/random.slang $(SLANGC)
-	mkdir -p build/wgsl
-	$(SLANGC) $(SLANGFLAGS) src/random.slang -target wgsl -o $@
-
-build/cpp/bsdf.cpp: $(MODULES) $(SLANGC)
+build/cpp/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp
-	$(SLANGC) $(SLANGFLAGS) src/bsdf.slang -target cpp -o $@
+	$(SLANGC) $(SLANGFLAGS) $< -target cpp -o $@
 
 $(SLANGC):
 	mkdir -p $(SLANG_PATH)
 	curl -sSfL https://github.com/shader-slang/slang/releases/download/v$(SLANG_VERSION)/slang-$(SLANG_VERSION)-linux-x86_64.tar.gz \
 		| tar -xz -C $(SLANG_PATH)
 
-build/parity-cpu: tests/parity.cpp build/cpp/bsdf.cpp
+build/parity-cpu: tests/parity.cpp build/cpp/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -Ibuild/cpp $< -o $@
 
-build/parity-cuda: tests/parity.cpp build/cuda/bsdf.cuh build/cuda/slang-cuda-prelude.h
+build/parity-cuda: tests/parity.cpp build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h
 	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda $< -o $@
 
 $(ACTIONLINT):
@@ -76,7 +71,7 @@ test-cpu: build/parity-cpu
 	$< < tests/golden-cuda.txt > build/cpu.txt
 	node tests/compare.mjs tests/golden-cuda.txt build/cpu.txt
 
-test-wgsl: build/wgsl/bsdf.wgsl
+test-wgsl: build/wgsl/pathtracer.wgsl
 	node tests/wgsl.mjs $< < tests/golden-wgsl.txt > build/wgsl.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/wgsl.txt
 
@@ -84,8 +79,8 @@ test-cuda: build/parity-cuda  # On the GPU
 	$< < tests/golden-cuda.txt > build/cuda.txt
 	node tests/compare.mjs tests/golden-cuda.txt build/cuda.txt
 
-test-hip: build/hip/bsdf.cuh build/hip/slang-cuda-prelude.h  # Compile only
-	$(HIPCC) -std=c++20 --offload-arch=gfx1100 -x hip -c $< -o build/hip/bsdf.o
+test-hip: build/hip/pathtracer.cuh build/hip/slang-cuda-prelude.h  # Compile only
+	$(HIPCC) -std=c++20 --offload-arch=gfx1100 -x hip -c $< -o build/hip/pathtracer.o
 
 golden: tests/reference.cpp tests/shim/*.h $(REFERENCE)/renderer.cu $(REFERENCE)/renderer.h
 	mkdir -p build
