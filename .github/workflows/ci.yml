@@ -41,7 +41,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - repository: arbobendik/flex-cuda-pt
+          - repository: arbobendik/FlexCudaPT
             key: FLEX_CUDA_PT_DEPLOY_KEY
             source: cuda
             vendored: src/shaders/flexkernels
