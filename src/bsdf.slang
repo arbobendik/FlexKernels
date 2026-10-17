@@ -54,6 +54,7 @@ import random;
     let s: float = 0.5 * (1.0 + Vh.z);
     t2 = (1.0 - s) * sqrt(max(0.0, 1.0 - t1 * t1)) + s * t2;
     // Section 4.3: reprojection onto hemisphere.
+    // Target plumbing: unshared(t1) for t1, see math.slang
     let Nh: float3 = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - unshared(t1) * unshared(t1) - t2 * t2)) * Vh;
     // Section 3.4: transforming the normal back to the ellipsoid configuration.
     return normalize(float3(alpha * Nh.x, alpha * Nh.y, max(0.0, Nh.z)));

@@ -25,6 +25,7 @@ __extern_cpp public struct RandomHemisphere {
 float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f; }
 
 [CudaDeviceExport] public Random pcg(uint state) {
+    // Target plumbing: FlexLight's generator for WGSL, flex-cuda-pt's for every other target
     __target_switch {
     case wgsl:
         // PCG random number generator
@@ -68,6 +69,8 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     }
 }
 
+// Target plumbing: hash and stream here instead of after sampleHalfVector as in FlexLight, as random needs hash in
+// this module
 [CudaDeviceExport] public func hash(x: uint) -> uint {
     let state: uint = x * 747796405u + 2891336453u;
     let word: uint = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;

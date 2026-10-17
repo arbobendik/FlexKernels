@@ -14,6 +14,7 @@ public float3 normalize(float3 a) {
     default: return a * (1.0f / sqrt(dot(a, a)));
     }
 }
+// Target plumbing: WGSL's inverseSqrt, as normalize
 public float inverseSqrt(float x) {
     __target_switch {
     case cuda: __intrinsic_asm "rsqrtf($0)";
