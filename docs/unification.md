@@ -155,7 +155,7 @@ hold; the branch was rebased onto it and checked against both.
   (1.15, 1.11, 0.973, 0.286, 0, 0.0117, 0.0168, 0.00323, 0.169; 0.653 at `02d0bf1`). `renderer.cu` lost 145 lines
   and gained 3, the `Makefile` its two prerequisites.
 - FlexLight: `bash ./build-script` passes. All 9 WGSL modules of the bundle compile in Dawn without errors and give a
-  pipeline with `layout: "auto"` for every entry point (8 compute modules, ReSTIR's 10 passes included, and the depth
+  pipeline with `layout: "auto"` for every entry point (7 compute modules, ReSTIR's 10 passes included, and the depth
   and raster render pipelines), on the baseline and on the branch alike; the 8 modules besides the path tracer's are
   byte-identical. The bundle differs in the shader text and the prepend site only. `pathtracer-compute.wgsl` lost
   164 lines, `pathtracer.ts` composes the shader once for the compute pipeline and ReSTIR.
