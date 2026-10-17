@@ -13,7 +13,7 @@ FLEXLIGHT ?= ../FlexLight
 WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
 all: build/cuda/bsdf.cuh build/cuda/slang-cuda-prelude.h \
-	build/wgsl/bsdf.wgsl
+	build/wgsl/bsdf.wgsl build/wgsl/random.wgsl
 
 build/cuda/bsdf.cuh: $(MODULES) $(SLANGC)
 	mkdir -p build/cuda
@@ -27,6 +27,10 @@ build/cuda/slang-cuda-prelude.h: $(SLANGC)
 build/wgsl/bsdf.wgsl: $(MODULES) $(SLANGC)
 	mkdir -p build/wgsl
 	$(SLANGC) $(SLANGFLAGS) src/bsdf.slang -target wgsl -o $@
+
+build/wgsl/random.wgsl: src/math.slang src/random.slang $(SLANGC)
+	mkdir -p build/wgsl
+	$(SLANGC) $(SLANGFLAGS) src/random.slang -target wgsl -o $@
 
 build/cpp/bsdf.cpp: $(MODULES) $(SLANGC)
 	mkdir -p build/cpp
