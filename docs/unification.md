@@ -97,7 +97,8 @@ adaptation. Everything else stays local, with the reason; **Shared** marks what 
 
 ## Toolchain decisions
 
-- Slang 2026.19, fetched into `.deps/slang` by the `Makefile`. `src/bsdf.slang` imports `math.slang` and
+- Slang 2026.19, fetched into `.deps/slang-2026.19` by the `Makefile`, so that commits generated again by the
+  deployment each take their own. `src/bsdf.slang` imports `math.slang` and
   `random.slang` and is compiled once per target, so dependencies are never duplicated across files.
 - Stable names: exported functions carry `[CudaDeviceExport]`, which keeps them alive and unmangled for CUDA, WGSL
   and C++ alike; structs and their fields carry `__extern_cpp`. Everything else gets Slang's `_0` suffix (CUDA
@@ -170,6 +171,24 @@ Against the baselines flex-cuda-pt `02d0bf1` and FlexLight `5a313db`, `feat/flex
   shader through Dawn on Intel and NVIDIA, which fuse multiply-adds where lavapipe does not.
 - Independent verifier reviews of both diffs (call-site mapping, removed code still referenced, RNG consumption order)
   found no behavior change.
+
+## Deployment
+
+Every push to `main` builds and tests the kernels, then the `deploy` job, one at a time over both consumers, runs
+`ci/deploy.sh` in a checkout of the consumer's `main` made with its write deploy key (`FLEX_CUDA_PT_DEPLOY_KEY`,
+`FLEXLIGHT_DEPLOY_KEY`; pushes with the default token would start none of the consumer's workflows): for each
+FlexKernels commit to `src/` or the `Makefile` since the consumer's `VERSION`, it generates the kernels in a worktree of
+that commit, replaces the vendored directory with them, writes `VERSION` and, if the kernels changed, builds the
+consumer with its own toolchain and commands and commits with that commit's message, author and dates, so that the
+consumer's history follows the commit conventions as FlexKernels' does: commits leaving its kernels as they were
+(documentation, CI, tests, the other target) pass nothing on. It pushes them together, rebasing once if `main` moved.
+The consumer's own workflows then release the extension and deploy the website.
+
+Rehearsed locally against bare clones of both consumers' `main`, from a scratch clone of FlexKernels with a change
+to the Makefile that leaves the kernels as they were, a kernel change and a documentation change on top: each consumer
+got one commit, the kernel change's, with its subject, author and dates, and was built with it first; the Makefile's
+change passed nothing on, and the documentation was never built. A second deploy committed nothing, and a push racing
+the deploy was rebased onto.
 
 ## HIP
 
@@ -251,3 +270,5 @@ Ranked by what they would share, with what blocks each:
 - The WGSL goldens are FlexLight's outputs on lavapipe, the device of CI, so that CI checks them bit for bit.
 - `MAX_SAFE_INTEGER_FOR_F32` is deleted in both consumers with its only use; `xzy` stays dead in CUDA for a minimal
   diff.
+- The GitHub repository starts with `main` at `5f244b9`, the last commit without a workflow, so that a pull request
+  can target it and runs only the build; `main` then fast-forwards to the reviewed branch.
