@@ -5,8 +5,9 @@ public static const float MAX_SAFE_INTEGER_FOR_F32 = 8388607.0;
 public static const uint UINT_MAX = 4294967295u;
 public static const float BIAS = 0.0000152587890625;
 
-// Target plumbing: the WGSL builtins the shared code calls, lowered to what each consumer calls in their place, CUDA's
-// intrinsics in flex-cuda-pt and their host shims for C++; WGSL takes its own builtin back, as the name is taken here
+// Target plumbing: the WGSL builtins the shared code calls, lowered to what each consumer calls in their place: CUDA's
+// intrinsics in flex-cuda-pt, for C++ the formulas of their host shims in tests/shim, which made the CUDA goldens;
+// WGSL takes its own builtin back, as the name is taken here
 public float3 normalize(float3 a) {
     __target_switch {
     case cuda: __intrinsic_asm "(($0) * make_float3(rnorm3df(($0).x, ($0).y, ($0).z)))";
@@ -14,7 +15,7 @@ public float3 normalize(float3 a) {
     default: return a * (1.0f / sqrt(dot(a, a)));
     }
 }
-// Target plumbing: WGSL's inverseSqrt, as normalize
+// Target plumbing: WGSL's inverseSqrt, lowered as normalize above
 public float inverseSqrt(float x) {
     __target_switch {
     case cuda: __intrinsic_asm "rsqrtf($0)";
