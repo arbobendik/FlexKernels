@@ -69,8 +69,8 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     }
 }
 
-// Target plumbing: hash and stream here instead of after sampleHalfVector as in FlexLight, as random needs hash in
-// this module
+// Target plumbing: hash and stream here instead of among FlexLight's ReSTIR helpers (pathtracer-compute.wgsl:1854),
+// as random needs hash in this module
 [CudaDeviceExport] public func hash(x: uint) -> uint {
     let state: uint = x * 747796405u + 2891336453u;
     let word: uint = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;

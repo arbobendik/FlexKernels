@@ -6,7 +6,7 @@ public static const uint UINT_MAX = 4294967295u;
 public static const float BIAS = 0.0000152587890625;
 
 // Target plumbing: the WGSL builtins the shared code calls, lowered to what each consumer calls in their place, CUDA's
-// intrinsics in flex-cuda-pt and their host shims for C++
+// intrinsics in flex-cuda-pt and their host shims for C++; WGSL takes its own builtin back, as the name is taken here
 public float3 normalize(float3 a) {
     __target_switch {
     case cuda: __intrinsic_asm "(($0) * make_float3(rnorm3df(($0).x, ($0).y, ($0).z)))";
