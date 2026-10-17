@@ -3,11 +3,11 @@
 #include <stdio.h>
 #include <vector>
 #ifdef __CUDACC__
-#include "bsdf.cuh"
+#include "pathtracer.cuh"
 typedef float3 Vec;
 __device__ Vec vec(const float* a) { return make_float3(a[0], a[1], a[2]); }
 #else
-#include "bsdf.cpp"
+#include "pathtracer.cpp"
 #define __device__
 #define __global__
 typedef Vector<float, 3> Vec;
