@@ -106,13 +106,18 @@ adaptation. Everything else stays local, with the reason; **Shared** marks what 
   and C++ alike; structs and their fields carry `__extern_cpp`. Everything else gets Slang's `_0` suffix (CUDA
   `static`). None of the generated names (`Random_x24init_0`, `dot_0`, `cross_0`, ...) occurs in what stays in either
   consumer.
-- Each target reproduces its own consumer: `__target_switch` picks `pcg`'s generator and the intrinsics `rsqrt` and
-  `normalize` lower to (CUDA `rsqrtf` and `rnorm3df`, WGSL `inverseSqrt` and `normalize`, C++ the host shims of the
-  CUDA ones, against which the CUDA goldens are made).
-- Slang inlines single-use temporaries, so nvcc's fused multiply-adds could fuse other products than in `renderer.cu`:
-  the summands of `t2` in `sampleGGXVNDF` are swapped (an exact reordering), after which the GPU results are
-  bit-identical. Checked by building `tests/parity.cpp` once against the generated header and once against the
-  baseline `renderer.cu` (OptiX stubbed on the device), both on the GPU.
+- `src/*.slang` transpile FlexLight `5a313db` line for line, with its names, expressions, comments and order; WGSL
+  `f32`/`vec3<f32>` read `float`/`float3`, and `ptr<function, u32>` `inout uint`. Besides that, only target plumbing,
+  marked so in the source: `pcg` keeps renderer.cu's generator outside WGSL; `normalize`, `inverseSqrt` and WGSL's
+  `select` lower to each consumer's own (CUDA `rnorm3df` and `rsqrtf`, WGSL's builtins, C++ the host shims of the
+  CUDA ones, against which the CUDA goldens are made); and in `sampleGGXVNDF`, `T1` is FlexLight's `select` for WGSL
+  but renderer.cu's ternary elsewhere, as nvcc fuses the multiply-adds after it differently without that branch, and
+  `unshared` keeps Slang from reusing the earlier `1.0 - t1 * t1`, which NVIDIA's driver rounds differently.
+- `-g2` keeps the statements and temporaries of the source, which Slang folds into expressions otherwise; folded,
+  nvcc fused `t2` of `sampleGGXVNDF` differently.
+- The GPU results were checked by building `tests/parity.cpp` once against the generated header and once against the
+  baseline `renderer.cu` (OptiX stubbed on the device), and the WGSL by running `tests/wgsl.mjs` on the generated
+  code and on FlexLight's shader on each GPU: Dawn's choice of adapter is local.
 - Slang inlines constants and emits only types an exported function reaches, which keeps the equal constants and
   `SampleBSDF` local.
 - slangc writes the prelude include as an absolute path into the installation; the `Makefile` rewrites that one
@@ -141,7 +146,8 @@ to `alpha^2` at a lobe's peak.
 | Run | Where | Result |
 |---|---|---|
 | `make test-cpu` | Slang C++ target vs CUDA goldens, CI | 288 / 288, bit-identical |
-| `make test-wgsl` | Generated WGSL vs FlexLight goldens, Dawn on lavapipe (CI) / Intel Mesa (local) | 288 / 288, bit-identical / worst 0.630 of the tolerance |
+| `make test-wgsl` | Generated WGSL vs FlexLight goldens, Dawn on lavapipe (CI) / Intel Mesa (local) | 288 / 288, bit-identical / worst 0.630 of the tolerance, as the goldens are lavapipe's |
+| `tests/wgsl.mjs` | Generated WGSL vs FlexLight's own shader on the same GPU: Intel Mesa, NVIDIA 615.78 | bit-identical on both |
 | `make test-cuda` | Generated CUDA on the local RTX 5090 vs CUDA goldens | 288 / 288, worst 0.099 of the tolerance; bit-identical to the baseline `renderer.cu` on the same GPU |
 | `make test-hip` | hipcc 7.2.4 compile only, CI | compiles |
 
@@ -167,6 +173,11 @@ hold; the branch was rebased onto it and checked against both.
   shader text and its prepend site only, and `pcg`, `normal_distribution`, `random_sphere`, `random_hemisphere` and
   `rgb_to_greyscale` of the composed shader return bit-identical words to the old one's through Dawn on the 288
   inputs. `rasterizer-compute.wgsl` lost 58 lines.
+- With FlexKernels `5d690f4`, the line-for-line transpile: the flex-cuda-pt renders stay bit-identical to `6652e76`,
+  and the path tracer's composed shader (`bsdf.wgsl` and `pathtracer-compute.wgsl`) and the rasterizer's
+  (`random.wgsl` and `rasterizer-compute.wgsl`) return bit-identical results to FlexLight `5a313db`'s shaders through
+  Dawn on Intel and NVIDIA. Before it, the port followed `renderer.cu`, and on those GPUs `sampleGGXVNDF`, and so
+  FlexLight's sampled directions and renders, differed: lavapipe, which fuses no multiply-adds, had hidden it.
 - Independent verifier reviews of both diffs (call-site mapping, removed code still referenced, RNG consumption order)
   found no behavior change; the only difference is `0 - v` for `-v` in `random_hemisphere`, the sign of an exact zero.
 
