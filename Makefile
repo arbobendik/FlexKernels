@@ -6,9 +6,10 @@ MODULES = src/math.slang src/random.slang src/bsdf.slang
 NVCC ?= nvcc
 HIPCC ?= hipcc
 FLEX_CUDA_PT ?= ../flex-cuda-pt
-# Golden source, the BSDF the shared one replaces
+# Golden sources, the code the shared one replaces
 REFERENCE ?= $(FLEX_CUDA_PT)/src/shaders
 FLEXLIGHT ?= ../FlexLight
+WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
 all: build/cuda/bsdf.cuh build/cuda/slang-cuda-prelude.h build/hip/bsdf.cuh build/hip/slang-cuda-prelude.h \
 	build/wgsl/bsdf.wgsl
@@ -52,20 +53,20 @@ build/parity-cpu: tests/parity.cpp build/cpp/bsdf.cpp
 build/parity-cuda: tests/parity.cpp build/cuda/bsdf.cuh build/cuda/slang-cuda-prelude.h
 	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda $< -o $@
 
-.PHONY: all test test-cpu test-wgsl test-cuda test-hip golden deploy-local clean
+.PHONY: all test test-cpu test-wgsl test-cuda test-hip golden golden-wgsl deploy-local clean
 test: test-cpu test-wgsl
 
 test-cpu: build/parity-cpu
-	$< < tests/golden.txt > build/cpu.txt
-	node tests/compare.mjs tests/golden.txt build/cpu.txt
+	$< < tests/golden-cuda.txt > build/cpu.txt
+	node tests/compare.mjs tests/golden-cuda.txt build/cpu.txt
 
 test-wgsl: build/wgsl/bsdf.wgsl
-	node tests/wgsl.mjs $< < tests/golden.txt > build/wgsl.txt
-	node tests/compare.mjs tests/golden.txt build/wgsl.txt
+	node tests/wgsl.mjs $< < tests/golden-wgsl.txt > build/wgsl.txt
+	node tests/compare.mjs tests/golden-wgsl.txt build/wgsl.txt
 
 test-cuda: build/parity-cuda  # On the GPU
-	$< < tests/golden.txt > build/cuda.txt
-	node tests/compare.mjs tests/golden.txt build/cuda.txt
+	$< < tests/golden-cuda.txt > build/cuda.txt
+	node tests/compare.mjs tests/golden-cuda.txt build/cuda.txt
 
 test-hip: build/hip/bsdf.cuh build/hip/slang-cuda-prelude.h  # Compile only
 	$(HIPCC) -std=c++20 --offload-arch=gfx1100 -x hip -c $< -o build/hip/bsdf.o
@@ -73,7 +74,11 @@ test-hip: build/hip/bsdf.cuh build/hip/slang-cuda-prelude.h  # Compile only
 golden: tests/reference.cpp tests/shim/*.h $(REFERENCE)/renderer.cu $(REFERENCE)/renderer.h
 	mkdir -p build
 	$(CXX) -std=c++20 -O2 -Itests/shim -I$(REFERENCE) $< -o build/reference
-	build/reference > tests/golden.txt
+	build/reference > tests/golden-cuda.txt
+
+# On the grid of the CUDA goldens
+golden-wgsl: tests/wgsl.mjs tests/golden-cuda.txt $(WGSL_REFERENCE)
+	node tests/wgsl.mjs $(WGSL_REFERENCE) < tests/golden-cuda.txt > tests/golden-wgsl.txt
 
 # Into sibling checkouts, as CI does into the consumer repos
 deploy-local: all
