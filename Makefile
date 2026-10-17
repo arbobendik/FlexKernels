@@ -14,7 +14,7 @@ FLEXLIGHT ?= ../FlexLight
 WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
 all: build/cuda/bsdf.cuh build/cuda/slang-cuda-prelude.h \
-	build/wgsl/bsdf.wgsl
+	build/wgsl/bsdf.wgsl build/wgsl/random.wgsl
 
 # The prelude is included next to the header instead of from the Slang installation, its Matrix template, which the
 # generated code doesn't use, renamed so that it leaves the name to the consumer's
@@ -30,6 +30,11 @@ build/cuda/slang-cuda-prelude.h: $(SLANGC)
 build/wgsl/bsdf.wgsl: $(MODULES) $(SLANGC)
 	mkdir -p build/wgsl
 	$(SLANGC) $(SLANGFLAGS) src/bsdf.slang -target wgsl -o $@
+
+# The random numbers and helpers alone, for shaders that define BSDF terms of their own under the same names
+build/wgsl/random.wgsl: src/math.slang src/random.slang $(SLANGC)
+	mkdir -p build/wgsl
+	$(SLANGC) $(SLANGFLAGS) src/random.slang -target wgsl -o $@
 
 build/cpp/bsdf.cpp: $(MODULES) $(SLANGC)
 	mkdir -p build/cpp
