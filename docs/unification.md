@@ -56,7 +56,8 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `beerLambert` | cu:510 | wgsl:1348 | 2, FlexLight | **Shared** | FlexLight's on an absorption color, which FlexLight's `Material` gained, where it took the instance's albedo from `instance_material`; flex-cuda-pt's goes; each consumer reads it at its call site |
 | `faceNormal`, `smoothNormal`, `geometryOffset`, `hitPosition` | cu:605-623 | inline in `surfaceAt`, wgsl:1881 | 3 | Local | Data access: flat pointers vs instanced textures |
 | `LightNode`, `importance`, `cosSubClamped`, `sinSubClamped`, `sine`, `sampleLight` | h:22, cu:668-699 | `Light`, `sampleLight`, `occluded` wgsl:113, 1054, 1154 | 3 | Local | Light BVH by importance vs uniform lights with point lights; the visibility test traverses |
-| `LightSample`, `NEESample`, `reservoirSample`, `calculatePointLightContrib`, `SamplePreCalc`, `SampledColor`, `lightTrace` | – | wgsl:1033-1364 | 3 | Local | FlexLight only |
+| `pointLightRadiance` | – | wgsl:1238 | 1 | **Shared** | The math of `calculatePointLightContrib`, `color * intensity / (PI * radius * radius)`: corrected from 5a313db's extra factor of four at the user's direction so light hits agree with direct lighting; the light lookup stays in FlexLight |
+| `LightSample`, `NEESample`, `reservoirSample`, `calculatePointLightContrib`, `SamplePreCalc`, `SampledColor`, `lightTrace` | – | wgsl:1033-1364 | 3 | Local | FlexLight only; `calculatePointLightContrib` reads its light and calls `pointLightRadiance` |
 | `environment` | cu:661 | wgsl:1931 | 3 | Local | World shader program vs equirectangular map or ambient |
 | `env_map_sample`, `environmentMapped`, `environmentPdf`, `searchCDF`, `skyRadiance`, `SkySample`, `sampleSky`, `skyBSDF`, `escapeWeight` | – | wgsl:1529-1626 | 3 | Local | FlexLight's environment NEE |
 
@@ -145,6 +146,9 @@ random state, `sampleGGXVNDF` also directly on the outgoing direction mirrored a
 choose it toward its side and density, `sampleBSDF`, `connectBSDF` per lobe weighted by its density, `BSDF`,
 `neeDecision`, the normal map of the triangle of its directions, two reservoirs resampled by their shifts and
 `beerLambert` over the sum of the IORs.
+
+`pointLightRadiance` is checked separately on every case in C++, CUDA and WGSL: integrating its radiance over a
+diffuse sphere must recover `4 * PI * intensity * color`, without changing the reference golden columns.
 
 - `tests/golden-cuda.txt`: `make golden REFERENCE=<flex-cuda-pt 02d0bf1>/src/shaders` host-compiles the unmodified
   `renderer.cu` against `tests/shim` and reproduces it byte for byte: the functions both consumers had alike.
