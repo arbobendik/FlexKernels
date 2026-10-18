@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 57;
+const OUTPUTS = 69;
 const MATERIAL = /* wgsl */ `
 struct Material {
     albedo: vec3<f32>,
@@ -14,6 +14,44 @@ struct Material {
     ior: f32
 };
 `;
+// FK's lobes by their BSDF and PDF functions, toward a given out_dir as the walk's replay takes them
+const LOBES = /* wgsl */ `
+fn parity_throughput(l: vec3<f32>, n_i: vec3<f32>, alpha: f32, material: Material, lobes: BSDFLobes, lobe: u32)
+    -> vec3<f32> {
+    if (lobe == 0u) { return diffuseBSDF(l, n_i, alpha, material, lobes); }
+    if (lobe == 1u) { return refractBSDF(l, n_i, alpha, material, lobes); }
+    return reflectBSDF(l, n_i, alpha, material, lobes);
+}
+fn parity_density(n_i_dot_l: f32, l_dot_h: f32, n_i_dot_v: f32, alpha: f32, lobes: BSDFLobes, eta_i: f32,
+    eta_o: f32, lobe: u32) -> f32 {
+    if (lobe == 0u) { return diffusePDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, lobes, eta_i, eta_o); }
+    if (lobe == 1u) { return refractPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, lobes, eta_i, eta_o); }
+    return reflectPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, lobes, eta_i, eta_o);
+}
+fn parity_toward(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: Material, eta_i: f32, eta_o: f32,
+    lobe: u32, random_state: u32) -> SampleBSDF {
+    let n_dot_v = dot(n, - in_dir);
+    let n_i = n * sign(n_dot_v);
+    let alpha = material.roughness * material.roughness;
+    var l_dot_h = 0.0;
+    var ggx_n = reflectedHalf(in_dir, out_dir);
+    if (lobe == 0u) {
+        ggx_n = sampledHalf(in_dir, n, material, random_state);
+    } else if (lobe == 1u) {
+        ggx_n = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
+        l_dot_h = dot(out_dir, ggx_n);
+    }
+    let lobes = bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, eta_i, eta_o);
+    let pdf = parity_density(dot(n_i, out_dir), l_dot_h, abs(n_dot_v), alpha, lobes, eta_i, eta_o, lobe);
+    if (!(pdf > 0.0)) {
+        return SampleBSDF();
+    }
+    return SampleBSDF(out_dir, parity_throughput(out_dir, n_i, alpha, material, lobes, lobe), random_state,
+        lobe == 1u, lobe, pdf);
+}
+`;
+const THROUGHPUT = FLEXLIGHT ? "lobeThroughput" : "parity_throughput";
+const DENSITY = FLEXLIGHT ? "lobeDensity" : "parity_density";
 const KERNEL = /* wgsl */ `
 struct ParityCase { v: array<f32, 20>, random_state: u32 }
 @group(0) @binding(0) var<storage, read> parity_cases: array<ParityCase>;
@@ -82,6 +120,17 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[54] = bitcast<u32>(lobes.p_diffuse);
     r[55] = bitcast<u32>(lobes.p_reflect);
     r[56] = bitcast<u32>(lobes.p_refract);
+    var p_lobe = array<f32, 3>(lobes.p_diffuse, lobes.p_refract, lobes.p_reflect);
+    for (var lobe = 0u; lobe < 3u; lobe++) {
+        let side = select(dot(n_i, out_dir) > 0.0, dot(n_i, out_dir) < 0.0, lobe == 1u);
+        var throughput = vec3<f32>(0.0);
+        if (p_lobe[lobe] > 1e-6 && side) {
+            throughput = ${THROUGHPUT}(out_dir, n_i, alpha, material, lobes, lobe);
+        }
+        parity_put(&r, 57u + 4u * lobe, throughput);
+        r[60u + 4u * lobe] = bitcast<u32>(${DENSITY}(dot(n_i, out_dir), dot(out_dir, ggx_n), abs(dot(n, in_dir)), alpha,
+            lobes, v[18], v[19], lobe));
+    }
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
@@ -102,7 +151,8 @@ const cases = buffer(inputs.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.
 const results = buffer(lines.length * OUTPUTS * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
 const readback = buffer(results.size, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
 device.queue.writeBuffer(cases, 0, inputs);
-const module = device.createShaderModule({ code: (FLEXLIGHT ? "" : MATERIAL) + readFileSync(process.argv[2], "utf8") + KERNEL });
+const module = device.createShaderModule({ code: (FLEXLIGHT ? "" : MATERIAL + LOBES)
+    + readFileSync(process.argv[2], "utf8") + KERNEL });
 const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "parity" } });
 const bindGroup = device.createBindGroup({
   layout: pipeline.getBindGroupLayout(0),

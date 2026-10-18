@@ -4,6 +4,10 @@ public static const float PI = 3.141592653589793;
 public static const float MAX_SAFE_INTEGER_FOR_F32 = 8388607.0;
 public static const uint UINT_MAX = 4294967295u;
 public static const float BIAS = 0.0000152587890625;
+public static const float INV_PI = 0.3183098861837907;
+
+public static const uint LOBE_DIFFUSE = 0u;
+public static const uint LOBE_REFRACT = 1u;
 
 __target_intrinsic(wgsl, "Material")
 __target_intrinsic(cuda, "BSDFMaterial")
@@ -35,6 +39,7 @@ public float inverseSqrt(float x) {
     default: return 1.0f / sqrt(x);
     }
 }
+[ForceInline] public float select(float f, float t, bool cond) { return select(cond, t, f); }
 [ForceInline] public float3 select(float3 f, float3 t, bool cond) { return select(cond, t, f); }
 [ForceInline] public float3 select(float3 f, float3 t, bool3 cond) { return select(cond, t, f); }
 public float unshared(float x) {
@@ -58,7 +63,7 @@ public float3 mix(float3 e1, float3 e2, float e3) {
 public float sign(float e) {
     __target_switch {
     case wgsl: __intrinsic_asm "sign($0)";
-    default: return e > 0.0f ? 1.0f : e < 0.0f ? -1.0f : 0.0f;
+    default: return select(select(0.0f, -1.0f, e < 0.0f), 1.0f, e > 0.0f);
     }
 }
 
@@ -136,7 +141,7 @@ __extern_cpp public struct Random {
     var kr: float = 1.0f;
     if (sin_psi < 1.0f) {
         // Index-matched: no bend, so cos_psi is cos_theta exactly, lest rounding near grazing reflect
-        let cos_psi = eta_i == eta_o ? cos_theta : sqrt(max(0.0f, 1.0f - sin_psi * sin_psi));
+        let cos_psi = select(sqrt(max(0.0f, 1.0f - sin_psi * sin_psi)), cos_theta, eta_i == eta_o);
         // cos = abs(cosi);
         let Rs = ((eta_o * cos_theta) - (eta_i * cos_psi)) / ((eta_o * cos_theta) + (eta_i * cos_psi));
         let Rp = ((eta_i * cos_theta) - (eta_o * cos_psi)) / ((eta_i * cos_theta) + (eta_o * cos_psi));
@@ -231,7 +236,7 @@ __extern_cpp public struct Random {
     return mul(v, tbn);
 }
 
-// Half vector terms of sampleBSDF, shared with lobeBSDF
+// Half vector terms of sampleBSDF, shared with the lobes' evaluation toward a given out_dir
 __extern_cpp public struct BSDFLobes {
     __extern_cpp public float v_dot_h;
     __extern_cpp public float n_dot_h;
@@ -285,6 +290,100 @@ __extern_cpp public struct BSDFLobes {
     let p_reflect: float = reflect_component * total_component_inv;
     let p_refract: float = refract_component * total_component_inv;
     return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, colorless_reflection, p_diffuse, p_reflect, p_refract);
+}
+
+// Each lobe by two functions under each other: XBSDF, its throughput toward l, and XPDF, its solid angle PDF, 0 for
+// delta lobes; both on the half vector terms of one half vector
+
+// PDF_VNDF of the half vector of lobes, the refraction's and the reflection's
+[CudaDeviceExport] public func vndfPDF(n_i_dot_v: float, alpha: float, lobes: BSDFLobes) -> float {
+    // PDF_VNDF = G1_v * v_dot_h * D / n_dot_v
+    let pdf_h: float = select(0.0f, smithG1(alpha, n_i_dot_v) * lobes.v_dot_h * trowbridgeReitz(alpha, lobes.n_dot_h) / n_i_dot_v, alpha > 0.0f && lobes.v_dot_h > 0.0f && lobes.n_dot_h > 0.0f && n_i_dot_v > 0.0f);
+    return pdf_h;
+}
+
+[CudaDeviceExport] public func diffuseBSDF(l: float3, n_i: float3, alpha: float, material: Material,
+    lobes: BSDFLobes) -> float3 {
+    // BSDF = diffuse_weight * albedo / PI
+    // => BSDF * n_dot_l = diffuse_weight * albedo * n_dot_l / PI
+
+    // throughput = BSDF * n_dot_l / PDF
+    //            = diffuse_weight * albedo * n_dot_l / PI / cosine_hemisphere.y * PI
+    //            = diffuse_weight * albedo * n_dot_l / cosine_hemisphere.y
+
+    // Since cosine_hemisphere.y is n_dot_l over the unit hemisphere, we can simplify the throughput to:
+    // => throughput = albedo * diffuse_weight
+    return lobes.diffuse_weight * material.albedo / lobes.p_diffuse;
+}
+
+[CudaDeviceExport] public func diffusePDF(n_i_dot_l: float, l_dot_h: float, n_i_dot_v: float, alpha: float,
+    lobes: BSDFLobes, eta_i: float, eta_o: float) -> float {
+    // PDF_COSINE_HEMISPHERE = cosine_hemisphere.y / PI
+    // => PDF = cosine_hemisphere.y / PI
+    return select(0.0f, lobes.p_diffuse * n_i_dot_l * INV_PI, n_i_dot_v > 0.0f);
+}
+
+
+[CudaDeviceExport] public func refractBSDF(l: float3, n_i: float3, alpha: float, material: Material,
+    lobes: BSDFLobes) -> float3 {
+    let m_n_i_dot_l: float = - dot(n_i, l);
+    // Microfacet term
+    let G1_l: float = G1(alpha, max(m_n_i_dot_l, 0.0f));
+    // BSDF = refract_weight * v_dot_h / n_dot_v / n_dot_l * D * G * (1 - F) * JACOBIAN
+    // => BSDF * n_dot_l = refract_weight * v_dot_h / n_dot_v * D * G * (1 - F) * JACOBIAN
+
+    // throughput = BSDF * n_dot_l / PDF
+    //            = refract_weight * v_dot_h / n_dot_v * D * G * (1 - F) * JACOBIAN / G1_v / v_dot_h / D * n_dot_v / JACOBIAN
+    //            = refract_weight * G * (1 - F) / G1_v
+
+    // G = G1_v * G1_l
+    // => throughput = refract_weight * G1_l * (1 - F)
+    return float3(lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) / lobes.p_refract);
+}
+
+[CudaDeviceExport] public func refractPDF(n_i_dot_l: float, l_dot_h: float, n_i_dot_v: float, alpha: float,
+    lobes: BSDFLobes, eta_i: float, eta_o: float) -> float {
+    let pdf_h: float = vndfPDF(n_i_dot_v, alpha, lobes);
+    // JACOBIAN = eta_o^2 * |l_dot_h| / (eta_i * v_dot_h + eta_o * l_dot_h)^2
+
+    // PDF_VNDF = G1_v * v_dot_h * D / n_dot_v
+    // PDF_REFRACT = PDF_VNDF * JACOBIAN
+    //             = G1_v * v_dot_h * D / n_dot_v * JACOBIAN
+
+    // PDF = PDF_REFRACT
+    //     = G1_v * v_dot_h * D / n_dot_v * JACOBIAN
+    let denom: float = eta_i * lobes.v_dot_h + eta_o * l_dot_h;
+    return select(0.0f, lobes.p_refract * pdf_h * eta_o * eta_o * abs(l_dot_h) / (denom * denom), eta_i != eta_o && l_dot_h < 0.0f);
+}
+
+[CudaDeviceExport] public func reflectBSDF(l: float3, n_i: float3, alpha: float, material: Material,
+    lobes: BSDFLobes) -> float3 {
+    let n_i_dot_l: float = dot(n_i, l);
+    // Torrance-Sparrow
+    let G1_l: float = G1(alpha, max(n_i_dot_l, 0.0f));
+    // BSDF = reflect_weight * D * G * F / (4 * n_dot_v * n_dot_l)
+    // => BSDF * n_dot_l = reflect_weight * D * G * F / (4 * n_dot_v)
+
+    // throughput = BSDF * n_dot_l / PDF
+    //            = reflect_weight * D * G * F / (4 * n_dot_v) / G1_v / D * (4 * n_dot_v)
+    //            = reflect_weight * G * F / G1_v
+
+    // G = G1_v * G1_l
+    // => throughput = reflect_weight * G1_l * F
+    return lobes.reflect_weight * G1_l * mix(lobes.F, float3(lobes.F_greyscale), lobes.colorless_reflection) / lobes.p_reflect;
+}
+
+[CudaDeviceExport] public func reflectPDF(n_i_dot_l: float, l_dot_h: float, n_i_dot_v: float, alpha: float,
+    lobes: BSDFLobes, eta_i: float, eta_o: float) -> float {
+    let pdf_h: float = vndfPDF(n_i_dot_v, alpha, lobes);
+    // PDF_VNDF = G1_v * v_dot_h * D / n_dot_v
+    // JACOBIAN = 1 / (4 * v_dot_h)
+    // PDF_REFLECT = PDF_VNDF * JACOBIAN
+    // => PDF_REFLECT = G1_v * D / (4 * n_dot_v)
+
+    // PDF = PDF_REFLECT
+    // => PDF = G1_v * D / (4 * v_dot_n)
+    return select(0.0f, lobes.p_reflect * pdf_h / (4.0f * lobes.v_dot_h), pdf_h > 0.0f);
 }
 
 [CudaDeviceExport] public func safeDivide(a: float3, b: float3) -> float3 {
