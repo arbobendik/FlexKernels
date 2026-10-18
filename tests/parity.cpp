@@ -32,7 +32,7 @@ struct Result {
     unsigned normal_state; float normal_value; unsigned sphere_state; Vec sphere; unsigned hemisphere_state; Vec hemisphere;
     float g1; Vec normal_map; BSDFLobes lobes; Vec lobe_throughput[3]; float lobe_density[3]; SampleBSDF sample;
     Vec connected[3]; float connected_pdf[3]; Vec bsdf; unsigned nee; Reservoir r; Selection sel; unsigned path;
-    Vec beer_lambert;
+    Vec beer_lambert, point_light;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -103,6 +103,7 @@ __device__ Result evaluate(const Case& c) {
     r.r = finalize(r.sel, 3);
     r.path = withEnd(r.r, 1, 3, albedo).path;
     r.beer_lambert = beerLambert(c.in[18] + c.in[19], albedo);
+    r.point_light = pointLightRadiance(albedo, c.in[18], 1.0f + c.in[16]);
     return r;
 }
 
@@ -138,6 +139,16 @@ int main() {
     for (size_t i = 0; i < cases.size(); i++) {
         const Case& c = cases[i];
         const Result& r = results[i];
+        // Integrating the radiance over a diffuse sphere must recover its power, 4 * PI * intensity.
+        const double pi = 3.141592653589793, radius = 1.0f + c.in[16], area = 4 * pi * radius * radius;
+        const float radiance[] = {r.point_light.x, r.point_light.y, r.point_light.z};
+        for (unsigned channel = 0; channel < 3; channel++) {
+            const double power = 4 * pi * c.in[18] * c.in[12 + channel];
+            if (!(fabs(radiance[channel] * pi * area - power) <= 1e-5 * fmax(1.0, power))) {
+                fprintf(stderr, "case %zu: point light power mismatch\n", i);
+                return 1;
+            }
+        }
         for (float x : c.in) printf(" %.9g", x);
         printf(" %u", c.random_state);
         printf(" %u %u %u %.9g %.9g", r.hash, r.stream, r.pcg_state, r.pcg_value, r.greyscale);
