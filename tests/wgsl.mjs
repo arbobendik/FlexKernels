@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 110;
+const OUTPUTS = 113;
 // As pathtracer-compute.wgsl declares it
 const MATERIAL = /* wgsl */ `
 struct Material {
@@ -144,6 +144,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[105] = sel.random_state;
     r[106] = withEnd(reservoir, 1u, 3u, albedo).path;
     parity_put(&r, 107u, ${FLEXLIGHT ? "parity_beerLambert" : "beerLambert"}(v[18] + v[19], albedo));
+    ${FLEXLIGHT ? "" : "parity_put(&r, 110u, pointLightRadiance(albedo, v[18], 1.0 + v[16]));"}
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
@@ -193,6 +194,15 @@ await readback.mapAsync(GPUMapMode.READ);
 const words = new Uint32Array(readback.getMappedRange());
 const floats = new Float32Array(words.buffer);
 lines.forEach((line, i) => {
-  const outputs = Array.from({ length: OUTPUTS }, (_, j) => (UNSIGNED.includes(j) ? words : floats)[i * OUTPUTS + j]);
+  if (!FLEXLIGHT) {
+    // Integrating the radiance over a diffuse sphere must recover its power, 4 * PI * intensity.
+    const radius = Math.fround(1 + Number(line[16])), area = 4 * Math.PI * radius ** 2;
+    for (let channel = 0; channel < 3; channel++) {
+      const power = 4 * Math.PI * Number(line[18]) * Number(line[12 + channel]);
+      const emitted = floats[i * OUTPUTS + 110 + channel] * Math.PI * area;
+      if (!(Math.abs(emitted - power) <= 1e-5 * Math.max(1, power))) throw new Error(`case ${i}: point light power mismatch`);
+    }
+  }
+  const outputs = Array.from({ length: 110 }, (_, j) => (UNSIGNED.includes(j) ? words : floats)[i * OUTPUTS + j]);
   console.log(line.slice(0, 21).concat(outputs).join(" "));
 });
