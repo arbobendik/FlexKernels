@@ -8,6 +8,7 @@ public static const float INV_PI = 0.3183098861837907;
 
 public static const uint LOBE_DIFFUSE = 0u;
 public static const uint LOBE_REFRACT = 1u;
+public static const uint LOBE_REFLECT = 2u;
 
 __target_intrinsic(wgsl, "Material")
 __target_intrinsic(cuda, "BSDFMaterial")
@@ -24,6 +25,16 @@ __extern_cpp public struct RandomSphere {
     __extern_cpp public uint state;
     __extern_cpp public float3 value;
 };
+
+__extern_cpp public struct SampleBSDF {
+    __extern_cpp public float3 unit_direction;
+    __extern_cpp public float3 throughput;
+    __extern_cpp public uint random_state;
+    __extern_cpp public bool refracted;
+    __extern_cpp public uint lobe;
+    // Solid angle PDF, 0 for delta lobes
+    __extern_cpp public float pdf;
+}
 
 public float3 normalize(float3 a) {
     __target_switch {
@@ -236,6 +247,62 @@ __extern_cpp public struct Random {
     return mul(v, tbn);
 }
 
+// out_dir on in_dir's side of g_n: BSDF * n_dot_l = throughput_diffuse * PDF_diffuse + throughput_reflect * PDF_reflect
+// otherwise: BSDF * n_dot_l = throughput_refract * PDF_refract
+// as throughput = BSDF_lobe * n_dot_l / PDF_lobe
+[CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {
+    let v: float3 = negate(in_dir);
+    let n_dot_v: float = dot(n, v);
+    let n_i: float3 = n * sign(n_dot_v);
+    let n_i_dot_l: float = dot(n_i, out_dir);
+    let alpha: float = material.roughness * material.roughness;
+    // Diffuse and reflection on the same side; refraction alone across
+    // Test if v and l are on the same side of the surface
+    let same_side: bool = dot(g_n, v) * dot(g_n, out_dir) > 0.0f;
+    let lobes: uint = same_side ? 2u : 1u;
+    var f: float3 = float3(0.0f);
+    // The lobe's half vector and its terms, taken again only where they differ from the last lobe's
+    var half_of: uint = UINT_MAX;
+    var ggx_n: float3 = float3(0.0f);
+    var lobe_terms: BSDFLobes = {};
+    for (var i: uint = 0u; i < lobes; i++) {
+        let lobe: uint = !same_side ? LOBE_REFRACT : i == 0u ? LOBE_DIFFUSE : LOBE_REFLECT;
+        // sampleBSDF's half vector for the diffuse lobe, out_dir's reflective one for reflection
+        let lobe_half: uint = lobe;
+        if (lobe_half != half_of) {
+            if (lobe_half == LOBE_DIFFUSE) {
+                ggx_n = sampledHalf(in_dir, n, material, random_state);
+            } else if (lobe_half == LOBE_REFRACT) {
+                ggx_n = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
+            } else {
+                ggx_n = reflectedHalf(in_dir, out_dir);
+            }
+            lobe_terms = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta_i, eta_o);
+            half_of = lobe_half;
+        }
+        var pdf: float = 0.0f;
+        var throughput: float3 = float3(0.0f);
+        switch (lobe) {
+        case LOBE_DIFFUSE:
+            pdf = diffusePDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+            throughput = diffuseBSDF(out_dir, n_i, alpha, material, lobe_terms);
+            break;
+        case LOBE_REFRACT:
+            pdf = refractPDF(n_i_dot_l, dot(out_dir, ggx_n), abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+            throughput = refractBSDF(out_dir, n_i, alpha, material, lobe_terms);
+            break;
+        default:
+            pdf = reflectPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+            throughput = reflectBSDF(out_dir, n_i, alpha, material, lobe_terms);
+            break;
+        }
+        // Directions the lobe can't sample carry no throughput
+        let weighted: float3 = pdf > 0.0f ? throughput * pdf : float3(0.0f);
+        f = i == 0u ? weighted : f + weighted;
+    }
+    return f;
+}
+
 // Half vector terms of sampleBSDF, shared with the lobes' evaluation toward a given out_dir
 __extern_cpp public struct BSDFLobes {
     __extern_cpp public float v_dot_h;
@@ -292,8 +359,8 @@ __extern_cpp public struct BSDFLobes {
     return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, colorless_reflection, p_diffuse, p_reflect, p_refract);
 }
 
-// Each lobe by two functions under each other: XBSDF, its throughput toward l, and XPDF, its solid angle PDF, 0 for
-// delta lobes; both on the half vector terms of one half vector
+// Each lobe by three functions under each other: XBSDF, its throughput toward l, XSample, sampleBSDF's case drawing
+// it, and XPDF, its solid angle PDF, 0 for delta lobes; all three on the half vector terms of one half vector
 
 // PDF_VNDF of the half vector of lobes, the refraction's and the reflection's
 [CudaDeviceExport] public func vndfPDF(n_i_dot_v: float, alpha: float, lobes: BSDFLobes) -> float {
@@ -314,6 +381,22 @@ __extern_cpp public struct BSDFLobes {
     // Since cosine_hemisphere.y is n_dot_l over the unit hemisphere, we can simplify the throughput to:
     // => throughput = albedo * diffuse_weight
     return lobes.diffuse_weight * material.albedo / lobes.p_diffuse;
+}
+
+// Diffuse case of sampleBSDF
+[CudaDeviceExport] public func diffuseSample(n_i: float3, n_i_dot_v: float, alpha: float, material: Material,
+    lobes: BSDFLobes, eta_i: float, eta_o: float, random_state: uint) -> SampleBSDF {
+    var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
+    let random_d_1: Random = pcg(random_state);
+    let random_d_2: Random = pcg(random_d_1.state);
+    sample.random_state = random_d_2.state;
+    // Sample cosine weighted hemisphere
+    let cosine_hemisphere: float3 = sampleCosWeightedHemisphere(random_d_1.value, random_d_2.value);
+    sample.unit_direction = tangentToWorld(cosine_hemisphere, n_i);
+    sample.lobe = LOBE_DIFFUSE;
+    sample.throughput = diffuseBSDF(sample.unit_direction, n_i, alpha, material, lobes);
+    sample.pdf = diffusePDF(cosine_hemisphere.y, 0.0f, n_i_dot_v, alpha, lobes, eta_i, eta_o);
+    return sample;
 }
 
 [CudaDeviceExport] public func diffusePDF(n_i_dot_l: float, l_dot_h: float, n_i_dot_v: float, alpha: float,
@@ -339,6 +422,20 @@ __extern_cpp public struct BSDFLobes {
     // G = G1_v * G1_l
     // => throughput = refract_weight * G1_l * (1 - F)
     return float3(lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) / lobes.p_refract);
+}
+
+// Refractive case of sampleBSDF, through its half vector ggx_n
+[CudaDeviceExport] public func refractSample(ggx_n: float3, n_i: float3, n_i_dot_v: float, alpha: float,
+    material: Material, lobes: BSDFLobes, eta_i: float, eta_o: float, random_state: uint) -> SampleBSDF {
+    var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
+    // Refraction is valid
+    sample.unit_direction = lobes.refracted;
+    sample.random_state = random_state;
+    sample.refracted = true;
+    sample.lobe = LOBE_REFRACT;
+    sample.throughput = refractBSDF(sample.unit_direction, n_i, alpha, material, lobes);
+    sample.pdf = refractPDF(0.0f, dot(sample.unit_direction, ggx_n), n_i_dot_v, alpha, lobes, eta_i, eta_o);
+    return sample;
 }
 
 [CudaDeviceExport] public func refractPDF(n_i_dot_l: float, l_dot_h: float, n_i_dot_v: float, alpha: float,
@@ -373,6 +470,18 @@ __extern_cpp public struct BSDFLobes {
     return lobes.reflect_weight * G1_l * mix(lobes.F, float3(lobes.F_greyscale), lobes.colorless_reflection) / lobes.p_reflect;
 }
 
+// Reflective case of sampleBSDF, off its half vector ggx_n
+[CudaDeviceExport] public func reflectSample(in_dir: float3, ggx_n: float3, n_i: float3, n_i_dot_v: float, alpha: float,
+    material: Material, lobes: BSDFLobes, eta_i: float, eta_o: float, random_state: uint) -> SampleBSDF {
+    var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
+    sample.unit_direction = normalize(reflect(in_dir, ggx_n));
+    sample.random_state = random_state;
+    sample.lobe = LOBE_REFLECT;
+    sample.throughput = reflectBSDF(sample.unit_direction, n_i, alpha, material, lobes);
+    sample.pdf = reflectPDF(0.0f, 0.0f, n_i_dot_v, alpha, lobes, eta_i, eta_o);
+    return sample;
+}
+
 [CudaDeviceExport] public func reflectPDF(n_i_dot_l: float, l_dot_h: float, n_i_dot_v: float, alpha: float,
     lobes: BSDFLobes, eta_i: float, eta_o: float) -> float {
     let pdf_h: float = vndfPDF(n_i_dot_v, alpha, lobes);
@@ -384,6 +493,58 @@ __extern_cpp public struct BSDFLobes {
     // PDF = PDF_REFLECT
     // => PDF = G1_v * D / (4 * v_dot_n)
     return select(0.0f, lobes.p_reflect * pdf_h / (4.0f * lobes.v_dot_h), pdf_h > 0.0f);
+}
+
+// SampleBSDF takes in incoming direction, surface normal, material and random state and returns an outgoing direction with throughput according to the BSDF for global illumination
+[CudaDeviceExport] public func sampleBSDF(in_dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, random_init: uint, screen_space: float2) -> SampleBSDF {
+    var random_state: uint = random_init;
+    // Basic dot products
+    let v: float3 = negate(in_dir);
+    let n_dot_v: float = dot(n, v);
+    var n_i: float3 = n * sign(n_dot_v);
+    let n_i_dot_v: float = abs(n_dot_v);
+    // Material constants
+    let alpha: float = material.roughness * material.roughness;
+    // Sample using GGX importance sampling for potential refractive or reflective case
+    let ggx_n: float3 = sampleHalfVector(v, n_i, alpha, random_state);
+    let lobes: BSDFLobes = bsdfLobes(in_dir, v, n_i, ggx_n, material, eta_i, eta_o);
+
+    let random_p: Random = pcg(random_state);
+    random_state = random_p.state;
+    // Diffuse case
+    if (random_p.value < lobes.p_diffuse) {
+        return diffuseSample(n_i, n_i_dot_v, alpha, material, lobes, eta_i, eta_o, random_state);
+    }
+    // Refractive case
+    if (random_p.value < lobes.p_diffuse + lobes.p_refract) {
+        return refractSample(ggx_n, n_i, n_i_dot_v, alpha, material, lobes, eta_i, eta_o, random_state);
+    }
+    // Otherwise assume reflective case.
+    return reflectSample(in_dir, ggx_n, n_i, n_i_dot_v, alpha, material, lobes, eta_i, eta_o, random_state);
+}
+
+// sampleBSDF's half vector, drawn from random_state as sampleBSDF draws it: the diffuse lobe's
+[CudaDeviceExport] public func sampledHalf(in_dir: float3, n: float3, material: Material,
+    random_state: uint) -> float3 {
+    var state: uint = random_state;
+    let v: float3 = negate(in_dir);
+    // Diffuse half-vector of sampleBSDF
+    return sampleHalfVector(v, n * sign(dot(n, v)), material.roughness * material.roughness, state);
+}
+
+// The reflection's half vector of out_dir
+[CudaDeviceExport] public func reflectedHalf(in_dir: float3, out_dir: float3) -> float3 {
+    // Reflective half-vector
+    return normalize(negate(in_dir) + out_dir);
+}
+
+// The refraction's half vector of out_dir, facing n_i
+[CudaDeviceExport] public func refractedHalf(in_dir: float3, out_dir: float3, n: float3, eta_i: float, eta_o: float)
+    -> float3 {
+    let v: float3 = negate(in_dir);
+    // Refractive half-vector (eq. 16)
+    let h_t: float3 = negate(eta_i * v + eta_o * out_dir);
+    return normalize(h_t) * sign(dot(h_t, n * sign(dot(n, v))));
 }
 
 [CudaDeviceExport] public func safeDivide(a: float3, b: float3) -> float3 {
