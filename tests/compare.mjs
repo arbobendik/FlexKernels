@@ -6,8 +6,8 @@ const ABSOLUTE = 1e-5;
 const RELATIVE = 1e-3;
 const ULPS = 8;
 const EPSILON = 2 ** -23;
-const INTEGER_COLUMNS = [20, 21, 22, 23, 29, 48, 50, 54, 96, 97, 98, 115];
-const RANDOM_COLUMNS = [...Array(14).keys()].map((i) => 90 + i).concat([112, 113, 114]);
+const INTEGER_COLUMNS = [20, 21, 22, 23, 29, 48, 50, 54, 96, 97, 98, 115, 116, 127, 128];
+const RANDOM_COLUMNS = [...Array(14).keys()].map((i) => 90 + i).concat([112, 113, 114, 116, 117, 119, 120, 121, 122, 127]);
 const ROUGHNESS_COLUMN = 16;
 const FIRST = Number(process.argv[4] ?? 0);
 
