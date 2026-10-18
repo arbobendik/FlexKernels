@@ -30,7 +30,7 @@ struct Result {
     unsigned hash, stream, pcg_state; float pcg_value, greyscale, smith_g1, trowbridge_reitz, fresnel;
     unsigned h_state; Vec h, cosine_hemisphere, tangent_to_world, world_to_tangent, vndf, safe_divide;
     unsigned normal_state; float normal_value; unsigned sphere_state; Vec sphere; unsigned hemisphere_state; Vec hemisphere;
-    float g1; Vec normal_map; BSDFLobes lobes;
+    float g1; Vec normal_map; BSDFLobes lobes; Vec lobe_throughput[3]; float lobe_density[3];
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -72,6 +72,14 @@ __device__ Result evaluate(const Case& c) {
     const float h[] = {minus_in[0] + c.in[3], minus_in[1] + c.in[4], minus_in[2] + c.in[5]}, scale = rnorm(h);
     const float ggx_n[] = {h[0] * scale, h[1] * scale, h[2] * scale};
     r.lobes = bsdfLobes(in_dir, vec(minus_in), vec(n_i), vec(ggx_n), material, c.in[18], c.in[19]);
+    const float p_lobe[] = {r.lobes.p_diffuse, r.lobes.p_refract, r.lobes.p_reflect};
+    for (unsigned lobe = 0; lobe < 3; lobe++) {
+        const bool side = lobe == 1 ? dot3(vec(n_i), out_dir) < 0 : dot3(vec(n_i), out_dir) > 0;
+        r.lobe_throughput[lobe] = p_lobe[lobe] > 1e-6f && side ? lobeThroughput(out_dir, vec(n_i), alpha, material, r.lobes,
+            lobe) : vec(zero);
+        r.lobe_density[lobe] = lobeDensity(dot3(vec(n_i), out_dir), dot3(out_dir, vec(ggx_n)), fabsf(n_dot_v), alpha,
+            r.lobes, c.in[18], c.in[19], lobe);
+    }
     return r;
 }
 
@@ -121,6 +129,7 @@ int main() {
         printf(" %.9g %.9g", l.v_dot_h, l.n_dot_h); print(l.refracted); print(l.F);
         printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g", l.F_greyscale, l.reflect_weight, l.diffuse_weight,
             l.refract_weight, l.colorless_reflection, l.p_diffuse, l.p_reflect, l.p_refract);
+        for (unsigned lobe = 0; lobe < 3; lobe++) { print(r.lobe_throughput[lobe]); printf(" %.9g", r.lobe_density[lobe]); }
         printf("\n");
     }
 }
