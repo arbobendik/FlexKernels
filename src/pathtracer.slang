@@ -461,6 +461,12 @@ __extern_cpp public struct BSDFLobes {
     return SampleBSDF(out_dir, lobeThroughput(out_dir, n_i, alpha, material, lobes, lobe), random_state, lobe == LOBE_REFRACT, lobe, pdf);
 }
 
+// I = L * PI * radius^2, the sphere's projected area
+// => L = color * intensity / (PI * radius^2)
+[CudaDeviceExport] public func pointLightRadiance(color: float3, intensity: float, radius: float) -> float3 {
+    return color * intensity / (PI * radius * radius);
+}
+
 // If the ray is inside a medium, apply Beer's law for absorption.
 [CudaDeviceExport] public func beerLambert(distance: float, absorption: float3) -> float3 {
     // The amount of light transmitted is T = exp(-sigma_a * d).
