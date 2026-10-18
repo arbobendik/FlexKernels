@@ -1,6 +1,8 @@
 // Target plumbing: Slang's syntax for FlexLight's WGSL, besides what is marked where it is: a module of public
-// declarations, fn reads func, const static const, structs and their members carry __extern_cpp public, f32, u32 and
-// vec3<f32> read float, uint and float3, and ptr<function, T> parameters inout T, whose *x and &x read x
+// declarations, fn reads func, const static const, structs and their members carry __extern_cpp public, f32, u32,
+// vec2<f32>, vec3<f32> and mat3x3<f32> read float, uint, float2, float3 and float3x3, ptr<function, T> parameters
+// inout T, whose *x and &x read x, and mat3x3<f32>(t, b, n) of columns and tbn * v read float3x3(t, b, n) and
+// mul(v, tbn), as Slang keeps matrices by rows
 module pathtracer;
 
 public static const float PI = 3.141592653589793;
@@ -44,7 +46,6 @@ public float3 negate(float3 x) {
     default: return -x;
     }
 }
-
 __extern_cpp public struct Random {
     __extern_cpp public uint state;
     __extern_cpp public float value;
@@ -132,6 +133,11 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     return numerator / max(PI * denom * denom, BIAS);
 }
 
+[CudaDeviceExport] public func G1(alpha: float, n_dot_x: float) -> float {
+    let k: float = alpha * 0.5f;
+    return n_dot_x / max(n_dot_x * (1.0f - k) + k, BIAS);
+}
+
 // Exact Smith masking of GGX, the visible normal density sampleGGXVNDF draws from
 [CudaDeviceExport] public func smithG1(alpha: float, n_dot_x: float) -> float {
     let alpha_sq: float = alpha * alpha;
@@ -211,6 +217,35 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     let tangent: float3 = normalize(cross(n, a));
     let bitangent: float3 = cross(n, tangent);
     return float3(dot(v, tangent), dot(v, n), dot(v, bitangent));
+}
+
+// Build TBN matrix for tangent-space normal mapping. Uses triangle edges and UV deltas to compute
+// tangent (U direction) and bitangent (V direction), with handedness fix.
+[CudaDeviceExport] public func normalMapTBN(p0: float3, p1: float3, p2: float3, uv0: float2, uv1: float2, uv2: float2, n: float3) -> float3x3 {
+    let e1: float3 = p1 - p0;
+    let e2: float3 = p2 - p0;
+    let duv1: float2 = uv1 - uv0;
+    let duv2: float2 = uv2 - uv0;
+    // Compute inverse determinant for UV to world space transformation.
+    let det: float = duv1.x * duv2.y - duv1.y * duv2.x;
+    let inv_det: float = 1.0f / det;
+    var t: float3 = (e1 * duv2.y - e2 * duv1.y) * inv_det;
+    let b_geom: float3 = (e2 * duv1.x - e1 * duv2.x) * inv_det;
+
+    // Gram-Schmidt: make tangent perpendicular to interpolated normal.
+    t = normalize(t - n * dot(n, t));
+    // Handedness: ensure TBN is right-handed; flip T if geometric b disagrees with cross(n,t).
+    if (dot(cross(n, t), b_geom) > 0.0f) {
+        // Target plumbing: negate(x) for - x, see negate
+        t = negate(t);
+    }
+    let b: float3 = cross(n, t);
+
+    return float3x3(t, b, n);
+}
+
+[CudaDeviceExport] public func tangentToWorldNormalMap(v: float3, tbn: float3x3) -> float3 {
+    return mul(v, tbn);
 }
 
 [CudaDeviceExport] public func sampleHalfVector(v: float3, n_i: float3, alpha: float, inout random_state: uint) -> float3 {

@@ -18,11 +18,13 @@ all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h build/hip/pathtra
 	build/wgsl/pathtracer.wgsl
 
 # The prelude is included next to the header instead of from the Slang installation, its Matrix template, which the
-# generated code doesn't use, renamed so that it leaves the name to the consumer's
+# generated code takes for FlexLight's mat3x3, renamed SlangMatrix across the header so that it leaves the name to the
+# consumer's
 build/cuda/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	mkdir -p build/cuda
 	$(SLANGC) $(SLANGFLAGS) $< -target cuda -o $@
-	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#define Matrix SlangMatrix\n#include "slang-cuda-prelude.h"\n#undef Matrix|' $@
+	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#define Matrix SlangMatrix\n#include "slang-cuda-prelude.h"|' $@
+	echo '#undef Matrix' >> $@
 
 build/cuda/slang-cuda-prelude.h: $(SLANGC)
 	mkdir -p build/cuda
@@ -67,9 +69,11 @@ lint: $(ACTIONLINT)
 
 test: test-cpu test-wgsl
 
+# What only FlexLight had against its goldens, but what draws random numbers
 test-cpu: build/parity-cpu
 	$< < tests/golden-cuda.txt > build/cpu.txt
 	node tests/compare.mjs tests/golden-cuda.txt build/cpu.txt
+	node tests/compare.mjs tests/golden-wgsl.txt build/cpu.txt 58
 
 test-wgsl: build/wgsl/pathtracer.wgsl
 	node tests/wgsl.mjs $< < tests/golden-wgsl.txt > build/wgsl.txt
@@ -78,6 +82,7 @@ test-wgsl: build/wgsl/pathtracer.wgsl
 test-cuda: build/parity-cuda  # On the GPU
 	$< < tests/golden-cuda.txt > build/cuda.txt
 	node tests/compare.mjs tests/golden-cuda.txt build/cuda.txt
+	node tests/compare.mjs tests/golden-wgsl.txt build/cuda.txt 58
 
 test-hip: build/hip/pathtracer.cuh build/hip/slang-cuda-prelude.h  # Compile only
 	$(HIPCC) -std=c++20 --offload-arch=gfx1100 -x hip -c $< -o build/hip/pathtracer.o
@@ -89,7 +94,7 @@ golden: tests/reference.cpp tests/shim/*.h $(REFERENCE)/renderer.cu $(REFERENCE)
 
 # On the grid of the CUDA goldens
 golden-wgsl: tests/wgsl.mjs tests/golden-cuda.txt $(WGSL_REFERENCE)
-	node tests/wgsl.mjs $(WGSL_REFERENCE) < tests/golden-cuda.txt > tests/golden-wgsl.txt
+	node tests/wgsl.mjs $(WGSL_REFERENCE) --flexlight < tests/golden-cuda.txt > tests/golden-wgsl.txt
 
 # Into sibling checkouts, as CI does into the consumer repos
 deploy-local: all
