@@ -31,7 +31,7 @@ struct Result {
     unsigned h_state; Vec h, cosine_hemisphere, tangent_to_world, world_to_tangent, vndf, safe_divide;
     unsigned normal_state; float normal_value; unsigned sphere_state; Vec sphere; unsigned hemisphere_state; Vec hemisphere;
     float g1; Vec normal_map; BSDFLobes lobes; Vec lobe_throughput[3]; float lobe_density[3]; SampleBSDF sample;
-    Vec connected[3]; float connected_pdf[3]; Vec bsdf;
+    Vec connected[3]; float connected_pdf[3]; Vec bsdf; unsigned nee;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -89,6 +89,7 @@ __device__ Result evaluate(const Case& c) {
         r.connected_pdf[lobe] = s.pdf;
     }
     r.bsdf = BSDF(in_dir, out_dir, n, vec(c.in + 9), material, c.in[18], c.in[19], c.random_state);
+    r.nee = neeDecision(material, n_dot_v, c.in[18], c.in[19]);
     return r;
 }
 
@@ -142,7 +143,7 @@ int main() {
         print(r.sample.unit_direction); print(r.sample.throughput);
         printf(" %u %u %u %.9g", r.sample.random_state, r.sample.refracted, r.sample.lobe, r.sample.pdf);
         for (unsigned lobe = 0; lobe < 3; lobe++) { print(r.connected[lobe]); printf(" %.9g", r.connected_pdf[lobe]); }
-        print(r.bsdf);
+        print(r.bsdf); printf(" %u", r.nee);
         printf("\n");
     }
 }

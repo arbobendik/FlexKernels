@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 94;
+const OUTPUTS = 95;
 // As pathtracer-compute.wgsl declares it
 const MATERIAL = /* wgsl */ `
 struct Material {
@@ -117,10 +117,11 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         r[82u + 4u * lobe] = bitcast<u32>(connected.pdf);
     }
     parity_put(&r, 91u, BSDF(in_dir, out_dir, n, vec3<f32>(v[9], v[10], v[11]), material, v[18], v[19], random_state));
+    r[94] = u32(neeDecision(material, dot(n, - in_dir), v[18], v[19]));
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
-const UNSIGNED = [0, 1, 2, 8, 27, 29, 33, 75, 76, 77];
+const UNSIGNED = [0, 1, 2, 8, 27, 29, 33, 75, 76, 77, 94];
 
 Object.assign(globalThis, globals);
 // Dawn tears the device down with the GPU object, so it stays referenced
