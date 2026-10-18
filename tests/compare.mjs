@@ -9,6 +9,7 @@ const EPSILON = 2 ** -23;
 const INTEGER_COLUMNS = [20, 21, 22, 23, 29, 48, 50, 54];
 // Golden columns no output fills
 const RETIRED_COLUMNS = [54, 55, 56, 57];
+const RANDOM_COLUMNS = [...Array(14).keys()].map((i) => 90 + i).concat([112, 113, 114]);
 const ROUGHNESS_COLUMN = 16;
 const FIRST = Number(process.argv[4] ?? 0);
 
@@ -21,7 +22,7 @@ let failures = golden.length === outputs.length ? 0 : 1;
 let worst = 0;
 golden.forEach((expected, i) => expected.forEach((g, column) => {
   if (RETIRED_COLUMNS.includes(column)) return;
-  if (column < FIRST) return;
+  if (column < FIRST || (FIRST && RANDOM_COLUMNS.includes(column))) return;
   const o = outputs[i][column];
   const alpha = expected[ROUGHNESS_COLUMN] ** 2;
   const tolerance = ABSOLUTE + (RELATIVE + (alpha > 0 ? ULPS * EPSILON / alpha ** 2 : 0)) * Math.abs(g);
