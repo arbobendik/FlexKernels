@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 95;
+const OUTPUTS = 108;
 // As pathtracer-compute.wgsl declares it
 const MATERIAL = /* wgsl */ `
 struct Material {
@@ -118,10 +118,35 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     parity_put(&r, 91u, BSDF(in_dir, out_dir, n, vec3<f32>(v[9], v[10], v[11]), material, v[18], v[19], random_state));
     r[94] = u32(neeDecision(material, dot(n, - in_dir), v[18], v[19]));
+    // Two samples resampled by their shifts with MIS weights, as the reuse passes do
+    var a = Reservoir();
+    a.seed = random_state;
+    a.f = albedo;
+    a.w = 0.5 + v[15];
+    a.jac = 2.0;
+    var b = Reservoir();
+    b.seed = hash(random_state);
+    b.f = albedo.yzx;
+    b.w = 1.5;
+    b.jac = 0.25 + v[16];
+    var sel = Selection();
+    sel.random_state = random_state;
+    offerShifted(&sel, a, Shift(albedo, 1.0), 0.3 + 0.4 * v[16]);
+    offerShifted(&sel, b, Shift(abs(out_dir), 0.5 + v[17]), 0.6);
+    let reservoir = finalize(sel, 3.0);
+    r[95] = reservoir.seed;
+    r[96] = bitcast<u32>(reservoir.w);
+    r[97] = bitcast<u32>(reservoir.c);
+    parity_put(&r, 98u, reservoir.f);
+    r[101] = bitcast<u32>(reservoir.jac);
+    r[102] = bitcast<u32>(sel.w_sum);
+    parity_put(&r, 103u, sel.color);
+    r[106] = sel.random_state;
+    r[107] = withEnd(reservoir, 1u, 3u, albedo).path;
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
-const UNSIGNED = [0, 1, 2, 8, 27, 29, 33, 75, 76, 77, 94];
+const UNSIGNED = [0, 1, 2, 8, 27, 29, 33, 75, 76, 77, 94, 95, 106, 107];
 
 Object.assign(globalThis, globals);
 // Dawn tears the device down with the GPU object, so it stays referenced

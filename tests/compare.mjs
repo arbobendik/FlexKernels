@@ -11,10 +11,12 @@ const RELATIVE = 1e-3;
 const ULPS = 8;
 const EPSILON = 2 ** -23;
 // random_state of the inputs and hash, stream and the random states of pcg, sampleHalfVector, normal_distribution,
-// random_sphere and random_hemisphere, of sampleBSDF its random state, refraction and lobe, and neeDecision
-const INTEGER_COLUMNS = [20, 21, 22, 23, 29, 48, 50, 54, 96, 97, 98, 115];
-// sampleBSDF, connectBSDF of the diffuse lobe, which replays the visible normal of its lobe choice, and BSDF
-const RANDOM_COLUMNS = [...Array(14).keys()].map((i) => 90 + i).concat([112, 113, 114]);
+// random_sphere and random_hemisphere, of sampleBSDF its random state, refraction and lobe, neeDecision and of the
+// resampled reservoir its seed, random state and path
+const INTEGER_COLUMNS = [20, 21, 22, 23, 29, 48, 50, 54, 96, 97, 98, 115, 116, 127, 128];
+// sampleBSDF, connectBSDF of the diffuse lobe, which replays the visible normal of its lobe choice, BSDF and what the
+// resampling chooses
+const RANDOM_COLUMNS = [...Array(14).keys()].map((i) => 90 + i).concat([112, 113, 114, 116, 117, 119, 120, 121, 122, 127]);
 const ROUGHNESS_COLUMN = 16;
 const FIRST = Number(process.argv[4] ?? 0);
 

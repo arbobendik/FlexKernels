@@ -31,7 +31,7 @@ struct Result {
     unsigned h_state; Vec h, cosine_hemisphere, tangent_to_world, world_to_tangent, vndf, safe_divide;
     unsigned normal_state; float normal_value; unsigned sphere_state; Vec sphere; unsigned hemisphere_state; Vec hemisphere;
     float g1; Vec normal_map; BSDFLobes lobes; Vec lobe_throughput[3]; float lobe_density[3]; SampleBSDF sample;
-    Vec connected[3]; float connected_pdf[3]; Vec bsdf; unsigned nee;
+    Vec connected[3]; float connected_pdf[3]; Vec bsdf; unsigned nee; Reservoir r; Selection sel; unsigned path;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -90,6 +90,17 @@ __device__ Result evaluate(const Case& c) {
     }
     r.bsdf = BSDF(in_dir, out_dir, n, vec(c.in + 9), material, c.in[18], c.in[19], c.random_state);
     r.nee = neeDecision(material, n_dot_v, c.in[18], c.in[19]);
+    Reservoir a = {}, b = {};
+    const float turned[] = {c.in[13], c.in[14], c.in[12]};
+    a.seed = c.random_state; a.f = albedo; a.w = 0.5f + c.in[15]; a.jac = 2;
+    b.seed = hash(c.random_state); b.f = vec(turned); b.w = 1.5f; b.jac = 0.25f + c.in[16];
+    r.sel = {};
+    r.sel.random_state = c.random_state;
+    offerShifted(&r.sel, a, Shift{albedo, 1}, 0.3f + 0.4f * c.in[16]);
+    const float shifted[] = {fabsf(c.in[3]), fabsf(c.in[4]), fabsf(c.in[5])};
+    offerShifted(&r.sel, b, Shift{vec(shifted), 0.5f + c.in[17]}, 0.6f);
+    r.r = finalize(r.sel, 3);
+    r.path = withEnd(r.r, 1, 3, albedo).path;
     return r;
 }
 
@@ -144,6 +155,8 @@ int main() {
         printf(" %u %u %u %.9g", r.sample.random_state, r.sample.refracted, r.sample.lobe, r.sample.pdf);
         for (unsigned lobe = 0; lobe < 3; lobe++) { print(r.connected[lobe]); printf(" %.9g", r.connected_pdf[lobe]); }
         print(r.bsdf); printf(" %u", r.nee);
+        printf(" %u %.9g %.9g", r.r.seed, r.r.w, r.r.c); print(r.r.f); printf(" %.9g %.9g", r.r.jac, r.sel.w_sum);
+        print(r.sel.color); printf(" %u %u", r.sel.random_state, r.path);
         printf("\n");
     }
 }
