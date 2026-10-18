@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 57;
+const OUTPUTS = 69;
 // As pathtracer-compute.wgsl declares it
 const MATERIAL = /* wgsl */ `
 struct Material {
@@ -91,6 +91,18 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[54] = bitcast<u32>(lobes.p_diffuse);
     r[55] = bitcast<u32>(lobes.p_reflect);
     r[56] = bitcast<u32>(lobes.p_refract);
+    // Each lobe sampleBSDF can choose, toward its side
+    var p_lobe = array<f32, 3>(lobes.p_diffuse, lobes.p_refract, lobes.p_reflect);
+    for (var lobe = 0u; lobe < 3u; lobe++) {
+        let side = select(dot(n_i, out_dir) > 0.0, dot(n_i, out_dir) < 0.0, lobe == 1u);
+        var throughput = vec3<f32>(0.0);
+        if (p_lobe[lobe] > 1e-6 && side) {
+            throughput = lobeThroughput(out_dir, n_i, alpha, material, lobes, lobe);
+        }
+        parity_put(&r, 57u + 4u * lobe, throughput);
+        r[60u + 4u * lobe] = bitcast<u32>(lobeDensity(dot(n_i, out_dir), dot(out_dir, ggx_n), abs(dot(n, in_dir)), alpha,
+            lobes, v[18], v[19], lobe));
+    }
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
