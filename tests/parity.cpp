@@ -3,19 +3,25 @@
 #include <stdio.h>
 #include <vector>
 #ifdef __CUDACC__
+#include "renderer.h"
 #include "pathtracer.cuh"
 typedef float3 Vec;
 typedef float2 Vec2;
+// FlexLight's Material, as flex-cuda-pt names it
+typedef BSDFMaterial Mat;
 __device__ Vec vec(const float* a) { return make_float3(a[0], a[1], a[2]); }
 __device__ Vec2 vec2(const float* a) { return make_float2(a[0], a[1]); }
+__device__ float rnorm(const float* a) { return rnorm3df(a[0], a[1], a[2]); }
 #else
 #include "pathtracer.cpp"
 #define __device__
 #define __global__
 typedef Vector<float, 3> Vec;
 typedef Vector<float, 2> Vec2;
+typedef Material Mat;
 Vec vec(const float* a) { return Vec(a[0], a[1], a[2]); }
 Vec2 vec2(const float* a) { return Vec2(a[0], a[1]); }
+float rnorm(const float* a) { return 1 / sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); }
 #endif
 
 // in_dir out_dir n g_n albedo metallic roughness transparency eta_i eta_o
@@ -24,7 +30,7 @@ struct Result {
     unsigned hash, stream, pcg_state; float pcg_value, greyscale, smith_g1, trowbridge_reitz, fresnel;
     unsigned h_state; Vec h, cosine_hemisphere, tangent_to_world, world_to_tangent, vndf, safe_divide;
     unsigned normal_state; float normal_value; unsigned sphere_state; Vec sphere; unsigned hemisphere_state; Vec hemisphere;
-    float g1; Vec normal_map;
+    float g1; Vec normal_map; BSDFLobes lobes;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -61,6 +67,11 @@ __device__ Result evaluate(const Case& c) {
         {c.in[12] + 0.2f * c.in[12], c.in[13] + 0.6f}};
     r.normal_map = tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec(c.in + 9), vec2(uv[0]), vec2(uv[1]),
         vec2(uv[2]), n));
+    const float zero[] = {0, 0, 0};
+    const Mat material = {albedo, vec(zero), c.in[16], c.in[15], c.in[17], fmaxf(c.in[18], c.in[19])};
+    const float h[] = {minus_in[0] + c.in[3], minus_in[1] + c.in[4], minus_in[2] + c.in[5]}, scale = rnorm(h);
+    const float ggx_n[] = {h[0] * scale, h[1] * scale, h[2] * scale};
+    r.lobes = bsdfLobes(in_dir, vec(minus_in), vec(n_i), vec(ggx_n), material, c.in[18], c.in[19]);
     return r;
 }
 
@@ -105,7 +116,11 @@ int main() {
         print(r.safe_divide);
         printf(" %u %.9g %u", r.normal_state, r.normal_value, r.sphere_state); print(r.sphere);
         printf(" %u", r.hemisphere_state); print(r.hemisphere);
+        const BSDFLobes& l = r.lobes;
         printf(" %.9g", r.g1); print(r.normal_map);
+        printf(" %.9g %.9g", l.v_dot_h, l.n_dot_h); print(l.refracted); print(l.F);
+        printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g", l.F_greyscale, l.reflect_weight, l.diffuse_weight,
+            l.refract_weight, l.colorless_reflection, l.p_diffuse, l.p_reflect, l.p_refract);
         printf("\n");
     }
 }

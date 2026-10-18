@@ -46,6 +46,33 @@ public float3 negate(float3 x) {
     default: return -x;
     }
 }
+// Target plumbing: WGSL's mix and sign, lowered as normalize above, elsewhere by their WGSL definitions
+public float3 mix(float3 e1, float3 e2, float e3) {
+    __target_switch {
+    case wgsl: __intrinsic_asm "mix($0, $1, $2)";
+    default: return e1 * (1.0f - e3) + e2 * e3;
+    }
+}
+public float sign(float e) {
+    __target_switch {
+    case wgsl: __intrinsic_asm "sign($0)";
+    default: return e > 0.0f ? 1.0f : e < 0.0f ? -1.0f : 0.0f;
+    }
+}
+
+// Target plumbing: FlexLight's own Material (pathtracer-compute.wgsl, rasterizer-compute.wgsl), laid out by its upload,
+// and flex-cuda-pt's BSDFMaterial (renderer.h) of the same fields; the struct for C++
+__target_intrinsic(wgsl, "Material")
+__target_intrinsic(cuda, "BSDFMaterial")
+__extern_cpp public struct Material {
+    __extern_cpp public float3 albedo;
+    __extern_cpp public float3 emissive;
+    __extern_cpp public float roughness;
+    __extern_cpp public float metallic;
+    __extern_cpp public float transmission;
+    __extern_cpp public float ior;
+};
+
 __extern_cpp public struct Random {
     __extern_cpp public uint state;
     __extern_cpp public float value;
@@ -248,6 +275,22 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     return mul(v, tbn);
 }
 
+// Half vector dependent terms of sampleBSDF, shared with connections to a given direction
+__extern_cpp public struct BSDFLobes {
+    __extern_cpp public float v_dot_h;
+    __extern_cpp public float n_dot_h;
+    __extern_cpp public float3 refracted;
+    __extern_cpp public float3 F;
+    __extern_cpp public float F_greyscale;
+    __extern_cpp public float reflect_weight;
+    __extern_cpp public float diffuse_weight;
+    __extern_cpp public float refract_weight;
+    __extern_cpp public float colorless_reflection;
+    __extern_cpp public float p_diffuse;
+    __extern_cpp public float p_reflect;
+    __extern_cpp public float p_refract;
+}
+
 [CudaDeviceExport] public func sampleHalfVector(v: float3, n_i: float3, alpha: float, inout random_state: uint) -> float3 {
     // Generate random values for sampling
     let random_h_1: Random = pcg(random_state);
@@ -257,6 +300,35 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     let ggx_n: float3 = sampleGGXVNDF(v_tangent.xzy, alpha, random_h_1.value, random_h_2.value).xzy;
     // Transform half vector back to world space
     return tangentToWorld(ggx_n, n_i);
+}
+
+[CudaDeviceExport] public func bsdfLobes(in_dir: float3, v: float3, n_i: float3, ggx_n: float3, material: Material, eta_i: float, eta_o: float) -> BSDFLobes {
+    // Calculate shared half vector dot products
+    let v_dot_h: float = dot(ggx_n, v);
+    let n_dot_h: float = dot(n_i, ggx_n);
+    // Try refraction through the properly oriented half vector
+    let eta: float = eta_i / eta_o;
+    let refracted: float3 = normalize(refract(in_dir, ggx_n, eta));
+    // Calculate fresnel term
+    var F: float3 = mix(float3(fresnel(abs(v_dot_h), eta_i, eta_o)), material.albedo, material.metallic);
+    let F_greyscale: float = rgb_to_greyscale(F);
+    // BSDF weights (these are artistic choices to balance the lobes)
+    let reflect_weight: float = 1.0f;
+    let diffuse_weight: float = (1.0f - material.transmission) * (1.0f - material.metallic);
+    let refract_weight: float = material.transmission;
+    // Add fresnel term for improved sampling performance
+    let reflect_component: float = max(reflect_weight * F_greyscale, 0.0f);
+    let diffuse_component: float = max(diffuse_weight * (1.0f - F_greyscale), 0.0f);
+    let refract_component: float = max(refract_weight * (1.0f - F_greyscale) * sign(length(refracted)), 0.0f);
+    // Do not account for chroma of reflection for transmissive materials as in this case our model uses albedo as proxy for absorption instead.
+    var colorless_reflection: float = material.transmission;
+    // Calculate sampling probabilities
+    let total_component: float = reflect_component + diffuse_component + refract_component;
+    let total_component_inv: float = 1.0f / max(total_component, BIAS);
+    let p_diffuse: float = diffuse_component * total_component_inv;
+    let p_reflect: float = reflect_component * total_component_inv;
+    let p_refract: float = refract_component * total_component_inv;
+    return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, colorless_reflection, p_diffuse, p_reflect, p_refract);
 }
 
 [CudaDeviceExport] public func safeDivide(a: float3, b: float3) -> float3 {
