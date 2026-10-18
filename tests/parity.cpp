@@ -32,6 +32,7 @@ struct Result {
     unsigned normal_state; float normal_value; unsigned sphere_state; Vec sphere; unsigned hemisphere_state; Vec hemisphere;
     float g1; Vec normal_map; BSDFLobes lobes; Vec lobe_throughput[3]; float lobe_density[3]; SampleBSDF sample;
     Vec connected[3]; float connected_pdf[3]; Vec bsdf; unsigned nee; Reservoir r; Selection sel; unsigned path;
+    Vec beer_lambert;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -101,6 +102,7 @@ __device__ Result evaluate(const Case& c) {
     offerShifted(&r.sel, b, Shift{vec(shifted), 0.5f + c.in[17]}, 0.6f);
     r.r = finalize(r.sel, 3);
     r.path = withEnd(r.r, 1, 3, albedo).path;
+    r.beer_lambert = beerLambert(c.in[18] + c.in[19], albedo);
     return r;
 }
 
@@ -148,15 +150,15 @@ int main() {
         const BSDFLobes& l = r.lobes;
         printf(" %.9g", r.g1); print(r.normal_map);
         printf(" %.9g %.9g", l.v_dot_h, l.n_dot_h); print(l.refracted); print(l.F);
-        printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g", l.F_greyscale, l.reflect_weight, l.diffuse_weight,
-            l.refract_weight, l.colorless_reflection, l.p_diffuse, l.p_reflect, l.p_refract);
+        printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g", l.F_greyscale, l.reflect_weight, l.diffuse_weight,
+            l.refract_weight, l.p_diffuse, l.p_reflect, l.p_refract);
         for (unsigned lobe = 0; lobe < 3; lobe++) { print(r.lobe_throughput[lobe]); printf(" %.9g", r.lobe_density[lobe]); }
         print(r.sample.unit_direction); print(r.sample.throughput);
         printf(" %u %u %u %.9g", r.sample.random_state, r.sample.refracted, r.sample.lobe, r.sample.pdf);
         for (unsigned lobe = 0; lobe < 3; lobe++) { print(r.connected[lobe]); printf(" %.9g", r.connected_pdf[lobe]); }
         print(r.bsdf); printf(" %u", r.nee);
         printf(" %u %.9g %.9g", r.r.seed, r.r.w, r.r.c); print(r.r.f); printf(" %.9g %.9g", r.r.jac, r.sel.w_sum);
-        print(r.sel.color); printf(" %u %u", r.sel.random_state, r.path);
+        print(r.sel.color); printf(" %u %u", r.sel.random_state, r.path); print(r.beer_lambert);
         printf("\n");
     }
 }
