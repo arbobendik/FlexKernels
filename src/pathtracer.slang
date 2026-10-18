@@ -9,6 +9,8 @@ public static const float PI = 3.141592653589793;
 public static const float MAX_SAFE_INTEGER_FOR_F32 = 8388607.0;
 public static const uint UINT_MAX = 4294967295u;
 public static const float BIAS = 0.0000152587890625;
+// const BIAS: f32 = 0.0000009536743164;
+public static const float INV_PI = 0.3183098861837907;
 
 // Target plumbing: the WGSL builtins the shared code calls, lowered to what each consumer calls in their place: CUDA's
 // intrinsics in flex-cuda-pt, for C++ the formulas of their host shims in tests/shim, which made the CUDA goldens;
@@ -29,6 +31,7 @@ public float inverseSqrt(float x) {
     }
 }
 // Target plumbing: WGSL's select, in its argument order f, t, cond
+[ForceInline] public float select(float f, float t, bool cond) { return select(cond, t, f); }
 [ForceInline] public float3 select(float3 f, float3 t, bool cond) { return select(cond, t, f); }
 [ForceInline] public float3 select(float3 f, float3 t, bool3 cond) { return select(cond, t, f); }
 // Target plumbing: x as is, but an expression Slang can't equate with an equal one before it, which it would reuse
@@ -330,6 +333,85 @@ __extern_cpp public struct BSDFLobes {
     let p_refract: float = refract_component * total_component_inv;
     return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, colorless_reflection, p_diffuse, p_reflect, p_refract);
 }
+
+// Throughput of sampleBSDF leaving along l by lobe
+[CudaDeviceExport] public func lobeThroughput(l: float3, n_i: float3, alpha: float, material: Material, lobes: BSDFLobes, lobe: uint) -> float3 {
+    if (lobe == LOBE_DIFFUSE) {
+        // BSDF = diffuse_weight * albedo / PI
+        // => BSDF * n_dot_l = diffuse_weight * albedo * n_dot_l / PI
+
+        // throughput = BSDF * n_dot_l / PDF
+        //            = diffuse_weight * albedo * n_dot_l / PI / cosine_hemisphere.y * PI
+        //            = diffuse_weight * albedo * n_dot_l / cosine_hemisphere.y
+
+        // Since cosine_hemisphere.y is n_dot_l over the unit hemisphere, we can simplify the throughput to:
+        // => throughput = albedo * diffuse_weight
+        return lobes.diffuse_weight * material.albedo / lobes.p_diffuse;
+    }
+    if (lobe == LOBE_REFRACT) {
+        let m_n_i_dot_l: float = - dot(n_i, l);
+        // Microfacet term
+        let G1_l: float = G1(alpha, max(m_n_i_dot_l, 0.0f));
+        // BSDF = refract_weight * v_dot_h / n_dot_v / n_dot_l * D * G * (1 - F) * JACOBIAN
+        // => BSDF * n_dot_l = refract_weight * v_dot_h / n_dot_v * D * G * (1 - F) * JACOBIAN
+
+        // throughput = BSDF * n_dot_l / PDF
+        //            = refract_weight * v_dot_h / n_dot_v * D * G * (1 - F) * JACOBIAN / G1_v / v_dot_h / D * n_dot_v / JACOBIAN
+        //            = refract_weight * G * (1 - F) / G1_v
+
+        // G = G1_v * G1_l
+        // => throughput = refract_weight * G1_l * (1 - F)
+        return float3(lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) / lobes.p_refract);
+    }
+    let n_i_dot_l: float = dot(n_i, l);
+    // Torrance-Sparrow
+    let G1_l: float = G1(alpha, max(n_i_dot_l, 0.0f));
+    // BSDF = reflect_weight * D * G * F / (4 * n_dot_v * n_dot_l)
+    // => BSDF * n_dot_l = reflect_weight * D * G * F / (4 * n_dot_v)
+
+    // throughput = BSDF * n_dot_l / PDF
+    //            = reflect_weight * D * G * F / (4 * n_dot_v) / G1_v / D * (4 * n_dot_v)
+    //            = reflect_weight * G * F / G1_v
+
+    // G = G1_v * G1_l
+    // => throughput = reflect_weight * G1_l * F
+    return lobes.reflect_weight * G1_l * mix(lobes.F, float3(lobes.F_greyscale), lobes.colorless_reflection) / lobes.p_reflect;
+}
+
+// Solid angle density of sampleBSDF choosing lobe through the half vector of lobes, leaving with cosine n_i_dot_l (diffuse)
+// or l_dot_h (refraction) toward its direction, zero for delta lobes.
+[CudaDeviceExport] public func lobeDensity(n_i_dot_l: float, l_dot_h: float, n_i_dot_v: float, alpha: float, lobes: BSDFLobes, eta_i: float, eta_o: float, lobe: uint) -> float {
+    if (lobe == LOBE_DIFFUSE) {
+        // PDF_COSINE_HEMISPHERE = cosine_hemisphere.y / PI
+        // => PDF = cosine_hemisphere.y / PI
+        return select(0.0f, lobes.p_diffuse * n_i_dot_l * INV_PI, n_i_dot_v > 0.0f);
+    }
+    // Visible normal density of the GGX distribution for the sampled half vector
+    let pdf_h: float = select(0.0f, smithG1(alpha, n_i_dot_v) * lobes.v_dot_h * trowbridgeReitz(alpha, lobes.n_dot_h) / n_i_dot_v, alpha > 0.0f && lobes.v_dot_h > 0.0f && lobes.n_dot_h > 0.0f && n_i_dot_v > 0.0f);
+    if (lobe == LOBE_REFRACT) {
+        // JACOBIAN = eta_o^2 * |l_dot_h| / (eta_i * v_dot_h + eta_o * l_dot_h)^2
+
+        // PDF_VNDF = G1_v * v_dot_h * D / n_dot_v
+        // PDF_REFRACT = PDF_VNDF * JACOBIAN
+        //             = G1_v * v_dot_h * D / n_dot_v * JACOBIAN
+
+        // PDF = PDF_REFRACT
+        //     = G1_v * v_dot_h * D / n_dot_v * JACOBIAN
+        let denom: float = eta_i * lobes.v_dot_h + eta_o * l_dot_h;
+        return select(0.0f, lobes.p_refract * pdf_h * eta_o * eta_o * abs(l_dot_h) / (denom * denom), eta_i != eta_o && l_dot_h < 0.0f);
+    }
+    // PDF_VNDF = G1_v * v_dot_h * D / n_dot_v
+    // JACOBIAN = 1 / (4 * v_dot_h)
+    // PDF_REFLECT = PDF_VNDF * JACOBIAN
+    // => PDF_REFLECT = G1_v * D / (4 * n_dot_v)
+
+    // PDF = PDF_REFLECT
+    // => PDF = G1_v * D / (4 * v_dot_n)
+    return select(0.0f, lobes.p_reflect * pdf_h / (4.0f * lobes.v_dot_h), pdf_h > 0.0f);
+}
+
+public static const uint LOBE_DIFFUSE = 0u;
+public static const uint LOBE_REFRACT = 1u;
 
 [CudaDeviceExport] public func safeDivide(a: float3, b: float3) -> float3 {
     return select(a / b, float3(0.0f), b == float3(0.0f));
