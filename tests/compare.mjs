@@ -1,7 +1,8 @@
 // Compares outputs in the golden format against the goldens: integer columns exactly, the others within
 // ABSOLUTE + (RELATIVE + ULPS * EPSILON / alpha^2) * |golden|, as the GGX denominator n_dot_h^2 (alpha^2 - 1) + 1 cancels
 // down to alpha^2 near the peak of a lobe, and NaN where the golden is, as the delta lobes' masking 0 / 0 off them and
-// the normalized refraction under total internal reflection, from the first column on, all by default.
+// the normalized refraction under total internal reflection, from the first column on, all by default. Given one, the
+// outputs are another target's, whose random numbers differ: the columns drawing them are left out.
 // Usage: node compare.mjs golden.txt outputs.txt [first]
 import { readFileSync } from "node:fs";
 
@@ -12,6 +13,8 @@ const EPSILON = 2 ** -23;
 // random_state of the inputs and hash, stream and the random states of pcg, sampleHalfVector, normal_distribution,
 // random_sphere and random_hemisphere
 const INTEGER_COLUMNS = [20, 21, 22, 23, 29, 48, 50, 54];
+// sampleBSDF, connectBSDF of the diffuse lobe, which replays the visible normal of its lobe choice, and BSDF
+const RANDOM_COLUMNS = [...Array(14).keys()].map((i) => 90 + i).concat([112, 113, 114]);
 const ROUGHNESS_COLUMN = 16;
 const FIRST = Number(process.argv[4] ?? 0);
 
@@ -23,7 +26,7 @@ const outputs = lines(process.argv[3]);
 let failures = golden.length === outputs.length ? 0 : 1;
 let worst = 0;
 golden.forEach((expected, i) => expected.forEach((g, column) => {
-  if (column < FIRST) return;
+  if (column < FIRST || (FIRST && RANDOM_COLUMNS.includes(column))) return;
   const o = outputs[i][column];
   const alpha = expected[ROUGHNESS_COLUMN] ** 2;
   const tolerance = ABSOLUTE + (RELATIVE + (alpha > 0 ? ULPS * EPSILON / alpha ** 2 : 0)) * Math.abs(g);

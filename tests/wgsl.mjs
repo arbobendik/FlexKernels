@@ -1,10 +1,23 @@
-// Evaluates the shared functions of a WGSL source, the generated one or FlexLight's unmodified pathtracer-compute.wgsl for
-// its goldens, on the inputs of each golden line through Dawn, the kernel appended as FlexLight prepends the shared code,
-// and prints them with its outputs in the golden format. Usage: node wgsl.mjs shader.wgsl < golden.txt
+// Evaluates the shared functions of a WGSL source, the generated one or, with --flexlight, FlexLight's unmodified
+// pathtracer-compute.wgsl for its goldens, on the inputs of each golden line through Dawn, the kernel appended as
+// FlexLight prepends the shared code, and prints them with its outputs in the golden format. The generated code takes
+// FlexLight's Material, which FlexLight's shader declares. Usage: node wgsl.mjs shader.wgsl [--flexlight] < golden.txt
 import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
-const OUTPUTS = 37;
+const FLEXLIGHT = process.argv.includes("--flexlight");
+const OUTPUTS = 41;
+// As pathtracer-compute.wgsl declares it
+const MATERIAL = /* wgsl */ `
+struct Material {
+    albedo: vec3<f32>,
+    emissive: vec3<f32>,
+    roughness: f32,
+    metallic: f32,
+    transmission: f32,
+    ior: f32
+};
+`;
 const KERNEL = /* wgsl */ `
 struct ParityCase { v: array<f32, 20>, random_state: u32 }
 @group(0) @binding(0) var<storage, read> parity_cases: array<ParityCase>;
@@ -57,6 +70,11 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     parity_put(&r, 30u, sphere.value);
     r[33] = hemisphere.state;
     parity_put(&r, 34u, hemisphere.value);
+    // The normal map of the triangle of the case's directions, with UVs of positive area
+    r[37] = bitcast<u32>(G1(alpha, abs(dot(n, in_dir))));
+    let uv = albedo.xy;
+    parity_put(&r, 38u, tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec3<f32>(v[9], v[10], v[11]), uv,
+        vec2<f32>(uv.x + 0.5, uv.y + 0.1 * albedo.z), vec2<f32>(uv.x + 0.2 * albedo.x, uv.y + 0.6), n)));
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
@@ -77,7 +95,7 @@ const cases = buffer(inputs.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.
 const results = buffer(lines.length * OUTPUTS * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
 const readback = buffer(results.size, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
 device.queue.writeBuffer(cases, 0, inputs);
-const module = device.createShaderModule({ code: readFileSync(process.argv[2], "utf8") + KERNEL });
+const module = device.createShaderModule({ code: (FLEXLIGHT ? "" : MATERIAL) + readFileSync(process.argv[2], "utf8") + KERNEL });
 const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "parity" } });
 const bindGroup = device.createBindGroup({
   layout: pipeline.getBindGroupLayout(0),
