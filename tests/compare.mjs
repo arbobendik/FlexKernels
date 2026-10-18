@@ -6,7 +6,7 @@ const ABSOLUTE = 1e-5;
 const RELATIVE = 1e-3;
 const ULPS = 8;
 const EPSILON = 2 ** -23;
-const INTEGER_COLUMNS = [20, 21, 22, 23, 29, 48, 50, 54, 96, 97, 98];
+const INTEGER_COLUMNS = [20, 21, 22, 23, 29, 48, 50, 54, 96, 97, 98, 115];
 // Golden columns no output fills
 const RETIRED_COLUMNS = [54, 55, 56, 57];
 const RANDOM_COLUMNS = [...Array(14).keys()].map((i) => 90 + i).concat([112, 113, 114]);
