@@ -17,3 +17,11 @@ template<typename T> __device__ inline T _slang_select(bool condition, T v0, T v
 __device__ inline float3 _slang_select(bool3 condition, float3 v0, float3 v1) {
     return make_float3(condition.x ? v0.x : v1.x, condition.y ? v0.y : v1.y, condition.z ? v0.z : v1.z);
 }
+// FlexLight's mat3x3<f32> of the normal map, rows as Slang keeps them; renamed SlangMatrix by the generated header
+template<typename T, int ROWS, int COLS> struct Matrix;
+template<> struct Matrix<float, 3, 3> { float3 rows[3]; };
+template<typename T, int ROWS, int COLS> __device__ inline Matrix<T, ROWS, COLS> makeMatrix(float3 a, float3 b, float3 c) {
+    return {{a, b, c}};
+}
+__device__ inline float _slang_vector_get_element(float3 v, int i) { return i == 0 ? v.x : i == 1 ? v.y : v.z; }
+__device__ inline float* _slang_vector_get_element_ptr(float3* v, int i) { return i == 0 ? &v->x : i == 1 ? &v->y : &v->z; }
