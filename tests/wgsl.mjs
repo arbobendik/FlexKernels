@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 108;
+const OUTPUTS = 110;
 const MATERIAL = /* wgsl */ `
 struct Material {
     albedo: vec3<f32>,
@@ -11,7 +11,8 @@ struct Material {
     roughness: f32,
     metallic: f32,
     transmission: f32,
-    ior: f32
+    ior: f32,
+    absorption: vec3<f32>
 };
 `;
 // FK's lobes by their BSDF and PDF functions, toward a given out_dir as the walk's replay takes them
@@ -105,7 +106,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     let uv = albedo.xy;
     parity_put(&r, 38u, tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec3<f32>(v[9], v[10], v[11]), uv,
         vec2<f32>(uv.x + 0.5, uv.y + 0.1 * albedo.z), vec2<f32>(uv.x + 0.2 * albedo.x, uv.y + 0.6), n)));
-    let material = Material(albedo, vec3<f32>(0.0), v[16], v[15], v[17], max(v[18], v[19]));
+    let material = Material(albedo, vec3<f32>(0.0), v[16], v[15], v[17], max(v[18], v[19])${FLEXLIGHT ? "" : ", vec3<f32>(0.0)"});
     let ggx_n = normalize(- in_dir + out_dir);
     let lobes = bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19]);
     r[41] = bitcast<u32>(lobes.v_dot_h);
@@ -116,10 +117,9 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[50] = bitcast<u32>(lobes.reflect_weight);
     r[51] = bitcast<u32>(lobes.diffuse_weight);
     r[52] = bitcast<u32>(lobes.refract_weight);
-    r[53] = bitcast<u32>(lobes.colorless_reflection);
-    r[54] = bitcast<u32>(lobes.p_diffuse);
-    r[55] = bitcast<u32>(lobes.p_reflect);
-    r[56] = bitcast<u32>(lobes.p_refract);
+    r[53] = bitcast<u32>(lobes.p_diffuse);
+    r[54] = bitcast<u32>(lobes.p_reflect);
+    r[55] = bitcast<u32>(lobes.p_refract);
     var p_lobe = array<f32, 3>(lobes.p_diffuse, lobes.p_refract, lobes.p_reflect);
     for (var lobe = 0u; lobe < 3u; lobe++) {
         let side = select(dot(n_i, out_dir) > 0.0, dot(n_i, out_dir) < 0.0, lobe == 1u);
@@ -127,25 +127,25 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         if (p_lobe[lobe] > 1e-6 && side) {
             throughput = ${THROUGHPUT}(out_dir, n_i, alpha, material, lobes, lobe);
         }
-        parity_put(&r, 57u + 4u * lobe, throughput);
-        r[60u + 4u * lobe] = bitcast<u32>(${DENSITY}(dot(n_i, out_dir), dot(out_dir, ggx_n), abs(dot(n, in_dir)), alpha,
+        parity_put(&r, 56u + 4u * lobe, throughput);
+        r[59u + 4u * lobe] = bitcast<u32>(${DENSITY}(dot(n_i, out_dir), dot(out_dir, ggx_n), abs(dot(n, in_dir)), alpha,
             lobes, v[18], v[19], lobe));
     }
     let sample = sampleBSDF(in_dir, n, material, v[18], v[19], random_state${FLEXLIGHT ? ", vec2<f32>(0.0)" : ""});
-    parity_put(&r, 69u, sample.unit_direction);
-    parity_put(&r, 72u, sample.throughput);
-    r[75] = sample.random_state;
-    r[76] = u32(sample.refracted);
-    r[77] = sample.lobe;
-    r[78] = bitcast<u32>(sample.pdf);
+    parity_put(&r, 68u, sample.unit_direction);
+    parity_put(&r, 71u, sample.throughput);
+    r[74] = sample.random_state;
+    r[75] = u32(sample.refracted);
+    r[76] = sample.lobe;
+    r[77] = bitcast<u32>(sample.pdf);
     for (var lobe = 0u; lobe < 3u; lobe++) {
         let connected = ${FLEXLIGHT ? "lobeBSDF" : "parity_toward"}(in_dir, out_dir, n, material, v[18], v[19], lobe,
             random_state);
-        parity_put(&r, 79u + 4u * lobe, connected.throughput * connected.pdf);
-        r[82u + 4u * lobe] = bitcast<u32>(connected.pdf);
+        parity_put(&r, 78u + 4u * lobe, connected.throughput * connected.pdf);
+        r[81u + 4u * lobe] = bitcast<u32>(connected.pdf);
     }
-    parity_put(&r, 91u, BSDF(in_dir, out_dir, n, vec3<f32>(v[9], v[10], v[11]), material, v[18], v[19], random_state));
-    r[94] = u32(neeDecision(material, dot(n, - in_dir), v[18], v[19]));
+    parity_put(&r, 90u, BSDF(in_dir, out_dir, n, vec3<f32>(v[9], v[10], v[11]), material, v[18], v[19], random_state));
+    r[93] = u32(neeDecision(material, dot(n, - in_dir), v[18], v[19]));
     var a = Reservoir();
     a.seed = random_state;
     a.f = albedo;
@@ -161,19 +161,20 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     offerShifted(&sel, a, Shift(albedo, 1.0), 0.3 + 0.4 * v[16]);
     offerShifted(&sel, b, Shift(abs(out_dir), 0.5 + v[17]), 0.6);
     let reservoir = finalize(sel, 3.0);
-    r[95] = reservoir.seed;
-    r[96] = bitcast<u32>(reservoir.w);
-    r[97] = bitcast<u32>(reservoir.c);
-    parity_put(&r, 98u, reservoir.f);
-    r[101] = bitcast<u32>(reservoir.jac);
-    r[102] = bitcast<u32>(sel.w_sum);
-    parity_put(&r, 103u, sel.color);
-    r[106] = sel.random_state;
-    r[107] = withEnd(reservoir, 1u, 3u, albedo).path;
+    r[94] = reservoir.seed;
+    r[95] = bitcast<u32>(reservoir.w);
+    r[96] = bitcast<u32>(reservoir.c);
+    parity_put(&r, 97u, reservoir.f);
+    r[100] = bitcast<u32>(reservoir.jac);
+    r[101] = bitcast<u32>(sel.w_sum);
+    parity_put(&r, 102u, sel.color);
+    r[105] = sel.random_state;
+    r[106] = withEnd(reservoir, 1u, 3u, albedo).path;
+    parity_put(&r, 107u, ${FLEXLIGHT ? "parity_beerLambert" : "beerLambert"}(v[18] + v[19], albedo));
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
-const UNSIGNED = [0, 1, 2, 8, 27, 29, 33, 75, 76, 77, 94, 95, 106, 107];
+const UNSIGNED = [0, 1, 2, 8, 27, 29, 33, 74, 75, 76, 93, 94, 105, 106];
 
 Object.assign(globalThis, globals);
 // Kept referenced: the device is torn down with the GPU object
@@ -190,8 +191,17 @@ const cases = buffer(inputs.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.
 const results = buffer(lines.length * OUTPUTS * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
 const readback = buffer(results.size, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
 device.queue.writeBuffer(cases, 0, inputs);
-const module = device.createShaderModule({ code: (FLEXLIGHT ? "" : MATERIAL + LOBES)
-    + readFileSync(process.argv[2], "utf8") + KERNEL });
+let source = readFileSync(process.argv[2], "utf8");
+if (FLEXLIGHT) {
+  source = source.replace("return vec3<f32>(lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) / lobes.p_refract);",
+    "return lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) * material.albedo / lobes.p_refract;")
+    .replace("mix(lobes.F, vec3<f32>(lobes.F_greyscale), lobes.colorless_reflection)", "lobes.F");
+  source += source.match(/fn beerLambert\([^]*?\n\}/)[0]
+    .replace("beerLambert", "parity_beerLambert")
+    .replace("instance_index: u32", "absorption: vec3<f32>")
+    .replace("instance_material[instance_index].albedo", "absorption");
+}
+const module = device.createShaderModule({ code: (FLEXLIGHT ? "" : MATERIAL + LOBES) + source + KERNEL });
 const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "parity" } });
 const bindGroup = device.createBindGroup({
   layout: pipeline.getBindGroupLayout(0),
