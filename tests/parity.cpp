@@ -5,13 +5,17 @@
 #ifdef __CUDACC__
 #include "pathtracer.cuh"
 typedef float3 Vec;
+typedef float2 Vec2;
 __device__ Vec vec(const float* a) { return make_float3(a[0], a[1], a[2]); }
+__device__ Vec2 vec2(const float* a) { return make_float2(a[0], a[1]); }
 #else
 #include "pathtracer.cpp"
 #define __device__
 #define __global__
 typedef Vector<float, 3> Vec;
+typedef Vector<float, 2> Vec2;
 Vec vec(const float* a) { return Vec(a[0], a[1], a[2]); }
+Vec2 vec2(const float* a) { return Vec2(a[0], a[1]); }
 #endif
 
 // in_dir out_dir n g_n albedo metallic roughness transparency eta_i eta_o
@@ -20,6 +24,7 @@ struct Result {
     unsigned hash, stream, pcg_state; float pcg_value, greyscale, smith_g1, trowbridge_reitz, fresnel;
     unsigned h_state; Vec h, cosine_hemisphere, tangent_to_world, world_to_tangent, vndf, safe_divide;
     unsigned normal_state; float normal_value; unsigned sphere_state; Vec sphere; unsigned hemisphere_state; Vec hemisphere;
+    float g1; Vec normal_map;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -50,6 +55,12 @@ __device__ Result evaluate(const Case& c) {
     r.sphere = sphere.value;
     r.hemisphere_state = hemisphere.state;
     r.hemisphere = hemisphere.value;
+    // As tests/wgsl.mjs evaluates FlexLight's normal map, BSDF and resampling
+    r.g1 = G1(alpha, fabsf(n_dot_in));
+    const float uv[][2] = {{c.in[12], c.in[13]}, {c.in[12] + 0.5f, c.in[13] + 0.1f * c.in[14]},
+        {c.in[12] + 0.2f * c.in[12], c.in[13] + 0.6f}};
+    r.normal_map = tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec(c.in + 9), vec2(uv[0]), vec2(uv[1]),
+        vec2(uv[2]), n));
     return r;
 }
 
@@ -94,6 +105,7 @@ int main() {
         print(r.safe_divide);
         printf(" %u %.9g %u", r.normal_state, r.normal_value, r.sphere_state); print(r.sphere);
         printf(" %u", r.hemisphere_state); print(r.hemisphere);
+        printf(" %.9g", r.g1); print(r.normal_map);
         printf("\n");
     }
 }
