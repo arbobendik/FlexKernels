@@ -38,7 +38,6 @@ public float3 negate(float3 x) {
     default: return -x;
     }
 }
-
 __extern_cpp public struct Random {
     __extern_cpp public uint state;
     __extern_cpp public float value;
@@ -90,6 +89,11 @@ __extern_cpp public struct Random {
     let numerator: float = alpha * alpha;
     let denom: float = n_dot_h * n_dot_h * (numerator - 1.0f) + 1.0f;
     return numerator / max(PI * denom * denom, BIAS);
+}
+
+[CudaDeviceExport] public func G1(alpha: float, n_dot_x: float) -> float {
+    let k: float = alpha * 0.5f;
+    return n_dot_x / max(n_dot_x * (1.0f - k) + k, BIAS);
 }
 
 // Smith masking of GGX
@@ -169,6 +173,38 @@ __extern_cpp public struct Random {
     let tangent: float3 = normalize(cross(n, a));
     let bitangent: float3 = cross(n, tangent);
     return float3(dot(v, tangent), dot(v, n), dot(v, bitangent));
+}
+
+// t projected off n, any perpendicular where t lies along n
+[ForceInline] func perpendicular(t: float3, n: float3) -> float3 {
+    let projected: float3 = t - n * dot(n, t);
+    return normalize(select(tangentToWorld(float3(1.0f, 0.0f, 0.0f), n), projected, dot(projected, projected) > 0.0f));
+}
+
+// Tangent frame of the normal map from the triangle's edges and UV deltas
+[CudaDeviceExport] public func normalMapTBN(p0: float3, p1: float3, p2: float3, uv0: float2, uv1: float2, uv2: float2, n: float3) -> float3x3 {
+    let e1: float3 = p1 - p0;
+    let e2: float3 = p2 - p0;
+    let duv1: float2 = uv1 - uv0;
+    let duv2: float2 = uv2 - uv0;
+    let det: float = duv1.x * duv2.y - duv1.y * duv2.x;
+    let inv_det: float = 1.0f / det;
+    var t: float3 = (e1 * duv2.y - e2 * duv1.y) * inv_det;
+    let b_geom: float3 = (e2 * duv1.x - e1 * duv2.x) * inv_det;
+
+    // Gram-Schmidt: make tangent perpendicular to interpolated normal.
+    t = perpendicular(t, n);
+    // Handedness: ensure TBN is right-handed; flip T if geometric b disagrees with cross(n,t).
+    if (dot(cross(n, t), b_geom) > 0.0f) {
+        t = negate(t);
+    }
+    let b: float3 = cross(n, t);
+
+    return float3x3(t, b, n);
+}
+
+[CudaDeviceExport] public func tangentToWorldNormalMap(v: float3, tbn: float3x3) -> float3 {
+    return mul(v, tbn);
 }
 
 [CudaDeviceExport] public func sampleHalfVector(v: float3, n_i: float3, alpha: float, inout random_state: uint) -> float3 {
