@@ -55,8 +55,9 @@ $(SLANGC):
 build/parity-cpu: tests/parity.cpp build/cpp/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -Ibuild/cpp $< -o $@
 
-build/parity-cuda: tests/parity.cpp build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h
-	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda $< -o $@
+# With flex-cuda-pt's structs the header leaves to it
+build/parity-cuda: tests/parity.cpp build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h $(REFERENCE)/renderer.h
+	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda -I$(REFERENCE) $< -o $@
 
 $(ACTIONLINT):
 	mkdir -p .deps
@@ -84,8 +85,8 @@ test-cuda: build/parity-cuda  # On the GPU
 	node tests/compare.mjs tests/golden-cuda.txt build/cuda.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cuda.txt 58
 
-test-hip: build/hip/pathtracer.cuh build/hip/slang-cuda-prelude.h  # Compile only
-	$(HIPCC) -std=c++20 --offload-arch=gfx1100 -x hip -c $< -o build/hip/pathtracer.o
+test-hip: tests/hip.cpp build/hip/pathtracer.cuh build/hip/slang-cuda-prelude.h  # Compile only
+	$(HIPCC) -std=c++20 --offload-arch=gfx1100 -x hip -Ibuild/hip -c $< -o build/hip/pathtracer.o
 
 golden: tests/reference.cpp tests/shim/*.h $(REFERENCE)/renderer.cu $(REFERENCE)/renderer.h
 	mkdir -p build
