@@ -47,6 +47,12 @@ public float sign(float e) {
     default: return e > 0.0f ? 1.0f : e < 0.0f ? -1.0f : 0.0f;
     }
 }
+public uint insertBits(uint e, uint newbits, uint offset, uint count) {
+    __target_switch {
+    case wgsl: __intrinsic_asm "insertBits($0, $1, $2, $3)";
+    default: return (e & ~(((1u << count) - 1u) << offset)) | ((newbits & ((1u << count) - 1u)) << offset);
+    }
+}
 
 __target_intrinsic(wgsl, "Material")
 __target_intrinsic(cuda, "BSDFMaterial")
@@ -101,16 +107,6 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     let y: Random = normal_distribution(x.state);
     let z: Random = normal_distribution(y.state);
     return RandomSphere(z.state, normalize(float3(x.value, y.value, z.value)));
-}
-
-[CudaDeviceExport] public func hash(x: uint) -> uint {
-    let state: uint = x * 747796405u + 2891336453u;
-    let word: uint = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
-[CudaDeviceExport] public func stream(seed: uint, index: uint) -> uint {
-    return hash(seed ^ hash(index));
 }
 
 [CudaDeviceExport] public func trowbridgeReitz(alpha: float, n_dot_h: float) -> float {
@@ -480,6 +476,81 @@ public static const uint LOBE_DIFFUSE = 0u;
 public static const uint LOBE_REFRACT = 1u;
 public static const uint LOBE_REFLECT = 2u;
 
+public static const uint PATH_END = 0u;
+public static const uint PATH_TYPE = 12u;
+
+__target_intrinsic(cuda, "Reservoir")
+__extern_cpp public struct Reservoir {
+    __extern_cpp public uint seed;
+    __extern_cpp public uint path;
+    __extern_cpp public float w;
+    __extern_cpp public float c;
+    __extern_cpp public float3 f;
+    __extern_cpp public float jac;
+    __extern_cpp public uint4 rc;
+    __extern_cpp public float3 dir;
+    __extern_cpp public float3 radiance;
+}
+
+__target_intrinsic(cuda, "Shift")
+__extern_cpp public struct Shift {
+    __extern_cpp public float3 f;
+    __extern_cpp public float jac;
+}
+
+__extern_cpp public struct Selection {
+    __extern_cpp public Reservoir r;
+    __extern_cpp public float w_sum;
+    __extern_cpp public float3 color;
+    __extern_cpp public uint random_state;
+}
+
+[CudaDeviceExport] public func hash(x: uint) -> uint {
+    let state: uint = x * 747796405u + 2891336453u;
+    let word: uint = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+[CudaDeviceExport] public func stream(seed: uint, index: uint) -> uint {
+    return hash(seed ^ hash(index));
+}
+
 [CudaDeviceExport] public func safeDivide(a: float3, b: float3) -> float3 {
     return select(a / b, float3(0.0f), b == float3(0.0f));
+}
+
+[CudaDeviceExport] public func offer(inout sel: Selection, candidate: Reservoir, weight: float3) {
+    let w: float = rgb_to_greyscale(weight);
+    if (!(w > 0.0f && w < 3.0e38f)) {
+        return;
+    }
+    sel.w_sum += w;
+    sel.color += weight;
+    let random_value: Random = pcg(sel.random_state);
+    sel.random_state = random_value.state;
+    if (random_value.value * sel.w_sum <= w) {
+        sel.r = candidate;
+    }
+}
+
+[CudaDeviceExport] public func offerShifted(inout sel: Selection, r: Reservoir, shifted: Shift, mis: float) {
+    var candidate: Reservoir = r;
+    candidate.f = shifted.f / shifted.jac;
+    candidate.jac = r.jac * shifted.jac;
+    offer(sel, candidate, mis * shifted.f * r.w);
+}
+
+[CudaDeviceExport] public func finalize(sel: Selection, c: float) -> Reservoir {
+    var r: Reservoir = sel.r;
+    let p_hat: float = rgb_to_greyscale(r.f);
+    r.w = select(0.0f, sel.w_sum / p_hat, p_hat > 0.0f);
+    r.c = c;
+    return r;
+}
+
+[CudaDeviceExport] public func withEnd(r: Reservoir, end_type: uint, end: uint, f: float3) -> Reservoir {
+    var candidate: Reservoir = r;
+    candidate.path = insertBits(insertBits(r.path, end, PATH_END, 5u), end_type, PATH_TYPE, 3u);
+    candidate.f = f;
+    return candidate;
 }
