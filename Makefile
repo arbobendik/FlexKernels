@@ -45,8 +45,9 @@ $(SLANGC):
 build/parity-cpu: tests/parity.cpp build/cpp/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -Ibuild/cpp $< -o $@
 
-build/parity-cuda: tests/parity.cpp build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h
-	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda $< -o $@
+# With flex-cuda-pt's structs the header leaves to it
+build/parity-cuda: tests/parity.cpp build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h $(REFERENCE)/renderer.h
+	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda -I$(REFERENCE) $< -o $@
 
 $(ACTIONLINT):
 	mkdir -p .deps
