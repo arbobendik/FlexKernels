@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 69;
+const OUTPUTS = 94;
 // As pathtracer-compute.wgsl declares it
 const MATERIAL = /* wgsl */ `
 struct Material {
@@ -103,10 +103,24 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         r[60u + 4u * lobe] = bitcast<u32>(lobeDensity(dot(n_i, out_dir), dot(out_dir, ggx_n), abs(dot(n, in_dir)), alpha,
             lobes, v[18], v[19], lobe));
     }
+    let sample = sampleBSDF(in_dir, n, material, v[18], v[19], random_state, vec2<f32>(0.0));
+    parity_put(&r, 69u, sample.unit_direction);
+    parity_put(&r, 72u, sample.throughput);
+    r[75] = sample.random_state;
+    r[76] = u32(sample.refracted);
+    r[77] = sample.lobe;
+    r[78] = bitcast<u32>(sample.pdf);
+    // As BSDF weighs them, the throughput of a direction of density about zero is any
+    for (var lobe = 0u; lobe < 3u; lobe++) {
+        let connected = connectBSDF(in_dir, out_dir, n, material, v[18], v[19], lobe, random_state);
+        parity_put(&r, 79u + 4u * lobe, connected.throughput * connected.pdf);
+        r[82u + 4u * lobe] = bitcast<u32>(connected.pdf);
+    }
+    parity_put(&r, 91u, BSDF(in_dir, out_dir, n, vec3<f32>(v[9], v[10], v[11]), material, v[18], v[19], random_state));
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
-const UNSIGNED = [0, 1, 2, 8, 27, 29, 33];
+const UNSIGNED = [0, 1, 2, 8, 27, 29, 33, 75, 76, 77];
 
 Object.assign(globalThis, globals);
 // Dawn tears the device down with the GPU object, so it stays referenced
