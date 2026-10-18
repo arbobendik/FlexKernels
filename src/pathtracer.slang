@@ -1,8 +1,8 @@
 // Target plumbing: Slang's syntax for FlexLight's WGSL, besides what is marked where it is: a module of public
 // declarations, fn reads func, const static const, structs and their members carry __extern_cpp public, f32, u32,
-// vec2<f32>, vec3<f32> and mat3x3<f32> read float, uint, float2, float3 and float3x3, ptr<function, T> parameters
-// inout T, whose *x and &x read x, and mat3x3<f32>(t, b, n) of columns and tbn * v read float3x3(t, b, n) and
-// mul(v, tbn), as Slang keeps matrices by rows
+// vec2<f32>, vec3<f32>, vec4<u32> and mat3x3<f32> read float, uint, float2, float3, uint4 and float3x3, ptr<function, T>
+// parameters inout T, whose *x and &x read x, and mat3x3<f32>(t, b, n) of columns and tbn * v read float3x3(t, b, n)
+// and mul(v, tbn), as Slang keeps matrices by rows
 module pathtracer;
 
 public static const float PI = 3.141592653589793;
@@ -49,7 +49,7 @@ public float3 negate(float3 x) {
     default: return -x;
     }
 }
-// Target plumbing: WGSL's mix and sign, lowered as normalize above, elsewhere by their WGSL definitions
+// Target plumbing: WGSL's mix, sign and insertBits, lowered as normalize above, elsewhere by their WGSL definitions
 public float3 mix(float3 e1, float3 e2, float e3) {
     __target_switch {
     case wgsl: __intrinsic_asm "mix($0, $1, $2)";
@@ -60,6 +60,12 @@ public float sign(float e) {
     __target_switch {
     case wgsl: __intrinsic_asm "sign($0)";
     default: return e > 0.0f ? 1.0f : e < 0.0f ? -1.0f : 0.0f;
+    }
+}
+public uint insertBits(uint e, uint newbits, uint offset, uint count) {
+    __target_switch {
+    case wgsl: __intrinsic_asm "insertBits($0, $1, $2, $3)";
+    default: return (e & ~(((1u << count) - 1u) << offset)) | ((newbits & ((1u << count) - 1u)) << offset);
     }
 }
 
@@ -143,18 +149,6 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
         // Target plumbing: negate(x) for - x, see negate
         return RandomHemisphere(random_sphere.state, negate(random_sphere.value));
     }
-}
-
-// Target plumbing: hash and stream here, after the random numbers that use them, instead of among FlexLight's ReSTIR
-// helpers (pathtracer-compute.wgsl:1854)
-[CudaDeviceExport] public func hash(x: uint) -> uint {
-    let state: uint = x * 747796405u + 2891336453u;
-    let word: uint = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
-[CudaDeviceExport] public func stream(seed: uint, index: uint) -> uint {
-    return hash(seed ^ hash(index));
 }
 
 [CudaDeviceExport] public func trowbridgeReitz(alpha: float, n_dot_h: float) -> float {
@@ -522,6 +516,93 @@ __extern_cpp public struct BSDFLobes {
 public static const uint LOBE_DIFFUSE = 0u;
 public static const uint LOBE_REFRACT = 1u;
 
+// Bit offsets of the packed path description
+public static const uint PATH_END = 0u;
+public static const uint PATH_TYPE = 12u;
+
+// Target plumbing: flex-cuda-pt's own Reservoir (renderer.h), by which its host sizes its buffers, the struct for every
+// other target; the shared code only copies rc, a Hit there, and never constructs a Reservoir
+__target_intrinsic(cuda, "Reservoir")
+__extern_cpp public struct Reservoir {
+    __extern_cpp public uint seed;
+    __extern_cpp public uint path;
+    // Unbiased contribution weight and confidence
+    __extern_cpp public float w;
+    __extern_cpp public float c;
+    // Integrand of the sample in the owning pixel
+    __extern_cpp public float3 f;
+    // Source densities p(x_k-1 -> x_k) G(x_k-1 -> x_k) p(x_k -> x_k+1) of the reconnection
+    __extern_cpp public float jac;
+    // Triangle hit (instance, triangle, uv) of the reconnection vertex or NEE light (index, random state)
+    __extern_cpp public uint4 rc;
+    // Direction leaving the reconnection vertex and the radiance arriving along it
+    __extern_cpp public float3 dir;
+    __extern_cpp public float3 radiance;
+}
+
+// Target plumbing: flex-cuda-pt's own Shift (renderer.h), as Reservoir
+__target_intrinsic(cuda, "Shift")
+__extern_cpp public struct Shift {
+    __extern_cpp public float3 f;
+    __extern_cpp public float jac;
+}
+
+__extern_cpp public struct Selection {
+    __extern_cpp public Reservoir r;
+    __extern_cpp public float w_sum;
+    __extern_cpp public float3 color;
+    __extern_cpp public uint random_state;
+}
+
+[CudaDeviceExport] public func hash(x: uint) -> uint {
+    let state: uint = x * 747796405u + 2891336453u;
+    let word: uint = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+[CudaDeviceExport] public func stream(seed: uint, index: uint) -> uint {
+    return hash(seed ^ hash(index));
+}
+
 [CudaDeviceExport] public func safeDivide(a: float3, b: float3) -> float3 {
     return select(a / b, float3(0.0f), b == float3(0.0f));
+}
+
+// Weighted reservoir sampling step, weight is the vector-valued resampling weight (Sec. 6.3)
+[CudaDeviceExport] public func offer(inout sel: Selection, candidate: Reservoir, weight: float3) {
+    let w: float = rgb_to_greyscale(weight);
+    // Also rejects NaN and infinite weights of degenerate samples
+    if (!(w > 0.0f && w < 3.0e38f)) {
+        return;
+    }
+    sel.w_sum += w;
+    sel.color += weight;
+    let random_value: Random = pcg(sel.random_state);
+    sel.random_state = random_value.state;
+    if (random_value.value * sel.w_sum <= w) {
+        sel.r = candidate;
+    }
+}
+
+// Resample a shifted sample with MIS weight mis, keeping its Jacobian for later shifts
+[CudaDeviceExport] public func offerShifted(inout sel: Selection, r: Reservoir, shifted: Shift, mis: float) {
+    var candidate: Reservoir = r;
+    candidate.f = shifted.f / shifted.jac;
+    candidate.jac = r.jac * shifted.jac;
+    offer(sel, candidate, mis * shifted.f * r.w);
+}
+
+[CudaDeviceExport] public func finalize(sel: Selection, c: float) -> Reservoir {
+    var r: Reservoir = sel.r;
+    let p_hat: float = rgb_to_greyscale(r.f);
+    r.w = select(0.0f, sel.w_sum / p_hat, p_hat > 0.0f);
+    r.c = c;
+    return r;
+}
+
+[CudaDeviceExport] public func withEnd(r: Reservoir, end_type: uint, end: uint, f: float3) -> Reservoir {
+    var candidate: Reservoir = r;
+    candidate.path = insertBits(insertBits(r.path, end, PATH_END, 5u), end_type, PATH_TYPE, 3u);
+    candidate.f = f;
+    return candidate;
 }
