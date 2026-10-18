@@ -30,7 +30,8 @@ struct Result {
     unsigned hash, stream, pcg_state; float pcg_value, greyscale, smith_g1, trowbridge_reitz, fresnel;
     unsigned h_state; Vec h, cosine_hemisphere, tangent_to_world, world_to_tangent, vndf, safe_divide;
     unsigned normal_state; float normal_value; unsigned sphere_state; Vec sphere; unsigned hemisphere_state; Vec hemisphere;
-    float g1; Vec normal_map; BSDFLobes lobes; Vec lobe_throughput[3]; float lobe_density[3];
+    float g1; Vec normal_map; BSDFLobes lobes; Vec lobe_throughput[3]; float lobe_density[3]; SampleBSDF sample;
+    Vec connected[3]; float connected_pdf[3]; Vec bsdf;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -80,6 +81,14 @@ __device__ Result evaluate(const Case& c) {
         r.lobe_density[lobe] = lobeDensity(dot3(vec(n_i), out_dir), dot3(out_dir, vec(ggx_n)), fabsf(n_dot_v), alpha,
             r.lobes, c.in[18], c.in[19], lobe);
     }
+    r.sample = sampleBSDF(in_dir, n, material, c.in[18], c.in[19], c.random_state, Vec2{});
+    for (unsigned lobe = 0; lobe < 3; lobe++) {
+        const SampleBSDF s = connectBSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], lobe, c.random_state);
+        const float weighted[] = {s.throughput.x * s.pdf, s.throughput.y * s.pdf, s.throughput.z * s.pdf};
+        r.connected[lobe] = vec(weighted);
+        r.connected_pdf[lobe] = s.pdf;
+    }
+    r.bsdf = BSDF(in_dir, out_dir, n, vec(c.in + 9), material, c.in[18], c.in[19], c.random_state);
     return r;
 }
 
@@ -130,6 +139,10 @@ int main() {
         printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g", l.F_greyscale, l.reflect_weight, l.diffuse_weight,
             l.refract_weight, l.colorless_reflection, l.p_diffuse, l.p_reflect, l.p_refract);
         for (unsigned lobe = 0; lobe < 3; lobe++) { print(r.lobe_throughput[lobe]); printf(" %.9g", r.lobe_density[lobe]); }
+        print(r.sample.unit_direction); print(r.sample.throughput);
+        printf(" %u %u %u %.9g", r.sample.random_state, r.sample.refracted, r.sample.lobe, r.sample.pdf);
+        for (unsigned lobe = 0; lobe < 3; lobe++) { print(r.connected[lobe]); printf(" %.9g", r.connected_pdf[lobe]); }
+        print(r.bsdf);
         printf("\n");
     }
 }
