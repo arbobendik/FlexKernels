@@ -40,7 +40,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `G1` | cu:100 | wgsl:697 | 2, FlexLight | **Shared** | FlexLight's Schlick `k = alpha / 2`; flex-cuda-pt had the exact Smith masking |
 | `sampleGGXVNDF`, `sampleCosWeightedHemisphere`, `tangentToWorld`, `worldToTangent` | cu:131, 153, 162, 172 | wgsl:726, 748, 757, 767 | 1 | **Shared** | Identical |
 | `normalMapTBN`, `tangentToWorldNormalMap` | cu:184, 203 | wgsl:779, 801 | 2, FlexLight | **Shared** | FlexLight's `mat3x3<f32>` and handedness, which flips the tangent where flex-cuda-pt turned the bitangent; Slang writes the columns as `float3x3(t, b, n)` and `tbn * v` as `mul(v, tbn)`, which WGSL gets back as written. CUDA takes the prelude's `Matrix<float, 3, 3>`, named `SlangMatrix` across the header, for its own `Matrix` |
-| `BSDF`, `SampleBSDF`, `BSDFLobes`, `sampleHalfVector`, `bsdfLobes`, `lobeThroughput`, `lobeDensity`, `sampleBSDF`, `connectBSDF` | cu:438, 210, 221, 235, 246, 278, 325, 360, 411 | wgsl:807-1032 | 2, FlexLight | **Shared** | FlexLight's plain Fresnel, `colorless_reflection`, undimmed diffuse, colorless BTDF and clamped density on its `Material`; flex-cuda-pt's tint, level and Smith masking go |
+| `BSDF`, `SampleBSDF`, `BSDFLobes`, `sampleHalfVector`, `bsdfLobes`, `lobeThroughput`, `lobeDensity`, `sampleBSDF`, `connectBSDF` | cu:438, 210, 221, 235, 246, 278, 325, 360, 411 | wgsl:807-1032 | 2, FlexLight | **Shared** | FlexLight's plain Fresnel, undimmed diffuse and clamped density on its `Material`, whose albedo tints every surface interaction, the diffuse, metallic reflection and refraction, its absorption left to `beerLambert`; flex-cuda-pt's tint, level and Smith masking go |
 | `neeDecision` | cu:515 | wgsl:1356 | 2, FlexLight | **Shared** | Plain Fresnel |
 | `Material` (FlexLight) | – | wgsl:104, `rasterizer-compute.wgsl`:93 | 3 | Local | Laid out by the TypeScript upload and read from bindings: the shared code declares it `__target_intrinsic(wgsl, "Material")`, as FlexLight's own, and `__target_intrinsic(cuda, "BSDFMaterial")`, which flex-cuda-pt's `renderer.h` declares with the same fields and `walk` fills from its `Surface` |
 | `LOBE_DIFFUSE`, `LOBE_REFRACT` | cu:207 | wgsl:1746 | 1 | Local, inlined | Equal, constants (see `PI`) |
@@ -53,7 +53,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `Material` (CUDA) | h:18 | – | 3 | Local | Light power and program per triangle |
 | `Surface` (FlexLight) | – | wgsl:1243 | 3 | Local | Hit record (normals, offset, material, skip) |
 | `Op`, op enum, `logarithm`, `divide`, `texel`, `shade` | h:9-11, cu:451-500 | `textureSample`, `surfaceAt` wgsl:181, 1253 | 3 | Local | The Blender node interpreter has no counterpart: FlexLight's materials are fixed texture slots, `Op`'s union has none in Slang, and texels are flat pointers vs texture atlases |
-| `beerLambert` | cu:510 | wgsl:1348 | 3 | Local | FlexLight's reads the instance's albedo from `instance_material`, a binding; flex-cuda-pt's is Cycles' Volume Absorption of its `Surface` |
+| `beerLambert` | cu:510 | wgsl:1348 | 2, FlexLight | **Shared** | FlexLight's on an absorption color, which FlexLight's `Material` gained, where it took the instance's albedo from `instance_material`; flex-cuda-pt's goes; each consumer reads it at its call site |
 | `faceNormal`, `smoothNormal`, `geometryOffset`, `hitPosition` | cu:605-623 | inline in `surfaceAt`, wgsl:1881 | 3 | Local | Data access: flat pointers vs instanced textures |
 | `LightNode`, `importance`, `cosSubClamped`, `sinSubClamped`, `sine`, `sampleLight` | h:22, cu:668-699 | `Light`, `sampleLight`, `occluded` wgsl:113, 1054, 1154 | 3 | Local | Light BVH by importance vs uniform lights with point lights; the visibility test traverses |
 | `LightSample`, `NEESample`, `reservoirSample`, `calculatePointLightContrib`, `SamplePreCalc`, `SampledColor`, `lightTrace` | – | wgsl:1033-1364 | 3 | Local | FlexLight only |
@@ -143,17 +143,22 @@ grazing incidence and exitance): every shared function on the case's directions,
 random state, `sampleGGXVNDF` also directly on the outgoing direction mirrored above the surface, and on the case's
 `Material` FlexLight's BSDF through the half vector of its directions, each lobe's throughput where `sampleBSDF` can
 choose it toward its side and density, `sampleBSDF`, `connectBSDF` per lobe weighted by its density, `BSDF`,
-`neeDecision`, the normal map of the triangle of its directions and two reservoirs resampled by their shifts.
+`neeDecision`, the normal map of the triangle of its directions, two reservoirs resampled by their shifts and
+`beerLambert` over the sum of the IORs.
 
 - `tests/golden-cuda.txt`: `make golden REFERENCE=<flex-cuda-pt 02d0bf1>/src/shaders` host-compiles the unmodified
   `renderer.cu` against `tests/shim` and reproduces it byte for byte: the functions both consumers had alike.
 - `tests/golden-wgsl.txt`: `make golden-wgsl WGSL_REFERENCE=<FlexLight 5a313db>/.../pathtracer-compute.wgsl`
-  appends the kernel of `tests/wgsl.mjs` with `--flexlight` to the unmodified shader and runs it through Dawn, here in
+  appends the kernel of `tests/wgsl.mjs` with `--flexlight` to the reference shader and runs it through Dawn, here in
   `ubuntu:24.04` with lavapipe as CI runs it: every column. For the generated code the kernel prepends FlexLight's
   `Material`, which FlexLight's shader declares, and calls the same functions. Its `pcg` columns differ from CUDA's,
   `hash` and `stream` agree. The C++ and CUDA targets are compared against it for what only FlexLight had, but the
   columns drawing random numbers, which each target draws from its own generator: `sampleBSDF`, the diffuse
-  `connectBSDF`, `BSDF` and what the resampling chooses.
+  `connectBSDF`, `BSDF` and what the resampling chooses. Since the albedo stopped standing in for absorption, the
+  throughputs of refraction and reflection in `lobeThroughput`, `sampleBSDF`, `connectBSDF` and `BSDF` and `beerLambert`
+  are 5a313db's on lavapipe with only the two allowed changes applied by the harness: refraction times the albedo,
+  reflection using `F`, and its original `beerLambert` reading the absorption color passed to it; every other column
+  is 5a313db's, word for word.
 
 Tolerance: integers (random states, hashes, lobes, decisions, seeds) exactly; floats within
 `1e-5 + (1e-3 + 8 * 2^-23 / alpha^2) * |golden|`, as the GGX denominator `n_dot_h^2 (alpha^2 - 1) + 1` cancels down
@@ -287,12 +292,11 @@ Ranked by what they would share, with what blocks each:
 
 1. The equal constants (`PI`, `BIAS`, `INV_PI`, `LOBE_*`, `RESTIR_*`, `RC_*`, `PATH_*`, `END_NEE`, `END_EMIT`,
    `STREAM_NEE`, `STREAM_RR`, `STREAM_SELECT`): need a generated header of named constants beside Slang's output.
-2. `beerLambert`: once FlexLight's takes the absorption as a value rather than reading `instance_material`.
-3. `faceNormal`, `smoothNormal`, `geometryOffset`: same math; data access via `IScene`.
-4. `wrongSide` and `partner`: the same tests with other parameters, after the scene interface.
-5. `sampleLight` by importance, after FlexLight builds and binds a light BVH.
-6. `walk` and `shift` behind `ITracer` and `IScene`; FlexLight's `lightTrace` then becomes `walk` without ReSTIR.
-7. `shade`: the node program interpreter, after a union-free `Op`, a texture interface and FlexLight's materials as
+2. `faceNormal`, `smoothNormal`, `geometryOffset`: same math; data access via `IScene`.
+3. `wrongSide` and `partner`: the same tests with other parameters, after the scene interface.
+4. `sampleLight` by importance, after FlexLight builds and binds a light BVH.
+5. `walk` and `shift` behind `ITracer` and `IScene`; FlexLight's `lightTrace` then becomes `walk` without ReSTIR.
+6. `shade`: the node program interpreter, after a union-free `Op`, a texture interface and FlexLight's materials as
    programs.
 
 ## Decisions made without the user
@@ -302,7 +306,7 @@ Ranked by what they would share, with what blocks each:
   Smith masking.
 - FlexLight's `Material` stays its own, declared once for the upload; flex-cuda-pt names the same fields
   `BSDFMaterial`, as its `Material` is its per-triangle record.
-- The MIS weights of reuse and `beerLambert` stay in the consumers as FlexLight writes them.
+- The MIS weights of reuse stay in the consumers as FlexLight writes them.
 - `pcg` lives in FlexKernels with one branch per target rather than in each consumer, so that `sampleHalfVector` and
   the normal draws can call it; each branch is its consumer's generator verbatim.
 - The direct `sampleGGXVNDF` goldens view from above the surface, as `sampleHalfVector` does: below it the result is

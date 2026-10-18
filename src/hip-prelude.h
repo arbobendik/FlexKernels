@@ -5,6 +5,7 @@
 typedef unsigned int uint;
 __device__ inline float F32_abs(float f) { return fabsf(f); }
 __device__ inline float F32_cos(float f) { return cosf(f); }
+__device__ inline float F32_exp(float f) { return expf(f); }
 __device__ inline float F32_log(float f) { return logf(f); }
 __device__ inline float F32_max(float a, float b) { return fmaxf(a, b); }
 __device__ inline float F32_min(float a, float b) { return fminf(a, b); }
