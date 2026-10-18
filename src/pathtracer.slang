@@ -19,6 +19,7 @@ __extern_cpp public struct Material {
     __extern_cpp public float metallic;
     __extern_cpp public float transmission;
     __extern_cpp public float ior;
+    __extern_cpp public float3 absorption;
 };
 
 __extern_cpp public struct RandomSphere {
@@ -308,7 +309,6 @@ __extern_cpp public struct BSDFLobes {
     __extern_cpp public float reflect_weight;
     __extern_cpp public float diffuse_weight;
     __extern_cpp public float refract_weight;
-    __extern_cpp public float colorless_reflection;
     __extern_cpp public float p_diffuse;
     __extern_cpp public float p_reflect;
     __extern_cpp public float p_refract;
@@ -343,15 +343,13 @@ __extern_cpp public struct BSDFLobes {
     let reflect_component: float = max(reflect_weight * F_greyscale, 0.0f);
     let diffuse_component: float = max(diffuse_weight * (1.0f - F_greyscale), 0.0f);
     let refract_component: float = max(refract_weight * (1.0f - F_greyscale) * sign(length(refracted)), 0.0f);
-    // Do not account for chroma of reflection for transmissive materials as in this case our model uses albedo as proxy for absorption instead.
-    var colorless_reflection: float = material.transmission;
     // Calculate sampling probabilities
     let total_component: float = reflect_component + diffuse_component + refract_component;
     let total_component_inv: float = 1.0f / max(total_component, BIAS);
     let p_diffuse: float = diffuse_component * total_component_inv;
     let p_reflect: float = reflect_component * total_component_inv;
     let p_refract: float = refract_component * total_component_inv;
-    return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, colorless_reflection, p_diffuse, p_reflect, p_refract);
+    return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect, p_refract);
 }
 
 // Each lobe by three functions under each other: XBSDF, its throughput toward l, XSample, sampleBSDF's case drawing
@@ -407,16 +405,15 @@ __extern_cpp public struct BSDFLobes {
     let m_n_i_dot_l: float = - dot(n_i, l);
     // Microfacet term
     let G1_l: float = G1(alpha, max(m_n_i_dot_l, 0.0f));
-    // BSDF = refract_weight * v_dot_h / n_dot_v / n_dot_l * D * G * (1 - F) * JACOBIAN
-    // => BSDF * n_dot_l = refract_weight * v_dot_h / n_dot_v * D * G * (1 - F) * JACOBIAN
+    // BSDF = refract_weight * v_dot_h / n_dot_v / n_dot_l * D * G * (1 - F) * JACOBIAN * albedo
+    // => BSDF * n_dot_l = refract_weight * v_dot_h / n_dot_v * D * G * (1 - F) * JACOBIAN * albedo
 
     // throughput = BSDF * n_dot_l / PDF
-    //            = refract_weight * v_dot_h / n_dot_v * D * G * (1 - F) * JACOBIAN / G1_v / v_dot_h / D * n_dot_v / JACOBIAN
-    //            = refract_weight * G * (1 - F) / G1_v
+    //            = refract_weight * v_dot_h / n_dot_v * D * G * (1 - F) * JACOBIAN * albedo / G1_v / v_dot_h / D * n_dot_v / JACOBIAN
+    //            = refract_weight * G * (1 - F) * albedo / G1_v
 
     // G = G1_v * G1_l
-    // => throughput = refract_weight * G1_l * (1 - F)
-    return float3(lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) / lobes.p_refract);
+    return lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) * material.albedo / lobes.p_refract;
 }
 
 // Refractive case of sampleBSDF, through its half vector ggx_n
@@ -462,7 +459,7 @@ __extern_cpp public struct BSDFLobes {
 
     // G = G1_v * G1_l
     // => throughput = reflect_weight * G1_l * F
-    return lobes.reflect_weight * G1_l * mix(lobes.F, float3(lobes.F_greyscale), lobes.colorless_reflection) / lobes.p_reflect;
+    return lobes.reflect_weight * G1_l * lobes.F / lobes.p_reflect;
 }
 
 // Reflective case of sampleBSDF, off its half vector ggx_n
@@ -540,6 +537,14 @@ __extern_cpp public struct BSDFLobes {
     // Refractive half-vector (eq. 16)
     let h_t: float3 = negate(eta_i * v + eta_o * out_dir);
     return normalize(h_t) * sign(dot(h_t, n * sign(dot(n, v))));
+}
+
+// If the ray is inside a medium, apply Beer's law for absorption.
+[CudaDeviceExport] public func beerLambert(distance: float, absorption: float3) -> float3 {
+    // The amount of light transmitted is T = exp(-sigma_a * d).
+    // sigma_a = -ln(absorption)
+    let absorption_coefficient: float3 = max(absorption, float3(BIAS));
+    return exp(distance * log(absorption_coefficient));
 }
 
 [CudaDeviceExport] public func neeDecision(material: Material, n_dot_v: float, eta_i: float, eta_o: float) -> bool {
