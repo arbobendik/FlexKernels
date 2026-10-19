@@ -1,8 +1,16 @@
 // Goldens of the CUDA functions FlexKernels shares on a seeded grid of directions, normals, surfaces and IORs, one case per
 // line: the inputs in_dir out_dir n g_n albedo metallic roughness transparency eta_i eta_o random_state, then the outputs
 // in the order of tests/parity.cpp
+// The allowed change: D without cancellation, floored at the least normal float
+#define trowbridgeReitz floorTrowbridgeReitz
 #include "renderer.cu"
+#undef trowbridgeReitz
 #include <stdio.h>
+
+static float trowbridgeReitz(float alpha, float n_dot_h) {
+    const float numerator = alpha * alpha, denom = (1 - n_dot_h) * (1 + n_dot_h) + numerator * n_dot_h * n_dot_h;
+    return numerator / fmaxf(PI * denom * denom, 1.17549435e-38f);
+}
 
 static float3 unit(unsigned& state) {
     const float z = 2 * random(state) - 1, phi = 2 * PI * random(state), r = sqrtf(fmaxf(0, 1 - z * z));
