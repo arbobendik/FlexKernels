@@ -574,6 +574,13 @@ __extern_cpp public struct BSDFLobes {
     return diffuse_factor_estimate > 0.04f || material.roughness > 0.2f;
 }
 
+// eta_i = eta_o => F = 0, l = -v, G1_l = 1
+// => throughput = transmission * (1 - metallic) * albedo
+[CudaDeviceExport] public func straightThrough(material: Material) -> float3 {
+    let F_greyscale: float = rgb_to_greyscale(material.albedo * material.metallic);
+    return material.transmission * (1.0f - F_greyscale) * material.albedo;
+}
+
 public static const uint PATH_END = 0u;
 public static const uint PATH_TYPE = 12u;
 

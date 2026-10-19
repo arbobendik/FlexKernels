@@ -30,7 +30,7 @@ struct Result {
     unsigned normal_state; float normal_value; unsigned sphere_state; Vec sphere; unsigned hemisphere_state; Vec hemisphere;
     float g1; Vec normal_map; BSDFLobes lobes; Vec lobe_throughput[3]; float lobe_density[3]; SampleBSDF sample;
     Vec connected[3]; float connected_pdf[3]; Vec bsdf; unsigned nee; Reservoir r; Selection sel; unsigned path;
-    Vec beer_lambert, point_light, nee_balance, nee_power;
+    Vec beer_lambert, point_light, nee_balance, nee_power, straight_through;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -121,6 +121,7 @@ __device__ Result evaluate(const Case& c) {
     }
     r.nee_balance = vec(balance);
     r.nee_power = vec(power);
+    r.straight_through = straightThrough(material);
     return r;
 }
 
@@ -187,7 +188,7 @@ int main() {
         print(r.bsdf); printf(" %u", r.nee);
         printf(" %u %.9g %.9g", r.r.seed, r.r.w, r.r.c); print(r.r.f); printf(" %.9g %.9g", r.r.jac, r.sel.w_sum);
         print(r.sel.color); printf(" %u %u", r.sel.random_state, r.path); print(r.beer_lambert);
-        print(r.nee_balance); print(r.nee_power);
+        print(r.nee_balance); print(r.nee_power); print(r.straight_through);
         printf("\n");
     }
 }
