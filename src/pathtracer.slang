@@ -561,6 +561,88 @@ __extern_cpp public struct BSDFLobes {
     return diffuse_factor_estimate > 0.04f || material.roughness > 0.2f;
 }
 
+// Per lobe: BSDF * n_dot_l = throughput * PDF_lobe, light sample of PDF pdf
+// w_balance = pdf / (pdf + PDF_lobe)
+// => BSDF * n_dot_l / pdf * w_balance = throughput * PDF_lobe / (PDF_lobe + pdf)
+// w_power = pdf^2 / (pdf^2 + PDF_lobe^2)
+// => BSDF * n_dot_l / pdf * w_power = throughput * PDF_lobe / (pdf * (1 + (PDF_lobe / pdf)^2))
+[CudaDeviceExport] public func neeBSDF(in_dir: float3, dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, refracted: bool, pdf: float, power: bool, random_state: uint) -> float3 {
+    var each: float3[3];
+    var reached: uint = 0u;
+    return neeLobes(in_dir, dir, n, material, eta_i, eta_o, refracted, pdf, power, random_state, each, reached);
+}
+
+// neeBSDF, light and sky sampling's one body: the sum, each lobe's term of the diffuse, refraction and reflection
+// lobes in that order, and the bits of the lobes reached
+public func neeLobes(in_dir: float3, dir: float3, n: float3, material: Material, eta_i: float, eta_o: float,
+    refracted: bool, pdf: float, power: bool, random_state: uint,
+    out each: float3[3], out reached: uint) -> float3 {
+    let n_dot_v: float = dot(n, negate(in_dir));
+    let n_i: float3 = n * sign(n_dot_v);
+    let n_i_dot_l: float = dot(n_i, dir);
+    let alpha: float = material.roughness * material.roughness;
+    var f: float3 = float3(0.0f);
+    reached = 0u;
+    // The lobe's half vector and its terms, taken again only where they differ from the last lobe's
+    var half_of: uint = UINT_MAX;
+    var ggx_n: float3 = float3(0.0f);
+    var lobe_terms: BSDFLobes = {};
+    // Diffuse, refraction and reflection lobes
+    let lobes: uint = 3u;
+    for (var i: uint = 0u; i < 3u; i++) {
+        each[i] = float3(0.0f);
+    }
+    for (var i: uint = 0u; i < lobes; i++) {
+        let lobe: uint = i;
+        if ((lobe == LOBE_REFRACT) == refracted) {
+            // sampleBSDF's half vector for the diffuse lobe, dir's reflective one for reflection
+            let lobe_half: uint = lobe;
+            if (lobe_half != half_of) {
+                if (lobe_half == LOBE_DIFFUSE) {
+                    ggx_n = sampledHalf(in_dir, n, material, random_state);
+                } else if (lobe_half == LOBE_REFRACT) {
+                    ggx_n = refractedHalf(in_dir, dir, n, eta_i, eta_o);
+                } else {
+                    ggx_n = reflectedHalf(in_dir, dir);
+                }
+                lobe_terms = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta_i, eta_o);
+                half_of = lobe_half;
+            }
+            var lobe_pdf: float = 0.0f;
+            var throughput: float3 = float3(0.0f);
+            switch (lobe) {
+            case LOBE_DIFFUSE:
+                lobe_pdf = diffusePDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+                throughput = diffuseBSDF(dir, n_i, alpha, material, lobe_terms);
+                break;
+            case LOBE_REFRACT:
+                lobe_pdf = refractPDF(n_i_dot_l, dot(dir, ggx_n), abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+                throughput = refractBSDF(dir, n_i, alpha, material, lobe_terms);
+                break;
+            default:
+                lobe_pdf = reflectPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+                throughput = reflectBSDF(dir, n_i, alpha, material, lobe_terms);
+                break;
+            }
+            if (lobe_pdf > 0.0f) {
+                each[i] = misWeighted(throughput, lobe_pdf, pdf, power);
+                reached |= 1u << i;
+                f += each[i];
+            }
+        }
+    }
+    return f;
+}
+
+// One lobe's term of neeBSDF, of throughput and PDF lobe_pdf
+[CudaDeviceExport] public func misWeighted(throughput: float3, lobe_pdf: float, pdf: float, power: bool) -> float3 {
+    if (power) {
+        let ratio: float = lobe_pdf / pdf;
+        return throughput * lobe_pdf / (pdf * (1.0f + ratio * ratio));
+    }
+    return throughput * lobe_pdf / (lobe_pdf + pdf);
+}
+
 public static const uint LOBE_DIFFUSE = 0u;
 public static const uint LOBE_REFRACT = 1u;
 public static const uint LOBE_REFLECT = 2u;
