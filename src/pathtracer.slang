@@ -527,6 +527,27 @@ __extern_cpp public struct BSDFLobes {
     return diffuse_factor_estimate > 0.04f || material.roughness > 0.2f;
 }
 
+// BSDF times cosine toward a next event estimation sample over its density pdf, each lobe on the side refracted selects
+// weighted against BSDF sampling by the balance heuristic, or by the power heuristic if power. Lobes the first sampling
+// attempt can't produce toward dir are left out.
+[CudaDeviceExport] public func neeBSDF(in_dir: float3, dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, refracted: bool, pdf: float, power: bool, random_state: uint) -> float3 {
+    var f: float3 = float3(0.0f);
+    for (var lobe: uint = 0u; lobe < 3u; lobe++) {
+        if ((lobe == LOBE_REFRACT) == refracted) {
+            let l: SampleBSDF = connectBSDF(in_dir, dir, n, material, eta_i, eta_o, lobe, random_state);
+            if (l.pdf > 0.0f) {
+                if (power) {
+                    let ratio: float = l.pdf / pdf;
+                    f += l.throughput * l.pdf / (pdf * (1.0f + ratio * ratio));
+                } else {
+                    f += l.throughput * l.pdf / (l.pdf + pdf);
+                }
+            }
+        }
+    }
+    return f;
+}
+
 public static const uint LOBE_DIFFUSE = 0u;
 public static const uint LOBE_REFRACT = 1u;
 
