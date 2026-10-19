@@ -256,6 +256,15 @@ same header, which leaves `BSDFMaterial`, `Reservoir` and `Shift` to the rendere
 declares them as `renderer.h` does. CI compiles that in
 `rocm/dev-ubuntu-24.04:7.2.4`. A HIP backend still needs HIPRT traversal and a HIP build of the renderer.
 
+## Vulkan
+
+flex-cuda-pt's Vulkan renderer is Slang itself, so it imports the shared code instead of including generated code:
+`build/cuda/pathtracer.slang-module` is the module serialized, which only the Slang version that wrote it loads, next to
+the CUDA header, with which the deployment vendors it. It is compiled without debug information, which would embed the
+source's absolute path, and from the relative one, so that it is the same wherever it is built. Its structs are the
+shared code's own, `Reservoir`'s reconnection record FlexLight's `uint4`. `tests/vulkan.slang` imports it into a
+compute shader compiled to SPIR-V, calling what the renderer calls.
+
 ## WebGL2
 
 `src/flexlight/webgl2/shaders/*.glsl` stays as it is. The BSDF could reach it through Slang → SPIR-V → SPIRV-Cross
