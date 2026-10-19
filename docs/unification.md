@@ -245,6 +245,15 @@ change passed nothing on, and the documentation was never built. A second deploy
 the deploy was rebased onto. From a fresh clone without `.deps`, as CI deploys, onto a flex-cuda-pt
 `main` that cannot build the kernels: Slang was fetched once and the deploy stopped with nothing committed or pushed.
 
+## Vulkan
+
+flex-cuda-pt's Vulkan renderer is Slang itself, so it imports the shared code instead of including generated code:
+`build/cuda/pathtracer.slang-module` is the module serialized, which only the Slang version that wrote it loads, next to
+the CUDA header, with which the deployment vendors it. It is compiled without debug information, which would embed the
+source's absolute path, and from the relative one, so that it is the same wherever it is built. Its structs are the
+shared code's own, `Reservoir`'s reconnection record FlexLight's `uint4`. `tests/vulkan.slang` imports it into a
+compute shader compiled to SPIR-V, calling what the renderer calls.
+
 ## WebGL2
 
 `src/flexlight/webgl2/shaders/*.glsl` stays as it is. The BSDF could reach it through Slang → SPIR-V → SPIRV-Cross
