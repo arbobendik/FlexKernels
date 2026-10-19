@@ -548,6 +548,14 @@ __extern_cpp public struct BSDFLobes {
     return f;
 }
 
+// Transmittance of a surface of equal indices of refraction on both sides to a ray passing it straight along dir, as
+// sampleBSDF carries such rays through its refraction lobe: transmission masked toward dir and tinted by the albedo, of
+// the share Fresnel leaves, metallic reflection's alone as the dielectric's vanishes
+[CudaDeviceExport] public func straightThrough(dir: float3, n: float3, material: Material) -> float3 {
+    let F_greyscale: float = rgb_to_greyscale(material.albedo * material.metallic);
+    return material.transmission * G1(material.roughness * material.roughness, abs(dot(n, dir))) * (1.0f - F_greyscale) * material.albedo;
+}
+
 public static const uint LOBE_DIFFUSE = 0u;
 public static const uint LOBE_REFRACT = 1u;
 

@@ -43,6 +43,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `BSDF`, `SampleBSDF`, `BSDFLobes`, `sampleHalfVector`, `bsdfLobes`, `lobeThroughput`, `lobeDensity`, `sampleBSDF`, `connectBSDF` | cu:438, 210, 221, 235, 246, 278, 325, 360, 411 | wgsl:807-1032 | 2, FlexLight | **Shared** | FlexLight's plain Fresnel, undimmed diffuse and clamped density on its `Material`, whose albedo tints every surface interaction, the diffuse, metallic reflection and refraction, its absorption left to `beerLambert`; flex-cuda-pt's tint, level and Smith masking go |
 | `neeDecision` | cu:515 | wgsl:1356 | 2, FlexLight | **Shared** | Plain Fresnel |
 | `neeBSDF` | `lightBSDF` cu:998 (`2782758`) | `skyBSDF` wgsl:1195 (`d20d420`) | 2, FlexLight | **Shared** | FlexLight's balance heuristic per lobe, over the density of the sample, on the side the consumer's `wrongSide` selects; flex-cuda-pt's power heuristic as an option, in FlexLight's form |
+| `straightThrough` | inline in `sampleLight` cu:960 (`2782758`) | – | 2 | **Shared** | Shadow rays passing straight through equal IORs, as `sampleBSDF`'s refraction lobe carries them on average; flex-cuda-pt's lacked the share of metallic reflection, `1 - F`. FlexLight's shadow rays stop at every surface |
 | `Material` (FlexLight) | – | wgsl:104, `rasterizer-compute.wgsl`:93 | 3 | Local | Laid out by the TypeScript upload and read from bindings: the shared code declares it `__target_intrinsic(wgsl, "Material")`, as FlexLight's own, and `__target_intrinsic(cuda, "BSDFMaterial")`, which flex-cuda-pt's `renderer.h` declares with the same fields and `walk` fills from its `Surface` |
 | `LOBE_DIFFUSE`, `LOBE_REFRACT` | cu:207 | wgsl:1746 | 1 | Local, inlined | Equal, constants (see `PI`) |
 
@@ -146,7 +147,8 @@ random state, `sampleGGXVNDF` also directly on the outgoing direction mirrored a
 `Material` FlexLight's BSDF through the half vector of its directions, each lobe's throughput where `sampleBSDF` can
 choose it toward its side and density, `sampleBSDF`, `connectBSDF` per lobe weighted by its density, `BSDF`,
 `neeDecision`, `neeBSDF` by each heuristic against a density of 0.5 plus the transparency, the normal map of the
-triangle of its directions, two reservoirs resampled by their shifts and `beerLambert` over the sum of the IORs.
+triangle of its directions, two reservoirs resampled by their shifts, `beerLambert` over the sum of the IORs and
+`straightThrough` along the incoming direction.
 
 `pointLightRadiance` is checked separately on every case in C++, CUDA and WGSL: integrating its radiance over a
 diffuse sphere must recover `4 * PI * intensity * color`, without changing the reference golden columns.
@@ -168,6 +170,7 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
   other column is 5a313db's, word for word.
   The C++ and CUDA targets leave out `neeBSDF` where it draws, toward the side of a diffuse lobe; the golden of its power
   heuristic is flex-cuda-pt's `lightBSDF` of `2782758` on FlexLight's `connectBSDF`, over the density.
+  `straightThrough`'s is FlexLight's refraction throughput times its probability through the normal at equal IORs.
 
 Tolerance: integers (random states, hashes, lobes, decisions, seeds) exactly; floats within
 `1e-5 + (1e-3 + 8 * 2^-23 / alpha^2) * |golden|`, as the GGX denominator, `alpha^2` at a lobe's peak, turns rounding
