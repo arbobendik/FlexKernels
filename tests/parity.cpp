@@ -30,7 +30,7 @@ struct Result {
     unsigned normal_state; float normal_value; unsigned sphere_state; Vec sphere; unsigned hemisphere_state; Vec hemisphere;
     float g1; Vec normal_map; BSDFLobes lobes; Vec lobe_throughput[3]; float lobe_density[3]; SampleBSDF sample;
     Vec connected[3]; float connected_pdf[3]; Vec bsdf; unsigned nee; Reservoir r; Selection sel; unsigned path;
-    Vec beer_lambert, point_light;
+    Vec beer_lambert, point_light, nee_balance, nee_power;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -88,7 +88,10 @@ __device__ Result evaluate(const Case& c) {
         r.connected[lobe] = vec(weighted);
         r.connected_pdf[lobe] = s.pdf;
     }
-    r.bsdf = BSDF(in_dir, out_dir, n, vec(c.in + 9), material, c.in[18], c.in[19], c.random_state);
+    FixedArray<Vec, 3> throughputs;
+    FixedArray<float, 3> pdfs;
+    r.bsdf = BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19],
+        dot_0(vec(c.in + 9), -in_dir) * dot_0(vec(c.in + 9), out_dir) <= 0, c.random_state, &throughputs, &pdfs);
     r.nee = neeDecision(material, n_dot_v, c.in[18], c.in[19]);
     Reservoir a = {}, b = {};
     const float turned[] = {c.in[13], c.in[14], c.in[12]};
@@ -103,6 +106,21 @@ __device__ Result evaluate(const Case& c) {
     r.path = withEnd(r.r, 1, 3, albedo).path;
     r.beer_lambert = beerLambert(c.in[18] + c.in[19], albedo);
     r.point_light = pointLightRadiance(albedo, c.in[18], 1.0f + c.in[16]);
+    const bool refracted = (dot3(in_dir, vec(c.in + 9)) <= 0) != (dot3(out_dir, vec(c.in + 9)) > 0);
+    BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, c.random_state, &throughputs, &pdfs);
+    const float pdf = 0.5f + c.in[17];
+    float balance[3] = {}, power[3] = {};
+    for (int i = 0; i < 3; i++) {
+        if (!(pdfs[i] > 0)) continue;
+        const float ratio = pdfs[i] / pdf;
+        const float t[] = {throughputs[i].x * pdfs[i], throughputs[i].y * pdfs[i], throughputs[i].z * pdfs[i]};
+        for (int k = 0; k < 3; k++) {
+            balance[k] += t[k] / (pdfs[i] + pdf);
+            power[k] += t[k] / (pdf * (1 + ratio * ratio));
+        }
+    }
+    r.nee_balance = vec(balance);
+    r.nee_power = vec(power);
     return r;
 }
 
@@ -169,6 +187,7 @@ int main() {
         print(r.bsdf); printf(" %u", r.nee);
         printf(" %u %.9g %.9g", r.r.seed, r.r.w, r.r.c); print(r.r.f); printf(" %.9g %.9g", r.r.jac, r.sel.w_sum);
         print(r.sel.color); printf(" %u %u", r.sel.random_state, r.path); print(r.beer_lambert);
+        print(r.nee_balance); print(r.nee_power);
         printf("\n");
     }
 }

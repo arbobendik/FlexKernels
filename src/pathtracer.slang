@@ -233,51 +233,61 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     return mul(v, tbn);
 }
 
-// out_dir on in_dir's side of g_n: BSDF * n_dot_l = throughput_diffuse * PDF_diffuse + throughput_reflect * PDF_reflect
-// otherwise: BSDF * n_dot_l = throughput_refract * PDF_refract
+// Each lobe toward out_dir: its throughput and PDF_lobe in the diffuse, refraction and reflection slots,
+// PDF_lobe = 0 where it doesn't reach out_dir
+// out_dir across the face (refracted): the refraction
+// otherwise: the diffuse and the reflection
 // as throughput = BSDF_lobe * n_dot_l / PDF_lobe
-[CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {
+// => BSDF * n_dot_l = sum throughput * PDF_lobe
+[CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, material: Material, eta_i: float,
+    eta_o: float, refracted: bool, random_state: uint, out throughputs: float3[3], out pdfs: float[3]) -> float3 {
     let v: float3 = negate(in_dir);
     let n_dot_v: float = dot(n, v);
     let n_i: float3 = n * sign(n_dot_v);
     let n_i_dot_l: float = dot(n_i, out_dir);
     let alpha: float = material.roughness * material.roughness;
-    // Diffuse and reflection on the same side; refraction alone across
-    // Test if v and l are on the same side of the surface
-    let same_side: bool = dot(g_n, v) * dot(g_n, out_dir) > 0.0f;
-    let lobes: uint = same_side ? 2u : 1u;
-    var f: float3 = float3(0.0f);
+    let lobes: uint = 3u;
+    for (var i: uint = 0u; i < 3u; i++) {
+        throughputs[i] = float3(0.0f);
+        pdfs[i] = 0.0f;
+    }
     // sampleBSDF's half vector and its terms for the diffuse lobe, where they reach out_dir
     var sampled_n: float3 = float3(0.0f);
     var sampled_terms: BSDFLobes = {};
-    if (same_side) {
+    if (!refracted) {
         sampled_n = sampledHalf(in_dir, n, material, random_state);
         sampled_terms = bsdfLobes(in_dir, negate(in_dir), n_i, sampled_n, material, eta_i, eta_o);
     }
-    // out_dir's half vector and its terms, the reflective one on the same side, the refractive one across
-    let ggx_n: float3 = same_side ? reflectedHalf(in_dir, out_dir) : refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
+    // out_dir's half vector and its terms, the refractive one across the face, the reflective one for reflection
+    // otherwise
+    let ggx_n: float3 = refracted ? refractedHalf(in_dir, out_dir, n, eta_i, eta_o) : reflectedHalf(in_dir, out_dir);
     let lobe_terms: BSDFLobes = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta_i, eta_o);
     for (var i: uint = 0u; i < lobes; i++) {
-        let lobe: uint = !same_side ? LOBE_REFRACT : i == 0u ? LOBE_DIFFUSE : LOBE_REFLECT;
-        var pdf: float = 0.0f;
-        var throughput: float3 = float3(0.0f);
+        let lobe: uint = i;
+        if ((lobe == LOBE_REFRACT) != refracted) {
+            continue;
+        }
         switch (lobe) {
         case LOBE_DIFFUSE:
-            pdf = diffusePDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, sampled_terms, eta_i, eta_o);
-            throughput = diffuseBSDF(out_dir, n_i, alpha, material, sampled_terms);
+            pdfs[0] = diffusePDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, sampled_terms, eta_i, eta_o);
+            throughputs[0] = diffuseBSDF(out_dir, n_i, alpha, material, sampled_terms);
             break;
         case LOBE_REFRACT:
-            pdf = refractPDF(n_i_dot_l, dot(out_dir, ggx_n), abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
-            throughput = refractBSDF(out_dir, n_i, alpha, material, lobe_terms);
+            pdfs[1] = refractPDF(n_i_dot_l, dot(out_dir, ggx_n), abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+            throughputs[1] = refractBSDF(out_dir, n_i, alpha, material, lobe_terms);
             break;
         default:
-            pdf = reflectPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
-            throughput = reflectBSDF(out_dir, n_i, alpha, material, lobe_terms);
+            pdfs[2] = reflectPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+            throughputs[2] = reflectBSDF(out_dir, n_i, alpha, material, lobe_terms);
             break;
         }
-        // Directions the lobe can't sample carry no throughput
-        let weighted: float3 = pdf > 0.0f ? throughput * pdf : float3(0.0f);
-        f = i == 0u ? weighted : f + weighted;
+    }
+    // Directions a lobe can't sample carry no throughput
+    var f: float3 = float3(0.0f);
+    for (var i: uint = 0u; i < 3u; i++) {
+        if (pdfs[i] > 0.0f) {
+            f += throughputs[i] * pdfs[i];
+        }
     }
     return f;
 }
