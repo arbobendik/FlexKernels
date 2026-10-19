@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 119;
+const OUTPUTS = 122;
 const MATERIAL = /* wgsl */ `
 struct Material {
     albedo: vec3<f32>,
@@ -217,6 +217,10 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         random_state));
     parity_put(&r, 116u, parity_nee(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, true,
         random_state));`}
+    ${FLEXLIGHT ? `let straight = bsdfLobes(in_dir, - in_dir, n_i, n_i, material, 1.0, 1.0);
+    let through = lobeThroughput(in_dir, n_i, alpha, material, straight, 1u) * straight.p_refract;
+    parity_put(&r, 119u, select(vec3<f32>(0.0), through, straight.p_refract > 0.0));` : `
+    parity_put(&r, 119u, straightThrough(in_dir, n, material));`}
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
