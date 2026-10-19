@@ -1,8 +1,9 @@
-// Compares outputs in the golden format against the goldens: integer columns exactly, the others within
-// ABSOLUTE + (RELATIVE + ULPS * EPSILON / alpha^2) * |golden|, as the GGX denominator n_dot_h^2 (alpha^2 - 1) + 1 cancels
-// down to alpha^2 near the peak of a lobe, and NaN where the golden is, as the delta lobes' masking 0 / 0 off them and
-// the normalized refraction under total internal reflection, from the first column on, all by default. Given one, the
-// outputs are another target's, whose random numbers differ: the columns drawing them are left out.
+// Compares outputs in the golden format against the goldens: integer columns exactly, the others within ABSOLUTE +
+// (RELATIVE + ULPS * EPSILON / alpha^2) * |golden|, as the GGX denominator, alpha^2 near the peak of a lobe, turns
+// rounding of n_dot_h there into relative errors of D by EPSILON / alpha^2, and NaN where the golden is, as the
+// delta lobes' masking 0 / 0 off them and the normalized refraction under total internal reflection, from the first
+// column on, all by default. Given one, the outputs are another target's, whose random numbers differ: the columns
+// drawing them are left out.
 // Usage: node compare.mjs golden.txt outputs.txt [first]
 import { readFileSync } from "node:fs";
 
