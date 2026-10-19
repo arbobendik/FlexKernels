@@ -32,7 +32,7 @@ struct Result {
     unsigned normal_state; float normal_value; unsigned sphere_state; Vec sphere; unsigned hemisphere_state; Vec hemisphere;
     float g1; Vec normal_map; BSDFLobes lobes; Vec lobe_throughput[3]; float lobe_density[3]; SampleBSDF sample;
     Vec connected[3]; float connected_pdf[3]; Vec bsdf; unsigned nee; Reservoir r; Selection sel; unsigned path;
-    Vec beer_lambert, point_light;
+    Vec beer_lambert, point_light, nee_balance, nee_power;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -104,6 +104,12 @@ __device__ Result evaluate(const Case& c) {
     r.path = withEnd(r.r, 1, 3, albedo).path;
     r.beer_lambert = beerLambert(c.in[18] + c.in[19], albedo);
     r.point_light = pointLightRadiance(albedo, c.in[18], 1.0f + c.in[16]);
+    // As FlexLight's skyBSDF weighs a sample of the density against BSDF sampling, and by the power heuristic
+    const bool refracted = (dot3(in_dir, vec(c.in + 9)) <= 0) != (dot3(out_dir, vec(c.in + 9)) > 0);
+    r.nee_balance = neeBSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, 0.5f + c.in[17], false,
+        c.random_state);
+    r.nee_power = neeBSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, 0.5f + c.in[17], true,
+        c.random_state);
     return r;
 }
 
@@ -170,6 +176,7 @@ int main() {
         print(r.bsdf); printf(" %u", r.nee);
         printf(" %u %.9g %.9g", r.r.seed, r.r.w, r.r.c); print(r.r.f); printf(" %.9g %.9g", r.r.jac, r.sel.w_sum);
         print(r.sel.color); printf(" %u %u", r.sel.random_state, r.path); print(r.beer_lambert);
+        print(r.nee_balance); print(r.nee_power);
         printf("\n");
     }
 }

@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 113;
+const OUTPUTS = 119;
 // As pathtracer-compute.wgsl declares it
 const MATERIAL = /* wgsl */ `
 struct Material {
@@ -145,6 +145,23 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[106] = withEnd(reservoir, 1u, 3u, albedo).path;
     parity_put(&r, 107u, ${FLEXLIGHT ? "parity_beerLambert" : "beerLambert"}(v[18] + v[19], albedo));
     ${FLEXLIGHT ? "" : "parity_put(&r, 110u, pointLightRadiance(albedo, v[18], 1.0 + v[16]));"}
+    // As FlexLight's skyBSDF weighs a sample of the density against BSDF sampling, and by the power heuristic as
+    // flex-cuda-pt's light sampling did
+    let g_n = vec3<f32>(v[9], v[10], v[11]);
+    let refracted = (dot(in_dir, g_n) <= 0.0) != (dot(out_dir, g_n) > 0.0);
+    let pdf = 0.5 + v[17];
+    ${FLEXLIGHT ? `parity_put(&r, 113u, skyBSDF(in_dir, out_dir, Surface(n, g_n, 0.0, material, false, 0u),
+        vec2<f32>(v[18], v[19]), dot(in_dir, g_n) > 0.0, pdf, random_state));
+    var power = vec3<f32>(0.0);
+    for (var lobe = 0u; lobe < 3u; lobe++) {
+        if ((lobe == 1u) == refracted) {
+            let l = connectBSDF(in_dir, out_dir, n, material, v[18], v[19], lobe, random_state);
+            power += l.throughput * (l.pdf * (1.0 / (1.0 + (l.pdf / pdf) * (l.pdf / pdf)))) / pdf;
+        }
+    }
+    parity_put(&r, 116u, power);` : `
+    parity_put(&r, 113u, neeBSDF(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, false, random_state));
+    parity_put(&r, 116u, neeBSDF(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, true, random_state));`}
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
@@ -206,6 +223,8 @@ lines.forEach((line, i) => {
       if (!(Math.abs(emitted - power) <= 1e-5 * Math.max(1, power))) throw new Error(`case ${i}: point light power mismatch`);
     }
   }
-  const outputs = Array.from({ length: 110 }, (_, j) => (UNSIGNED.includes(j) ? words : floats)[i * OUTPUTS + j]);
+  // All but the point light, checked above
+  const outputs = Array.from({ length: OUTPUTS }, (_, j) => j).filter((j) => j < 110 || j >= 113)
+    .map((j) => (UNSIGNED.includes(j) ? words : floats)[i * OUTPUTS + j]);
   console.log(line.slice(0, 21).concat(outputs).join(" "));
 });
