@@ -154,8 +154,11 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 
 [CudaDeviceExport] public func trowbridgeReitz(alpha: float, n_dot_h: float) -> float {
     let numerator: float = alpha * alpha;
-    let denom: float = n_dot_h * n_dot_h * (numerator - 1.0f) + 1.0f;
-    return numerator / max(PI * denom * denom, BIAS);
+    // 1 - n_dot_h^2 + alpha^2 * n_dot_h^2 without cancelling to alpha^2 at the peak, where a floor of BIAS would cut D
+    // off below roughness 0.22, so that densities and BSDF match what sampleBSDF draws; floored at the least normal
+    // float, which the peak's denominator falls under below roughness 1e-5, so that D stays finite
+    let denom: float = (1.0f - n_dot_h) * (1.0f + n_dot_h) + numerator * n_dot_h * n_dot_h;
+    return numerator / max(PI * denom * denom, 1.17549435e-38f);
 }
 
 [CudaDeviceExport] public func G1(alpha: float, n_dot_x: float) -> float {
