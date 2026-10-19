@@ -15,7 +15,7 @@ FLEXLIGHT ?= ../FlexLight
 WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
 all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h build/hip/pathtracer.cuh build/hip/slang-cuda-prelude.h \
-	build/wgsl/pathtracer.wgsl
+	build/wgsl/pathtracer.wgsl build/cuda/pathtracer.slang-module
 
 # The prelude is included next to the header instead of from the Slang installation, its Matrix template, which the
 # generated code takes for FlexLight's mat3x3, renamed SlangMatrix across the header so that it leaves the name to the
@@ -43,6 +43,12 @@ build/wgsl/pathtracer.wgsl: $(SOURCE) $(SLANGC)
 	mkdir -p build/wgsl
 	$(SLANGC) $(SLANGFLAGS) $< -target wgsl -o $@
 
+# The module flex-cuda-pt's Vulkan renderer imports, loadable by this Slang version alone, vendored with the CUDA header.
+# It embeds the source's path, as given here, and debug information its absolute one, which it leaves out.
+build/cuda/pathtracer.slang-module: $(SOURCE) $(SLANGC)
+	mkdir -p build/cuda
+	$(SLANGC) $< -o $@
+
 build/cpp/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp
 	$(SLANGC) $(SLANGFLAGS) $< -target cpp -o $@
@@ -64,11 +70,11 @@ $(ACTIONLINT):
 	curl -sSfL https://github.com/rhysd/actionlint/releases/download/v$(ACTIONLINT_VERSION)/actionlint_$(ACTIONLINT_VERSION)_linux_amd64.tar.gz \
 		| tar -xz -C .deps actionlint
 
-.PHONY: all lint test test-cpu test-wgsl test-cuda test-hip golden golden-wgsl deploy-local clean
+.PHONY: all lint test test-cpu test-wgsl test-cuda test-hip test-vulkan golden golden-wgsl deploy-local clean
 lint: $(ACTIONLINT)
 	$(ACTIONLINT)
 
-test: test-cpu test-wgsl
+test: test-cpu test-wgsl test-vulkan
 
 # What only FlexLight had against its goldens, but what draws random numbers
 test-cpu: build/parity-cpu
@@ -87,6 +93,9 @@ test-cuda: build/parity-cuda  # On the GPU
 
 test-hip: tests/hip.cpp build/hip/pathtracer.cuh build/hip/slang-cuda-prelude.h  # Compile only
 	$(HIPCC) -std=c++20 --offload-arch=gfx1100 -x hip -Ibuild/hip -c $< -o build/hip/pathtracer.o
+
+test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module  # Compile only
+	$(SLANGC) -Ibuild/cuda $< -target spirv -o build/vulkan.spv
 
 golden: tests/reference.cpp tests/shim/*.h $(REFERENCE)/renderer.cu $(REFERENCE)/renderer.h
 	mkdir -p build
