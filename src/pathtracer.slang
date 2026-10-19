@@ -128,8 +128,11 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 
 [CudaDeviceExport] public func trowbridgeReitz(alpha: float, n_dot_h: float) -> float {
     let numerator: float = alpha * alpha;
-    let denom: float = n_dot_h * n_dot_h * (numerator - 1.0f) + 1.0f;
-    return numerator / max(PI * denom * denom, BIAS);
+    // D = alpha^2 / (PI * (n_dot_h^2 * (alpha^2 - 1) + 1)^2)
+    // n_dot_h^2 * (alpha^2 - 1) + 1 = (1 - n_dot_h) * (1 + n_dot_h) + alpha^2 * n_dot_h^2
+    // => D = numerator / max(PI * denom^2, LEAST_NORMAL), finite as alpha -> 0
+    let denom: float = (1.0f - n_dot_h) * (1.0f + n_dot_h) + numerator * n_dot_h * n_dot_h;
+    return numerator / max(PI * denom * denom, 1.17549435e-38f);
 }
 
 [CudaDeviceExport] public func G1(alpha: float, n_dot_x: float) -> float {
