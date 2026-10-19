@@ -157,7 +157,10 @@ let source = readFileSync(process.argv[2], "utf8");
 if (FLEXLIGHT) {
   source = source.replace("return vec3<f32>(lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) / lobes.p_refract);",
     "return lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) * material.albedo / lobes.p_refract;")
-    .replace("mix(lobes.F, vec3<f32>(lobes.F_greyscale), lobes.colorless_reflection)", "lobes.F");
+    .replace("mix(lobes.F, vec3<f32>(lobes.F_greyscale), lobes.colorless_reflection)", "lobes.F")
+    .replace("n_dot_h * n_dot_h * (numerator - 1.0f) + 1.0f;\n    return numerator / max(PI * denom * denom, BIAS);",
+      "(1.0f - n_dot_h) * (1.0f + n_dot_h) + numerator * n_dot_h * n_dot_h;\n" +
+      "    return numerator / max(PI * denom * denom, 1.17549435e-38f);");
   source += source.match(/fn beerLambert\([^]*?\n\}/)[0]
     .replace("beerLambert", "parity_beerLambert")
     .replace("instance_index: u32", "absorption: vec3<f32>")
