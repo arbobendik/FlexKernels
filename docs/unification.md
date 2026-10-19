@@ -36,7 +36,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 
 | Name | CUDA | WGSL | Class | Status | Reason |
 |---|---|---|---|---|---|
-| `trowbridgeReitz`, `smithG1`, `fresnel` | cu:94, 61, 104 | wgsl:691, 703, 708 | 1 | **Shared** | Identical |
+| `trowbridgeReitz`, `smithG1`, `fresnel` | cu:94, 61, 104 | wgsl:691, 703, 708 | 1 | **Shared** | Identical; then D without the cancellation and floor that cut its peak off below roughness 0.22, an allowed change to both goldens |
 | `G1` | cu:100 | wgsl:697 | 2, FlexLight | **Shared** | FlexLight's Schlick `k = alpha / 2`; flex-cuda-pt had the exact Smith masking |
 | `sampleGGXVNDF`, `sampleCosWeightedHemisphere`, `tangentToWorld`, `worldToTangent` | cu:131, 153, 162, 172 | wgsl:726, 748, 757, 767 | 1 | **Shared** | Identical |
 | `normalMapTBN`, `tangentToWorldNormalMap` | cu:184, 203 | wgsl:779, 801 | 2, FlexLight | **Shared** | FlexLight's `mat3x3<f32>` and handedness, which flips the tangent where flex-cuda-pt turned the bitangent; Slang writes the columns as `float3x3(t, b, n)` and `tbn * v` as `mul(v, tbn)`, which WGSL gets back as written. CUDA takes the prelude's `Matrix<float, 3, 3>`, named `SlangMatrix` across the header, for its own `Matrix` |
@@ -151,7 +151,8 @@ choose it toward its side and density, `sampleBSDF`, `connectBSDF` per lobe weig
 diffuse sphere must recover `4 * PI * intensity * color`, without changing the reference golden columns.
 
 - `tests/golden-cuda.txt`: `make golden REFERENCE=<flex-cuda-pt 02d0bf1>/src/shaders` host-compiles the unmodified
-  `renderer.cu` against `tests/shim` and reproduces it byte for byte: the functions both consumers had alike.
+  `renderer.cu` against `tests/shim`, its D without cancellation or BIAS, and reproduces it byte for byte: the functions
+  both consumers had alike.
 - `tests/golden-wgsl.txt`: `make golden-wgsl WGSL_REFERENCE=<FlexLight 5a313db>/.../pathtracer-compute.wgsl`
   appends the kernel of `tests/wgsl.mjs` with `--flexlight` to the reference shader and runs it through Dawn, here in
   `ubuntu:24.04` with lavapipe as CI runs it: every column. For the generated code the kernel prepends FlexLight's
@@ -159,15 +160,16 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
   `hash` and `stream` agree. The C++ and CUDA targets are compared against it for what only FlexLight had, but the
   columns drawing random numbers, which each target draws from its own generator: `sampleBSDF`, the diffuse
   `connectBSDF`, `BSDF` and what the resampling chooses. Since the albedo stopped standing in for absorption, the
-  throughputs of refraction and reflection in `lobeThroughput`, `sampleBSDF`, `connectBSDF` and `BSDF` and `beerLambert`
-  are 5a313db's on lavapipe with only the two allowed changes applied by the harness: refraction times the albedo,
-  reflection using `F`, and its original `beerLambert` reading the absorption color passed to it; every other column
-  is 5a313db's, word for word.
+  throughputs of refraction and reflection in `lobeThroughput`, `sampleBSDF`, `connectBSDF` and `BSDF` and `beerLambert`,
+  and since D lost its cancellation and floor, D and the densities, are 5a313db's on lavapipe with only the allowed
+  changes applied by the harness: refraction times the albedo, reflection using `F`, its original `beerLambert` reading
+  the absorption color passed to it, and D over `(1 - n_dot_h) (1 + n_dot_h) + alpha^2 n_dot_h^2` without BIAS; every
+  other column is 5a313db's, word for word.
 
 Tolerance: integers (random states, hashes, lobes, decisions, seeds) exactly; floats within
-`1e-5 + (1e-3 + 8 * 2^-23 / alpha^2) * |golden|`, as the GGX denominator `n_dot_h^2 (alpha^2 - 1) + 1` cancels down
-to `alpha^2` at a lobe's peak, and NaN where the golden has it: the normalized refraction under total internal
-reflection.
+`1e-5 + (1e-3 + 8 * 2^-23 / alpha^2) * |golden|`, as the GGX denominator, `alpha^2` at a lobe's peak, turns rounding
+of `n_dot_h` there into relative errors of D by `2^-23 / alpha^2`, and NaN where the golden has it: the normalized
+refraction under total internal reflection.
 
 | Run | Where | Result |
 |---|---|---|
