@@ -13,7 +13,7 @@ FLEXLIGHT ?= ../FlexLight
 WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
 all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h \
-	build/wgsl/pathtracer.wgsl
+	build/wgsl/pathtracer.wgsl build/cuda/pathtracer.slang-module
 
 build/cuda/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	mkdir -p build/cuda
@@ -28,6 +28,10 @@ build/cuda/slang-cuda-prelude.h: $(SLANGC)
 build/wgsl/pathtracer.wgsl: $(SOURCE) $(SLANGC)
 	mkdir -p build/wgsl
 	$(SLANGC) $(SLANGFLAGS) $< -target wgsl -o $@
+
+build/cuda/pathtracer.slang-module: $(SOURCE) $(SLANGC)
+	mkdir -p build/cuda
+	$(SLANGC) $< -o $@
 
 build/cpp/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp
@@ -49,11 +53,11 @@ $(ACTIONLINT):
 	curl -sSfL https://github.com/rhysd/actionlint/releases/download/v$(ACTIONLINT_VERSION)/actionlint_$(ACTIONLINT_VERSION)_linux_amd64.tar.gz \
 		| tar -xz -C .deps actionlint
 
-.PHONY: all lint test test-cpu test-wgsl test-cuda golden golden-wgsl deploy-local clean
+.PHONY: all lint test test-cpu test-wgsl test-cuda test-vulkan golden golden-wgsl deploy-local clean
 lint: $(ACTIONLINT)
 	$(ACTIONLINT)
 
-test: test-cpu test-wgsl
+test: test-cpu test-wgsl test-vulkan
 
 test-cpu: build/parity-cpu
 	$< < tests/golden-cuda.txt > build/cpu.txt
@@ -68,6 +72,9 @@ test-cuda: build/parity-cuda
 	$< < tests/golden-cuda.txt > build/cuda.txt
 	node tests/compare.mjs tests/golden-cuda.txt build/cuda.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cuda.txt 58
+
+test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module
+	$(SLANGC) -Ibuild/cuda $< -target spirv -o build/vulkan.spv
 
 golden: tests/reference.cpp tests/shim/*.h $(REFERENCE)/renderer.cu $(REFERENCE)/renderer.h
 	mkdir -p build
