@@ -96,7 +96,7 @@ __device__ Result evaluate(const Case& c) {
         r.connected_pdf[lobe] = s.pdf;
     }
     r.bsdf = BSDF(in_dir, out_dir, n, vec(c.in + 9), material, c.in[18], c.in[19], c.random_state);
-    r.nee = neeDecision(material, n_dot_v, c.in[18], c.in[19]);
+    r.nee = samplesLights(material);
     Reservoir a = {}, b = {};
     const float turned[] = {c.in[13], c.in[14], c.in[12]};
     a.seed = c.random_state; a.f = albedo; a.w = 0.5f + c.in[15]; a.jac = 2;

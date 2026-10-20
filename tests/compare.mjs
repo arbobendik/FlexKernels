@@ -12,7 +12,7 @@ const RELATIVE = 1e-3;
 const ULPS = 8;
 const EPSILON = 2 ** -23;
 // random_state of the inputs and hash, stream and the random states of pcg, sampleHalfVector, normal_distribution,
-// random_sphere and random_hemisphere, of sampleBSDF its random state, refraction and lobe, neeDecision and of the
+// random_sphere and random_hemisphere, of sampleBSDF its random state, refraction and lobe, samplesLights and of the
 // resampled reservoir its seed, random state and path, and the child the light tree picks
 const INTEGER_COLUMNS = [20, 21, 22, 23, 29, 48, 50, 54, 95, 96, 97, 114, 115, 126, 127, 142];
 // sampleBSDF, connectBSDF of the diffuse lobe, which replays the visible normal of its lobe choice, BSDF and what the

@@ -41,7 +41,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `sampleGGXVNDF`, `sampleCosWeightedHemisphere`, `tangentToWorld`, `worldToTangent` | cu:131, 153, 162, 172 | wgsl:726, 748, 757, 767 | 1 | **Shared** | Identical |
 | `normalMapTBN`, `tangentToWorldNormalMap` | cu:184, 203 | wgsl:779, 801 | 2, FlexLight | **Shared** | FlexLight's `mat3x3<f32>` and handedness, which flips the tangent where flex-cuda-pt turned the bitangent; Slang writes the columns as `float3x3(t, b, n)` and `tbn * v` as `mul(v, tbn)`, which WGSL gets back as written. CUDA takes the prelude's `Matrix<float, 3, 3>`, named `SlangMatrix` across the header, for its own `Matrix` |
 | `BSDF`, `SampleBSDF`, `BSDFLobes`, `sampleHalfVector`, `bsdfLobes`, `lobeThroughput`, `lobeDensity`, `sampleBSDF`, `connectBSDF` | cu:438, 210, 221, 235, 246, 278, 325, 360, 411 | wgsl:807-1032 | 2, FlexLight | **Shared** | FlexLight's plain Fresnel, undimmed diffuse and clamped density on its `Material`, whose albedo tints every surface interaction, the diffuse, metallic reflection and refraction, its absorption left to `beerLambert`; flex-cuda-pt's tint, level and Smith masking go |
-| `neeDecision` | cu:515 | wgsl:1356 | 2, FlexLight | **Shared** | Plain Fresnel |
+| `samplesLights` | inline in `walk` cu:1094 (`bd5216f`) | `neeDecision` wgsl:1356 | 2, flex-cuda-pt | **Shared** | renderer.cu's surfaces that sample lights, all but smooth mirrors and glass, as emission is weighted against light sampling with the light tree; in place of FlexLight's `neeDecision` between the two, plain Fresnel |
 | `neeBSDF` | `lightBSDF` cu:998 (`2782758`) | `skyBSDF` wgsl:1195 (`d20d420`) | 2, FlexLight | **Shared** | FlexLight's balance heuristic per lobe, over the density of the sample, on the side the consumer's `wrongSide` selects; flex-cuda-pt's power heuristic as an option, in FlexLight's form |
 | `straightThrough` | inline in `sampleLight` cu:960 (`2782758`) | – | 2 | **Shared** | Shadow rays passing straight through equal IORs, as `sampleBSDF`'s refraction lobe carries them on average; flex-cuda-pt's lacked the share of metallic reflection, `1 - F`. FlexLight's shadow rays stop at every surface |
 | `Material` (FlexLight) | – | wgsl:104, `rasterizer-compute.wgsl`:93 | 3 | Local | Laid out by the TypeScript upload and read from bindings: the shared code declares it `__target_intrinsic(wgsl, "Material")`, as FlexLight's own, and `__target_intrinsic(cuda, "BSDFMaterial")`, which flex-cuda-pt's `renderer.h` declares with the same fields and `walk` fills from its `Surface` |
@@ -148,7 +148,7 @@ grazing incidence and exitance): every shared function on the case's directions,
 random state, `sampleGGXVNDF` also directly on the outgoing direction mirrored above the surface, and on the case's
 `Material` FlexLight's BSDF through the half vector of its directions, each lobe's throughput where `sampleBSDF` can
 choose it toward its side and density, `sampleBSDF`, `connectBSDF` per lobe weighted by its density, `BSDF`,
-`neeDecision`, `neeBSDF` by each heuristic against a density of 0.5 plus the transparency, the normal map of the
+`samplesLights`, `neeBSDF` by each heuristic against a density of 0.5 plus the transparency, the normal map of the
 triangle of its directions, two reservoirs resampled by their shifts, `beerLambert` over the sum of the IORs,
 `straightThrough` along the incoming direction, two light tree nodes of the case picked toward a point of it, a
 triangle's density in solid angle, the power heuristic against a density of the case and against none and a sphere of
@@ -178,6 +178,7 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
   The light tree's are renderer.cu's (`bd5216f`), transcribed into the kernel, whose generated CUDA returned the same
   words as renderer.cu's own on a million random nodes, points and picks, with and without `--use_fast_math`.
   The sphere's are pbrt-v4's formulas written out in the kernel, `1 - cos` of the cone by its square root.
+  `samplesLights`' is renderer.cu's condition written out in the kernel.
 
 Tolerance: integers (random states, hashes, lobes, decisions, seeds) exactly; floats within
 `1e-5 + (1e-3 + 8 * 2^-23 / alpha^2) * |golden|`, as the GGX denominator, `alpha^2` at a lobe's peak, turns rounding

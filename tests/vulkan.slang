@@ -22,5 +22,5 @@ void main(uint3 id: SV_DispatchThreadID) {
     float pick = r.jac, probability = 1.0f;
     const uint child = pickChild(bounds, bounds, r.f, n, pick, probability);
     reservoirs[id.x] = finalize(sel, r.c * childShare(bounds, bounds, r.f, n, child) * solidAngle(probability, r.f, n)
-        + importance(bounds, r.f, n) * sine(pick) * powerHeuristic(r.w, r.jac));
+        + importance(bounds, r.f, n) * sine(pick) * powerHeuristic(r.w, r.jac) * float(samplesLights(material)));
 }

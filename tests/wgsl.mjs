@@ -152,7 +152,8 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         r[81u + 4u * lobe] = bitcast<u32>(connected.pdf);
     }
     parity_put(&r, 90u, BSDF(in_dir, out_dir, n, vec3<f32>(v[9], v[10], v[11]), material, v[18], v[19], random_state));
-    r[93] = u32(neeDecision(material, dot(n, - in_dir), v[18], v[19]));
+    r[93] = u32(${FLEXLIGHT ? "material.roughness > 0.0 || (material.metallic < 1.0 && material.transmission < 1.0)"
+        : "samplesLights(material)"});
     // Two samples resampled by their shifts with MIS weights, as the reuse passes do
     var a = Reservoir();
     a.seed = random_state;
