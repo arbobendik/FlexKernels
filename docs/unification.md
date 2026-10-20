@@ -58,6 +58,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `beerLambert` | cu:510 | wgsl:1348 | 2, FlexLight | **Shared** | FlexLight's on an absorption color, which FlexLight's `Material` gained, where it took the instance's albedo from `instance_material`; flex-cuda-pt's goes; each consumer reads it at its call site |
 | `faceNormal`, `smoothNormal`, `geometryOffset`, `hitPosition` | cu:605-623 | inline in `surfaceAt`, wgsl:1881 | 3 | Local | Data access: flat pointers vs instanced textures |
 | `LightBounds`, `importance`, `cosSubClamped`, `sinSubClamped`, `sine`, `solidAngle`, `pickChild`, `childShare`, `powerHeuristic` | h:38, cu:867-899, 995 and the steps of `sampleLight` and `lightPdf` (`bd5216f`) | – | 1 | **Shared** | renderer.cu's light tree, transpiled, for FlexLight's to come; `LightBounds` holds a node's emitters alone, each consumer keeps its tree, and is `__target_intrinsic(cuda)` renderer.h's `LightNode`. Each consumer loops down its own nodes one `pickChild` or `childShare` step at a time |
+| `sphereDensity`, `sampleSphere` | – | – | 1 | **Shared** | Cone sampling toward FlexLight's point lights as spheres and its density in solid angle, so that hits on them can be weighted against light sampling (pbrt-v4's Sphere::Sample) |
 | `sampleLight`, `lightPdf` | cu:915, 980 (`bd5216f`) | `Light`, `sampleLight`, `occluded` wgsl:113, 1054, 1154 | 3 | Local | The visibility test traverses, the nodes are read from each consumer's own data |
 | `pointLightRadiance` | – | wgsl:1238 | 1 | **Shared** | The math of `calculatePointLightContrib`, `color * intensity / (PI * radius * radius)`: corrected from 5a313db's extra factor of four at the user's direction so light hits agree with direct lighting; the light lookup stays in FlexLight |
 | `LightSample`, `NEESample`, `reservoirSample`, `calculatePointLightContrib`, `SamplePreCalc`, `SampledColor`, `lightTrace` | – | wgsl:1033-1364 | 3 | Local | FlexLight only; `calculatePointLightContrib` reads its light and calls `pointLightRadiance` |
@@ -150,7 +151,8 @@ choose it toward its side and density, `sampleBSDF`, `connectBSDF` per lobe weig
 `neeDecision`, `neeBSDF` by each heuristic against a density of 0.5 plus the transparency, the normal map of the
 triangle of its directions, two reservoirs resampled by their shifts, `beerLambert` over the sum of the IORs,
 `straightThrough` along the incoming direction, two light tree nodes of the case picked toward a point of it, a
-triangle's density in solid angle and the power heuristic against a density of the case and against none.
+triangle's density in solid angle, the power heuristic against a density of the case and against none and a sphere of
+the case sampled from its incoming direction, from inside at its larger radii.
 
 `pointLightRadiance` is checked separately on every case in C++, CUDA and WGSL: integrating its radiance over a
 diffuse sphere must recover `4 * PI * intensity * color`, without changing the reference golden columns.
@@ -175,6 +177,7 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
   `straightThrough`'s is FlexLight's refraction throughput times its probability through the normal at equal IORs.
   The light tree's are renderer.cu's (`bd5216f`), transcribed into the kernel, whose generated CUDA returned the same
   words as renderer.cu's own on a million random nodes, points and picks, with and without `--use_fast_math`.
+  The sphere's are pbrt-v4's formulas written out in the kernel, `1 - cos` of the cone by its square root.
 
 Tolerance: integers (random states, hashes, lobes, decisions, seeds) exactly; floats within
 `1e-5 + (1e-3 + 8 * 2^-23 / alpha^2) * |golden|`, as the GGX denominator, `alpha^2` at a lobe's peak, turns rounding
