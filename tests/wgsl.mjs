@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 122;
+const OUTPUTS = 132;
 const MATERIAL = /* wgsl */ `
 struct Material {
     albedo: vec3<f32>,
@@ -14,6 +14,40 @@ struct Material {
     ior: f32,
     absorption: vec3<f32>
 };
+`;
+const LIGHT_TREE = /* wgsl */ `
+struct LightBounds { low: vec3<f32>, high: vec3<f32>, w: vec3<f32>, phi: f32, cos_theta_o: f32 }
+fn parity_cosSubClamped(sin_a: f32, cos_a: f32, sin_b: f32, cos_b: f32) -> f32 {
+    if (cos_a > cos_b) { return 1.0; }
+    return cos_a * cos_b + sin_a * sin_b;
+}
+fn parity_sinSubClamped(sin_a: f32, cos_a: f32, sin_b: f32, cos_b: f32) -> f32 {
+    if (cos_a > cos_b) { return 0.0; }
+    return sin_a * cos_b - cos_a * sin_b;
+}
+fn parity_sine(c: f32) -> f32 { return sqrt(max(1.0 - c * c, 0.0)); }
+fn parity_importance(node: LightBounds, p: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let center = (node.low + node.high) * 0.5;
+    let diagonal = node.high - node.low;
+    let wi = normalize(p - center);
+    let d2 = dot(p - center, p - center);
+    let r2 = dot(diagonal, diagonal) / 4.0;
+    let cos_theta_w = abs(dot(node.w, wi));
+    let sin_theta_o = parity_sine(node.cos_theta_o);
+    var cos_theta_b = -1.0;
+    if (!(d2 < r2)) { cos_theta_b = sqrt(max(1.0 - r2 / d2, 0.0)); }
+    let sin_theta_b = parity_sine(cos_theta_b);
+    let cos_theta_x = parity_cosSubClamped(parity_sine(cos_theta_w), cos_theta_w, sin_theta_o, node.cos_theta_o);
+    let sin_theta_x = parity_sinSubClamped(parity_sine(cos_theta_w), cos_theta_w, sin_theta_o, node.cos_theta_o);
+    let cos_theta_p = parity_cosSubClamped(sin_theta_x, cos_theta_x, sin_theta_b, cos_theta_b);
+    if (cos_theta_p <= 0.0) { return 0.0; }
+    let cos_theta_i = - dot(wi, normal);
+    var facing = 1.0;
+    if (dot(normal, normal) != 0.0) {
+        facing = parity_cosSubClamped(parity_sine(cos_theta_i), cos_theta_i, sin_theta_b, cos_theta_b);
+    }
+    return max(node.phi * cos_theta_p / max(d2, length(diagonal) / 2.0) * facing, 0.0);
+}
 `;
 // FK's lobes by their BSDF and PDF functions, toward a given out_dir as the walk's replay takes them
 const LOBES = /* wgsl */ `
@@ -221,10 +255,47 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     let through = lobeThroughput(in_dir, n_i, alpha, material, straight, 1u) * straight.p_refract;
     parity_put(&r, 119u, select(vec3<f32>(0.0), through, straight.p_refract > 0.0));` : `
     parity_put(&r, 119u, straightThrough(material));`}
+    let first = LightBounds(min(in_dir, out_dir), max(in_dir, out_dir) + albedo * 0.5, n, 1.0 + albedo.x,
+        2.0 * albedo.y - 1.0);
+    let second = LightBounds(min(n, g_n) - vec3<f32>(0.25), max(n, g_n) + vec3<f32>(albedo.z), g_n, albedo.z * v[15],
+        1.0 - 2.0 * v[17]);
+    let light_point = in_dir * (1.0 + 3.0 * v[16]) + g_n;
+    let facing = out_dir * f32(v[17] < 1.0);
+    var pick = albedo.y;
+    var probability = 1.0;
+    ${FLEXLIGHT ? `let shares = vec2<f32>(parity_importance(first, light_point, facing),
+        parity_importance(second, light_point, facing));
+    var child = 2u;
+    if (!(shares.x == 0.0 && shares.y == 0.0)) {
+        let total = shares.x + shares.y;
+        child = u32(shares.y > 0.0 && pick * total >= shares.x);
+        pick = min((pick * total - f32(child) * shares.x) / shares[child], 0.99999994);
+        probability *= shares[child] / total;
+    }
+    r[122] = bitcast<u32>(shares.x);
+    r[123] = bitcast<u32>(shares.y);
+    r[124] = child;
+    r[127] = bitcast<u32>(select(0.0, shares.x / (shares.x + shares.y), shares.x > 0.0));
+    r[128] = bitcast<u32>(select(0.0, shares.y / (shares.x + shares.y), shares.y > 0.0));
+    let toward = out_dir * (1.0 + v[15]);
+    r[129] = bitcast<u32>(2.0 * (0.3 + albedo.x) * pow(length(toward), 3.0) / abs(dot(n * (1.0 + v[16]), toward)));
+    let ratio = 3.0 * albedo.y / (0.5 + v[17]);
+    r[130] = bitcast<u32>(select(1.0, 1.0 / (1.0 + ratio * ratio), 3.0 * albedo.y > 0.0));
+    r[131] = bitcast<u32>(1.0);` : `
+    r[122] = bitcast<u32>(importance(first, light_point, facing));
+    r[123] = bitcast<u32>(importance(second, light_point, facing));
+    r[124] = pickChild(first, second, light_point, facing, &pick, &probability);
+    r[127] = bitcast<u32>(childShare(first, second, light_point, facing, 0u));
+    r[128] = bitcast<u32>(childShare(first, second, light_point, facing, 1u));
+    r[129] = bitcast<u32>(solidAngle(0.3 + albedo.x, n * (1.0 + v[16]), out_dir * (1.0 + v[15])));
+    r[130] = bitcast<u32>(powerHeuristic(0.5 + v[17], 3.0 * albedo.y));
+    r[131] = bitcast<u32>(powerHeuristic(0.5 + v[17], 0.0));`}
+    r[125] = bitcast<u32>(pick);
+    r[126] = bitcast<u32>(probability);
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
-const UNSIGNED = [0, 1, 2, 8, 27, 29, 33, 74, 75, 76, 93, 94, 105, 106];
+const UNSIGNED = [0, 1, 2, 8, 27, 29, 33, 74, 75, 76, 93, 94, 105, 106, 124];
 
 Object.assign(globalThis, globals);
 // Kept referenced: the device is torn down with the GPU object
@@ -254,7 +325,7 @@ if (FLEXLIGHT) {
     .replace("instance_index: u32", "absorption: vec3<f32>")
     .replace("instance_material[instance_index].albedo", "absorption");
 }
-const module = device.createShaderModule({ code: (FLEXLIGHT ? "" : MATERIAL + LOBES) + source + KERNEL });
+const module = device.createShaderModule({ code: (FLEXLIGHT ? LIGHT_TREE : MATERIAL + LOBES) + source + KERNEL });
 const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "parity" } });
 const bindGroup = device.createBindGroup({
   layout: pipeline.getBindGroupLayout(0),
