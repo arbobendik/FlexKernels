@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 132;
+const OUTPUTS = 136;
 // As pathtracer-compute.wgsl declares it
 const MATERIAL = /* wgsl */ `
 struct Material {
@@ -238,6 +238,19 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[129] = bitcast<u32>(solidAngle(0.3 + albedo.x, n * (1.0 + v[16]), out_dir * (1.0 + v[15])));
     r[130] = bitcast<u32>(powerHeuristic(0.5 + v[17], 3.0 * albedo.y));
     r[131] = bitcast<u32>(powerHeuristic(0.5 + v[17], 0.0));`}
+    // A sphere of the case seen from its incoming direction, from inside at the larger radii, as pbrt-v4 samples it
+    let center = 2.0 * g_n;
+    let radius = 0.5 + 2.0 * v[16];
+    ${FLEXLIGHT ? `let sin2 = radius * radius / dot(center - in_dir, center - in_dir);
+    var cone = 2.0;
+    if (sin2 < 1.0) { cone = 1.0 - sqrt(1.0 - sin2); }
+    r[132] = bitcast<u32>(1.0 / (2.0 * PI * cone));
+    let cos_theta = 1.0 - albedo.x * cone;
+    let sin_theta = sqrt(1.0 - cos_theta * cos_theta);
+    parity_put(&r, 133u, tangentToWorld(vec3<f32>(sin_theta * cos(2.0 * PI * albedo.z), cos_theta,
+        sin_theta * sin(2.0 * PI * albedo.z)), normalize(center - in_dir)));` : `
+    r[132] = bitcast<u32>(sphereDensity(center, radius, in_dir));
+    parity_put(&r, 133u, sampleSphere(center, radius, in_dir, albedo.x, albedo.z));`}
     r[125] = bitcast<u32>(pick);
     r[126] = bitcast<u32>(probability);
     parity_results[id.x] = r;
