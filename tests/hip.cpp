@@ -5,4 +5,5 @@ struct BSDFMaterial { float3 albedo, emissive; float roughness, metallic, transm
 struct Hit { unsigned triangle; float2 uv; };
 struct Reservoir { unsigned seed, path; float w, c; float3 f; float jac; Hit rc; float3 dir, radiance; };
 struct Shift { float3 f; float jac; };
+struct LightNode { float3 low, high, w; float phi, cos_theta_o; unsigned child; bool leaf; };
 #include "pathtracer.cuh"

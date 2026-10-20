@@ -17,5 +17,10 @@ void main(uint3 id: SV_DispatchThreadID) {
     offer(sel, withEnd(r, 1u, 2u, connected.throughput * G1(r.w, fresnel(r.c, 1.0f, 1.5f))),
         safeDivide(r.f, tangentToWorldNormalMap(r.radiance, float3x3(r.dir, r.f, n))));
     offerShifted(sel, r, Shift(r.f, rgb_to_greyscale(r.radiance)), r.c);
-    reservoirs[id.x] = finalize(sel, r.c);
+    // A step down the light tree, as light sampling and its density take one
+    const LightBounds bounds = LightBounds(r.dir, r.radiance, n, r.w, r.c);
+    float pick = r.jac, probability = 1.0f;
+    const uint child = pickChild(bounds, bounds, r.f, n, pick, probability);
+    reservoirs[id.x] = finalize(sel, r.c * childShare(bounds, bounds, r.f, n, child) * solidAngle(probability, r.f, n)
+        + importance(bounds, r.f, n) * sine(pick) * powerHeuristic(r.w, r.jac));
 }

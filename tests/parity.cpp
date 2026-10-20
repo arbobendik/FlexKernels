@@ -9,6 +9,8 @@ typedef float3 Vec;
 typedef float2 Vec2;
 // FlexLight's Material, as flex-cuda-pt names it
 typedef BSDFMaterial Mat;
+// The light bounds of renderer.h's nodes
+typedef LightNode Bounds;
 __device__ Vec vec(const float* a) { return make_float3(a[0], a[1], a[2]); }
 __device__ Vec2 vec2(const float* a) { return make_float2(a[0], a[1]); }
 __device__ float rnorm(const float* a) { return rnorm3df(a[0], a[1], a[2]); }
@@ -19,6 +21,7 @@ __device__ float rnorm(const float* a) { return rnorm3df(a[0], a[1], a[2]); }
 typedef Vector<float, 3> Vec;
 typedef Vector<float, 2> Vec2;
 typedef Material Mat;
+typedef LightBounds Bounds;
 Vec vec(const float* a) { return Vec(a[0], a[1], a[2]); }
 Vec2 vec2(const float* a) { return Vec2(a[0], a[1]); }
 float rnorm(const float* a) { return 1 / sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); }
@@ -33,6 +36,8 @@ struct Result {
     float g1; Vec normal_map; BSDFLobes lobes; Vec lobe_throughput[3]; float lobe_density[3]; SampleBSDF sample;
     Vec connected[3]; float connected_pdf[3]; Vec bsdf; unsigned nee; Reservoir r; Selection sel; unsigned path;
     Vec beer_lambert, point_light, nee_balance, nee_power, straight_through;
+    float importance_first, importance_second; unsigned child;
+    float pick, probability, share_first, share_second, solid_angle, power_weight, power_full;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -111,6 +116,28 @@ __device__ Result evaluate(const Case& c) {
     r.nee_power = neeBSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, 0.5f + c.in[17], true,
         c.random_state);
     r.straight_through = straightThrough(in_dir, n, material);
+    // Two light tree nodes of the case, children of one, picked to a point and a normal, and a triangle's density
+    float low_first[3], high_first[3], low_second[3], high_second[3];
+    float light_point[3], facing[3], normal_scaled[3], toward[3];
+    for (int i = 0; i < 3; i++) {
+        low_first[i] = fminf(c.in[i], c.in[3 + i]), high_first[i] = fmaxf(c.in[i], c.in[3 + i]) + c.in[12 + i] * 0.5f;
+        low_second[i] = fminf(c.in[6 + i], c.in[9 + i]) - 0.25f;
+        high_second[i] = fmaxf(c.in[6 + i], c.in[9 + i]) + c.in[14];
+        light_point[i] = c.in[i] * (1 + 3 * c.in[16]) + c.in[9 + i], facing[i] = c.in[3 + i] * float(c.in[17] < 1);
+        normal_scaled[i] = c.in[6 + i] * (1 + c.in[16]), toward[i] = c.in[3 + i] * (1 + c.in[15]);
+    }
+    const Bounds first = {vec(low_first), vec(high_first), n, 1 + albedo.x, 2 * albedo.y - 1};
+    const Bounds second = {vec(low_second), vec(high_second), vec(c.in + 9), albedo.z * c.in[15], 1 - 2 * c.in[17]};
+    r.importance_first = importance(first, vec(light_point), vec(facing));
+    r.importance_second = importance(second, vec(light_point), vec(facing));
+    r.pick = albedo.y, r.probability = 1;
+    r.child = pickChild(first, second, vec(light_point), vec(facing), &r.pick, &r.probability);
+    r.share_first = childShare(first, second, vec(light_point), vec(facing), 0);
+    r.share_second = childShare(first, second, vec(light_point), vec(facing), 1);
+    r.solid_angle = solidAngle(0.3f + albedo.x, vec(normal_scaled), vec(toward));
+    // Light sampling's weight against a density of the case, and against none
+    r.power_weight = powerHeuristic(0.5f + c.in[17], 3 * albedo.y);
+    r.power_full = powerHeuristic(0.5f + c.in[17], 0);
     return r;
 }
 
@@ -178,6 +205,9 @@ int main() {
         printf(" %u %.9g %.9g", r.r.seed, r.r.w, r.r.c); print(r.r.f); printf(" %.9g %.9g", r.r.jac, r.sel.w_sum);
         print(r.sel.color); printf(" %u %u", r.sel.random_state, r.path); print(r.beer_lambert);
         print(r.nee_balance); print(r.nee_power); print(r.straight_through);
+        printf(" %.9g %.9g %u %.9g %.9g %.9g %.9g %.9g", r.importance_first, r.importance_second, r.child, r.pick,
+            r.probability, r.share_first, r.share_second, r.solid_angle);
+        printf(" %.9g %.9g", r.power_weight, r.power_full);
         printf("\n");
     }
 }
