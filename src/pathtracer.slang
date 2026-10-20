@@ -649,3 +649,89 @@ __extern_cpp public struct Selection {
     candidate.f = f;
     return candidate;
 }
+
+// Light tree of flex-cuda-pt's renderer.cu, transpiled in its order with its names and expressions; the loops down the
+// tree stay with each consumer, which reads its nodes, and take one step each of pickChild or childShare
+
+// A node's emitters: bounds, axis and angle of their normals' cone and power (pbrt-v4's LightBounds); each consumer keeps
+// its nodes' children. Target plumbing: flex-cuda-pt's own LightNode (renderer.h) holding them, the array it uploads,
+// the struct for every other target
+__target_intrinsic(cuda, "LightNode")
+__extern_cpp public struct LightBounds {
+    __extern_cpp public float3 low;
+    __extern_cpp public float3 high;
+    __extern_cpp public float3 w;
+    __extern_cpp public float phi;
+    __extern_cpp public float cos_theta_o;
+};
+
+// Of max(0, a - b) for angles a, b in [0, PI] by their sines and cosines
+[CudaDeviceExport] public func cosSubClamped(sin_a: float, cos_a: float, sin_b: float, cos_b: float) -> float {
+    return select(cos_a * cos_b + sin_a * sin_b, 1.0f, cos_a > cos_b);
+}
+[CudaDeviceExport] public func sinSubClamped(sin_a: float, cos_a: float, sin_b: float, cos_b: float) -> float {
+    return select(sin_a * cos_b - cos_a * sin_b, 0.0f, cos_a > cos_b);
+}
+// Of an angle in [0, PI] by its cosine
+[CudaDeviceExport] public func sine(c: float) -> float {
+    return sqrt(max(1.0f - c * c, 0.0f));
+}
+
+// Importance of a light BVH node to a point: power times bounds of the cosines at its emitters, two sided and diffuse,
+// and at the point (both hemispheres when normal is zero for transmission), over the squared distance
+// (pbrt-v4's LightBounds::Importance)
+[CudaDeviceExport] public func importance(node: LightBounds, p: float3, normal: float3) -> float {
+    let center: float3 = (node.low + node.high) * 0.5f;
+    let diagonal: float3 = node.high - node.low;
+    let wi: float3 = normalize(p - center);
+    let d2: float = dot(p - center, p - center);
+    let r2: float = dot(diagonal, diagonal) / 4.0f;
+    let cos_theta_w: float = abs(dot(node.w, wi));
+    let sin_theta_o: float = sine(node.cos_theta_o);
+    // Directions of the bounding sphere of the bounds, all from inside it
+    let cos_theta_b: float = select(sqrt(max(1.0f - r2 / d2, 0.0f)), -1.0f, d2 < r2);
+    let sin_theta_b: float = sine(cos_theta_b);
+    let cos_theta_x: float = cosSubClamped(sine(cos_theta_w), cos_theta_w, sin_theta_o, node.cos_theta_o);
+    let sin_theta_x: float = sinSubClamped(sine(cos_theta_w), cos_theta_w, sin_theta_o, node.cos_theta_o);
+    let cos_theta_p: float = cosSubClamped(sin_theta_x, cos_theta_x, sin_theta_b, cos_theta_b);
+    // Diffuse emitters spread a quarter turn: cos theta_e = 0
+    if (cos_theta_p <= 0.0f) {
+        return 0.0f;
+    }
+    let cos_theta_i: float = - dot(wi, normal);
+    return max(node.phi * cos_theta_p / max(d2, length(diagonal) / 2.0f)
+        * select(cosSubClamped(sine(cos_theta_i), cos_theta_i, sin_theta_b, cos_theta_b), 1.0f, dot(normal, normal) == 0.0f), 0.0f);
+}
+
+// Density in solid angle of a uniform point toward on a triangle of normal twice its area, the triangle picked with
+// probability
+[CudaDeviceExport] public func solidAngle(probability: float, normal: float3, toward: float3) -> float {
+    return 2.0f * probability * pow(length(toward), 3.0f) / abs(dot(normal, toward));
+}
+
+// One step down from a node: of its children first and second, the one pick chooses by their shares of importance, 2 if
+// neither has any, the pick rescaled to choose again and probability times the choice's (pbrt-v4's
+// BVHLightSampler::Sample)
+[CudaDeviceExport] public func pickChild(first: LightBounds, second: LightBounds, p: float3, normal: float3, inout pick: float, inout probability: float) -> uint {
+    let shares: float2 = float2(importance(first, p, normal), importance(second, p, normal));
+    if (shares.x == 0.0f && shares.y == 0.0f) {
+        return 2u;
+    }
+    let total: float = shares.x + shares.y;
+    let child: uint = uint(shares.y > 0.0f && pick * total >= shares.x);
+    pick = min((pick * total - float(child) * shares.x) / shares[child], 0.99999994f);
+    probability *= shares[child] / total;
+    return child;
+}
+
+// One step down the trail of a leaf: of a node's children first and second, the share of importance of the one child
+// names, as pickChild chooses it (pbrt-v4's BVHLightSampler::PMF)
+[CudaDeviceExport] public func childShare(first: LightBounds, second: LightBounds, p: float3, normal: float3, child: uint) -> float {
+    let shares: float2 = float2(importance(first, p, normal), importance(second, p, normal));
+    return select(0.0f, shares[child] / (shares.x + shares.y), shares[child] > 0.0f);
+}
+
+// Power heuristic weight of a strategy sampling at density a against one at density b (Veach 1997)
+[CudaDeviceExport] public func powerHeuristic(a: float, b: float) -> float {
+    return select(1.0f, 1.0f / (1.0f + (b / a) * (b / a)), b > 0.0f);
+}
