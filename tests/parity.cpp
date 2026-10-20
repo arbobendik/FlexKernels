@@ -34,7 +34,8 @@ struct Result {
     Vec connected[3]; float connected_pdf[3]; Vec bsdf; unsigned nee; Reservoir r; Selection sel; unsigned path;
     Vec beer_lambert, point_light, nee_balance, nee_power, straight_through;
     float importance_first, importance_second; unsigned child;
-    float pick, probability, share_first, share_second, solid_angle, power_weight, power_full;
+    float pick, probability, share_first, share_second, solid_angle, power_weight, power_full, sphere_density;
+    Vec sphere_direction;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -146,6 +147,9 @@ __device__ Result evaluate(const Case& c) {
     r.solid_angle = solidAngle(0.3f + albedo.x, vec(normal_scaled), vec(toward));
     r.power_weight = powerHeuristic(0.5f + c.in[17], 3 * albedo.y);
     r.power_full = powerHeuristic(0.5f + c.in[17], 0);
+    const float center[] = {2 * c.in[9], 2 * c.in[10], 2 * c.in[11]}, radius = 0.5f + 2 * c.in[16];
+    r.sphere_density = sphereDensity(vec(center), radius, in_dir);
+    r.sphere_direction = sampleSphere(vec(center), radius, in_dir, albedo.x, albedo.z);
     return r;
 }
 
@@ -216,6 +220,7 @@ int main() {
         printf(" %.9g %.9g %u %.9g %.9g %.9g %.9g %.9g", r.importance_first, r.importance_second, r.child, r.pick,
             r.probability, r.share_first, r.share_second, r.solid_angle);
         printf(" %.9g %.9g", r.power_weight, r.power_full);
+        printf(" %.9g", r.sphere_density); print(r.sphere_direction);
         printf("\n");
     }
 }
