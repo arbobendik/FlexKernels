@@ -9,6 +9,7 @@ __device__ inline float F32_exp(float f) { return expf(f); }
 __device__ inline float F32_log(float f) { return logf(f); }
 __device__ inline float F32_max(float a, float b) { return fmaxf(a, b); }
 __device__ inline float F32_min(float a, float b) { return fminf(a, b); }
+__device__ inline float F32_pow(float a, float b) { return powf(a, b); }
 __device__ inline float F32_sin(float f) { return sinf(f); }
 __device__ inline float F32_sqrt(float f) { return sqrtf(f); }
 __device__ inline float3 make_float3(float f) { return make_float3(f, f, f); }
@@ -24,5 +25,6 @@ template<> struct Matrix<float, 3, 3> { float3 rows[3]; };
 template<typename T, int ROWS, int COLS> __device__ inline Matrix<T, ROWS, COLS> makeMatrix(float3 a, float3 b, float3 c) {
     return {{a, b, c}};
 }
+__device__ inline float _slang_vector_get_element(float2 v, int i) { return i == 0 ? v.x : v.y; }
 __device__ inline float _slang_vector_get_element(float3 v, int i) { return i == 0 ? v.x : i == 1 ? v.y : v.z; }
 __device__ inline float* _slang_vector_get_element_ptr(float3* v, int i) { return i == 0 ? &v->x : i == 1 ? &v->y : &v->z; }
