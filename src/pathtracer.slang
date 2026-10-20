@@ -735,3 +735,26 @@ __extern_cpp public struct LightBounds {
 [CudaDeviceExport] public func powerHeuristic(a: float, b: float) -> float {
     return select(1.0f, 1.0f / (1.0f + (b / a) * (b / a)), b > 0.0f);
 }
+
+// Solid angle density of sampleSphere's directions from p toward a sphere: uniform over the cone it subtends, or over
+// all directions from inside it
+[CudaDeviceExport] public func sphereDensity(center: float3, radius: float, p: float3) -> float {
+    // Squared sine of the cone's half angle
+    let sin2: float = radius * radius / dot(center - p, center - p);
+    if (sin2 >= 1.0f) {
+        return 0.25f / PI;
+    }
+    // 1 / (2 PI (1 - cos)), as 2 PI sin^2 / (1 + cos) without cancellation for small spheres
+    return (1.0f + sqrt(1.0f - sin2)) / (2.0f * PI * sin2);
+}
+
+// Direction from p toward a sphere, uniform over the cone it subtends, or over all directions from inside it, by the
+// uniform random numbers u1 and u2 (pbrt-v4's Sphere::Sample by solid angle)
+[CudaDeviceExport] public func sampleSphere(center: float3, radius: float, p: float3, u1: float, u2: float) -> float3 {
+    let sin2: float = radius * radius / dot(center - p, center - p);
+    // 1 - cos theta, uniform over [0, 1 - cos of the cone's half angle], from inside over [0, 2]
+    let one_minus_cos: float = select(u1 * sin2 / (1.0f + sqrt(max(1.0f - sin2, 0.0f))), 2.0f * u1, sin2 >= 1.0f);
+    let sin_theta: float = sqrt(max(one_minus_cos * (2.0f - one_minus_cos), 0.0f));
+    let phi: float = 2.0f * PI * u2;
+    return tangentToWorld(float3(sin_theta * cos(phi), 1.0f - one_minus_cos, sin_theta * sin(phi)), normalize(center - p));
+}
