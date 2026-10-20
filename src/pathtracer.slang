@@ -571,6 +571,7 @@ __extern_cpp public struct BSDFLobes {
     return exp(distance * log(absorption_coefficient));
 }
 
+// Decide between next event estimation and emission on the next hit, as the path tracer does
 [CudaDeviceExport] public func neeDecision(material: Material, n_dot_v: float, eta_i: float, eta_o: float) -> bool {
     // Calculate fresnel term
     let F_n: float3 = mix(float3(fresnel(abs(n_dot_v), eta_i, eta_o)), material.albedo, material.metallic);
