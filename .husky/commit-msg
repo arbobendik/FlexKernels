@@ -7,3 +7,4 @@ if ! printf '%s\n' "$subject" | grep -qE '^(feat|chore|fix|wip)\([a-z0-9][a-z0-9
     echo "Example:  feat(reflections): trace mirror bounces" >&2
     exit 1
 fi
+if sed '/^#/d' "$1" | sed '1d' | grep -q '[^[:space:]]'; then echo "Commit messages are a single line: drop the body" >&2; exit 1; fi
