@@ -487,12 +487,9 @@ __extern_cpp public struct BSDFLobes {
     return exp(distance * log(absorption_coefficient));
 }
 
-[CudaDeviceExport] public func neeDecision(material: Material, n_dot_v: float, eta_i: float, eta_o: float) -> bool {
-    // Calculate fresnel term
-    let F_n: float3 = mix(float3(fresnel(abs(n_dot_v), eta_i, eta_o)), material.albedo, material.metallic);
-    let F_n_greyscale: float = rgb_to_greyscale(F_n);
-    let diffuse_factor_estimate: float = max((1.0f - F_n_greyscale) * (1.0f - material.metallic) * (1.0f - material.transmission), 0.0f);
-    return diffuse_factor_estimate > 0.04f || material.roughness > 0.2f;
+// Light sampling except at smooth mirrors and glass, whose lobes are delta
+[CudaDeviceExport] public func samplesLights(material: Material) -> bool {
+    return material.roughness > 0.0f || (material.metallic < 1.0f && material.transmission < 1.0f);
 }
 
 // Per lobe: BSDF * n_dot_l = throughput * PDF_lobe, light sample of PDF pdf
