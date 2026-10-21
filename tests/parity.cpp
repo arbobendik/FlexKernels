@@ -37,7 +37,7 @@ struct Result {
     float pick, probability, share_first, share_second, solid_angle, power_weight, power_full, sphere_density;
     Vec sphere_direction;
     float facing, geometry_density, threshold; unsigned footprint, inverse_footprint, rough; float survival, cap;
-    Vec2 temporal; float neighbor, canonical;
+    Vec2 temporal; float neighbor, canonical, geometry_offset;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -156,6 +156,17 @@ __device__ Result evaluate(const Case& c) {
     r.facing = facingSign(c.in[17], g_n, in_dir);
     const float throughput[] = {albedo.x * (1 + 2 * c.in[16]), albedo.y * (1 + 2 * c.in[16]), albedo.z * (1 + 2 * c.in[16])};
     r.survival = survivalProbability(vec(throughput), 0.25f + c.in[17]);
+    const float u = 0.5f * albedo.x, w = 0.5f * albedo.y, e1[] = {c.in[3] - c.in[0], c.in[4] - c.in[1], c.in[5] - c.in[2]},
+        e2[] = {c.in[9] - c.in[0], c.in[10] - c.in[1], c.in[11] - c.in[2]};
+    const float cross[] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]},
+        inverse = rnorm(cross), face[] = {cross[0] * inverse, cross[1] * inverse, cross[2] * inverse};
+    float n1[3], n2[3], position[3];
+    for (int i = 0; i < 3; i++) {
+        n1[i] = c.in[6 + i] + 0.2f * c.in[16] * c.in[i], n2[i] = c.in[6 + i] * (1 + c.in[17]) + 0.1f * c.in[9 + i];
+        position[i] = c.in[i] * (1 - u - w) + c.in[3 + i] * u + c.in[9 + i] * w + 0.05f * albedo.z * c.in[6 + i];
+    }
+    const float uvw[] = {1 - u - w, u, w};
+    r.geometry_offset = geometryOffset(in_dir, out_dir, g_n, n, vec(n1), vec(n2), vec(face), vec(uvw), vec(position));
     return r;
 }
 
@@ -229,7 +240,7 @@ int main() {
         printf(" %.9g", r.sphere_density); print(r.sphere_direction);
         printf(" %.9g %.9g %.9g %u %u %u %.9g %.9g", r.facing, r.geometry_density, r.threshold, r.footprint,
             r.inverse_footprint, r.rough, r.survival, r.cap);
-        printf(" %.9g %.9g %.9g %.9g", r.temporal.x, r.temporal.y, r.neighbor, r.canonical);
+        printf(" %.9g %.9g %.9g %.9g %.9g", r.temporal.x, r.temporal.y, r.neighbor, r.canonical, r.geometry_offset);
         printf("\n");
     }
 }
