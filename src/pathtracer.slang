@@ -276,6 +276,24 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     return mul(v, tbn);
 }
 
+// Distance along the smooth normal rays leave the point at position of the triangle t0 t1 t2 of vertex normals n0 n1 n2
+// and face normal geometry_n, to prevent unnatural hard shadow / reflection borders due to the difference between the
+// smooth normal and geometry: the corners' distances by the tangents of their normals' angles to the face, limited to
+// PI / 4, weighted by the barycentrics uvw and kept within an eighth of the shortest edge. FlexLight's surfaceAt, as it
+// writes it
+[CudaDeviceExport] public func geometryOffset(t0: float3, t1: float3, t2: float3, n0: float3, n1: float3, n2: float3, geometry_n: float3, uvw: float3, position: float3) -> float {
+    let edge1: float3 = t1 - t0;
+    let edge2: float3 = t2 - t0;
+    let edge3: float3 = t2 - t1;
+    let min_edge_length: float = min(length(edge1), min(length(edge2), length(edge3)));
+    let diffs: float3 = float3(distance(position, t0), distance(position, t1), distance(position, t2));
+    let angles: float3 = acos(abs(float3(dot(geometry_n, normalize(n0)), dot(geometry_n, normalize(n1)), dot(geometry_n, normalize(n2)))));
+    // Limit angles to 45 degrees
+    let angle_tan: float3 = clamp(tan(angles), float3(0.0f), float3(PI * 0.25f));
+    // Keep geometry offset within reasonable range
+    return clamp(dot(diffs * angle_tan, uvw), 0.0f, min_edge_length * 0.125f);
+}
+
 // BSDF times cosine toward out_dir as the path tracer samples it: the lobes of sampleBSDF on the side of the geometry normal
 // out_dir lies on, evaluated by connectBSDF. random_state replays the visible normal steering the diffuse lobe choice.
 [CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {

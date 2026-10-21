@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 148;
+const OUTPUTS = 149;
 // As pathtracer-compute.wgsl declares it
 const MATERIAL = /* wgsl */ `
 struct Material {
@@ -300,6 +300,29 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     r[146] = bitcast<u32>(neighborWeight(share, c_n, albedo.z, c_pair, v[16]));
     r[147] = bitcast<u32>(canonical);`}
+    // The offset of a point above the triangle of the case's directions, its vertex normals around n${FLEXLIGHT ? ", as surfaceAt writes it" : ""}
+    let t = mat3x3<f32>(in_dir, out_dir, g_n);
+    let normals = mat3x3<f32>(n, n + 0.2 * v[16] * in_dir, n * (1.0 + v[17]) + 0.1 * g_n);
+    let geometry_uvw = vec3<f32>(1.0 - 0.5 * albedo.x - 0.5 * albedo.y, 0.5 * albedo.x, 0.5 * albedo.y);
+    let offset_ray_target = t * geometry_uvw + 0.05 * albedo.z * n;
+    let geometry_n: vec3<f32> = normalize(cross(t[1] - t[0], t[2] - t[0]));
+    ${FLEXLIGHT ? `let edge1: vec3<f32> = t[1] - t[0];
+    let edge2: vec3<f32> = t[2] - t[0];
+    let edge3: vec3<f32> = t[2] - t[1];
+    let min_edge_length: f32 = min(length(edge1), min(length(edge2), length(edge3)));
+    let diffs: vec3<f32> = vec3<f32>(
+        distance(offset_ray_target, t[0]),
+        distance(offset_ray_target, t[1]),
+        distance(offset_ray_target, t[2])
+    );
+    let angles: vec3<f32> = acos(abs(vec3<f32>(
+        dot(geometry_n, normalize(normals[0])),
+        dot(geometry_n, normalize(normals[1])),
+        dot(geometry_n, normalize(normals[2]))
+    )));
+    let angle_tan: vec3<f32> = clamp(tan(angles), vec3<f32>(0.0f), vec3<f32>(PI * 0.25f));
+    r[148] = bitcast<u32>(clamp(dot(diffs * angle_tan, geometry_uvw), 0.0f, min_edge_length * 0.125f));` : `r[148] = bitcast<u32>(geometryOffset(t[0], t[1], t[2], normals[0], normals[1], normals[2], geometry_n, geometry_uvw,
+        offset_ray_target));`}
     r[137] = bitcast<u32>(geometry_density);
     r[138] = bitcast<u32>(threshold);
     r[143] = bitcast<u32>(cap);
