@@ -36,7 +36,8 @@ struct Result {
     float importance_first, importance_second; unsigned child;
     float pick, probability, share_first, share_second, solid_angle, power_weight, power_full, sphere_density;
     Vec sphere_direction;
-    float facing, geometry_density, threshold; unsigned footprint, inverse_footprint, rough; float survival;
+    float facing, geometry_density, threshold; unsigned footprint, inverse_footprint, rough; float survival, cap;
+    Vec2 temporal; float neighbor, canonical;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -226,8 +227,9 @@ int main() {
             r.probability, r.share_first, r.share_second, r.solid_angle);
         printf(" %.9g %.9g", r.power_weight, r.power_full);
         printf(" %.9g", r.sphere_density); print(r.sphere_direction);
-        printf(" %.9g %.9g %.9g %u %u %u %.9g", r.facing, r.geometry_density, r.threshold, r.footprint,
-            r.inverse_footprint, r.rough, r.survival);
+        printf(" %.9g %.9g %.9g %u %u %u %.9g %.9g", r.facing, r.geometry_density, r.threshold, r.footprint,
+            r.inverse_footprint, r.rough, r.survival, r.cap);
+        printf(" %.9g %.9g %.9g %.9g", r.temporal.x, r.temporal.y, r.neighbor, r.canonical);
         printf("\n");
     }
 }
