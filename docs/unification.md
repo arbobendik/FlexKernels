@@ -56,7 +56,8 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `Surface` (FlexLight) | – | wgsl:1243 | 3 | Local | Hit record (normals, offset, material, skip) |
 | `Op`, op enum, `logarithm`, `divide`, `texel`, `shade` | h:9-11, cu:451-500 | `textureSample`, `surfaceAt` wgsl:181, 1253 | 3 | Local | The Blender node interpreter has no counterpart: FlexLight's materials are fixed texture slots, `Op`'s union has none in Slang, and texels are flat pointers vs texture atlases |
 | `beerLambert` | cu:510 | wgsl:1348 | 2, FlexLight | **Shared** | FlexLight's on an absorption color, which FlexLight's `Material` gained, where it took the instance's albedo from `instance_material`; flex-cuda-pt's goes; each consumer reads it at its call site |
-| `faceNormal`, `smoothNormal`, `geometryOffset`, `hitPosition` | cu:605-623 | inline in `surfaceAt`, wgsl:1881 | 3 | Local | Data access: flat pointers vs instanced textures |
+| `faceNormal`, `smoothNormal`, `hitPosition` | cu:605-623 | inline in `surfaceAt`, wgsl:1881 | 3 | Local | Data access: flat pointers vs instanced textures |
+| `geometryOffset` | cu:813-826 (94f161f) | inline in `surfaceAt` (84cfac0) | 2, FlexLight | **Shared** | At the user's direction FlexLight's tangents, `tan(acos(c))`, where flex-cuda-pt took `sqrt(1 - c^2) / c`, and its order of terms; each consumer passes the triangle, its normals and the point it reads |
 | `LightBounds`, `importance`, `cosSubClamped`, `sinSubClamped`, `sine`, `solidAngle`, `pickChild`, `childShare`, `powerHeuristic` | h:38, cu:867-899, 995 and the steps of `sampleLight` and `lightPdf` (`bd5216f`) | – | 1 | **Shared** | renderer.cu's light tree, transpiled, for FlexLight's to come; `LightBounds` holds a node's emitters alone, each consumer keeps its tree, and is `__target_intrinsic(cuda)` renderer.h's `LightNode`. Each consumer loops down its own nodes one `pickChild` or `childShare` step at a time |
 | `sphereDensity`, `sampleSphere` | – | – | 1 | **Shared** | Cone sampling toward FlexLight's point lights as spheres and its density in solid angle, so that hits on them can be weighted against light sampling (pbrt-v4's Sphere::Sample) |
 | `sampleLight`, `lightPdf` | cu:915, 980 (`bd5216f`) | `Light`, `sampleLight`, `occluded` wgsl:113, 1054, 1154 | 3 | Local | The visibility test traverses, the nodes are read from each consumer's own data |
@@ -184,6 +185,8 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
   kernel with 5a313db's constants, which c4d5892 keeps, on lavapipe every word of the generated code's, and on NVIDIA.
   On Intel Mesa the first temporal weight is 1 or 2 ulps off in 39 cases, also with FlexLight's text as the
   function's: its driver fuses the multiply-adds of the inlined call otherwise.
+  `geometryOffset`'s is `surfaceAt`'s expressions written out in the kernel, on lavapipe, Intel Mesa and NVIDIA every
+  word of the generated code's.
 
 Tolerance: integers (random states, hashes, lobes, decisions, seeds) exactly; floats within
 `1e-5 + (1e-3 + 8 * 2^-23 / alpha^2) * |golden|`, as the GGX denominator, `alpha^2` at a lobe's peak, turns rounding
@@ -314,7 +317,7 @@ Ranked by what they would share, with what blocks each:
 
 1. The equal constants (`PI`, `BIAS`, `INV_PI`, `LOBE_*`, `RESTIR_*`, `RC_*`, `PATH_*`, `END_NEE`, `END_EMIT`,
    `STREAM_NEE`, `STREAM_RR`, `STREAM_SELECT`): need a generated header of named constants beside Slang's output.
-2. `faceNormal`, `smoothNormal`, `geometryOffset`: same math; data access via `IScene`.
+2. `faceNormal`, `smoothNormal`: same math; data access via `IScene`.
 3. `wrongSide` and `partner`: the same tests with other parameters, after the scene interface.
 4. `sampleLight` by importance, after FlexLight builds and binds a light BVH.
 5. `walk` and `shift` behind `ITracer` and `IScene`; FlexLight's `lightTrace` then becomes `walk` without ReSTIR.
