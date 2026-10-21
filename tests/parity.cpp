@@ -36,7 +36,8 @@ struct Result {
     float importance_first, importance_second; unsigned child;
     float pick, probability, share_first, share_second, solid_angle, power_weight, power_full, sphere_density;
     Vec sphere_direction;
-    float facing, geometry_density, threshold; unsigned footprint, inverse_footprint, rough; float survival;
+    float facing, geometry_density, threshold; unsigned footprint, inverse_footprint, rough; float survival, cap;
+    Vec2 temporal; float neighbor, canonical;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -162,6 +163,14 @@ __device__ Result evaluate(const Case& c) {
     r.rough = ((albedo.z - 0.2f) > 0.0f && ((c.in[15] == 0) || c.in[16] >= 0.2f));
     const float throughput[] = {albedo.x * (1 + 2 * c.in[16]), albedo.y * (1 + 2 * c.in[16]), albedo.z * (1 + 2 * c.in[16])};
     r.survival = survivalProbability(vec(throughput), 0.25f + c.in[17]);
+    r.cap = (20.0f + (1.0f - 20.0f) * powf((albedo.x * c.in[17]), 0.1f));
+    const float temporal[] = {(1 + 3 * albedo.x) * r.greyscale / ((1 + 3 * albedo.x) * r.greyscale + r.cap * albedo.z),
+        r.cap * albedo.y / (r.cap * albedo.y + (1 + 3 * albedo.x) * c.in[16])};
+    r.temporal = vec2(temporal);
+    const float share = ((2 * albedo.y) + (0.5f + albedo.x)) / (3 + albedo.z);
+    r.neighbor = share * (2 * albedo.y) * albedo.z / ((2 * albedo.y) * albedo.z + (0.5f + albedo.x) * c.in[16]);
+    r.canonical = c.in[17] - 0.5f > 0 ? share * (0.5f + albedo.x) * (c.in[17] - 0.5f)
+        / ((0.5f + albedo.x) * (c.in[17] - 0.5f) + (2 * albedo.y) * albedo.x) : 0;
     return r;
 }
 
@@ -233,8 +242,9 @@ int main() {
             r.probability, r.share_first, r.share_second, r.solid_angle);
         printf(" %.9g %.9g", r.power_weight, r.power_full);
         printf(" %.9g", r.sphere_density); print(r.sphere_direction);
-        printf(" %.9g %.9g %.9g %u %u %u %.9g", r.facing, r.geometry_density, r.threshold, r.footprint,
-            r.inverse_footprint, r.rough, r.survival);
+        printf(" %.9g %.9g %.9g %u %u %u %.9g %.9g", r.facing, r.geometry_density, r.threshold, r.footprint,
+            r.inverse_footprint, r.rough, r.survival, r.cap);
+        printf(" %.9g %.9g %.9g %.9g", r.temporal.x, r.temporal.y, r.neighbor, r.canonical);
         printf("\n");
     }
 }
