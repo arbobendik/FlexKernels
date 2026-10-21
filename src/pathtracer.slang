@@ -252,6 +252,21 @@ __extern_cpp public struct Random {
     return mul(v, tbn);
 }
 
+// Offset along the smooth normal to prevent unnatural hard shadow / reflection borders due to the difference
+// between the smooth normal and geometry
+[CudaDeviceExport] public func geometryOffset(t0: float3, t1: float3, t2: float3, n0: float3, n1: float3, n2: float3, geometry_n: float3, uvw: float3, position: float3) -> float {
+    let edge1: float3 = t1 - t0;
+    let edge2: float3 = t2 - t0;
+    let edge3: float3 = t2 - t1;
+    let min_edge_length: float = min(length(edge1), min(length(edge2), length(edge3)));
+    let diffs: float3 = float3(distance(position, t0), distance(position, t1), distance(position, t2));
+    let angles: float3 = acos(abs(float3(dot(geometry_n, normalize(n0)), dot(geometry_n, normalize(n1)), dot(geometry_n, normalize(n2)))));
+    // Limit angles to 45 degrees
+    let angle_tan: float3 = clamp(tan(angles), float3(0.0f), float3(PI * 0.25f));
+    // Keep geometry offset within reasonable range
+    return clamp(dot(diffs * angle_tan, uvw), 0.0f, min_edge_length * 0.125f);
+}
+
 // Each lobe toward out_dir: its throughput and PDF_lobe in the diffuse, refraction and reflection slots,
 // PDF_lobe = 0 where it doesn't reach out_dir
 // out_dir across the face (refracted): the refraction
