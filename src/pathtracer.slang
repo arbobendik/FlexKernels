@@ -654,6 +654,10 @@ __extern_cpp public struct Selection {
 static const float RESTIR_ROUGHNESS = 0.2;
 // Dual ray footprint constant c / 100 * 4 PI of Eq. 5 with c = 0.02
 static const float RESTIR_FOOTPRINT = 0.0025132741228718345;
+// Temporal confidence cap and its duplication-driven reduction (Sec. 5)
+static const float RESTIR_CAP = 20.0;
+static const float RESTIR_CAP_MIN = 1.0;
+static const float RESTIR_DUPLICATION_ALPHA = 0.1;
 
 // Sign that turns a hit's normals toward the side the ray arrives from, which surfaces transmitting light keep
 [CudaDeviceExport] public func facingSign(transmission: float, face: float3, direction: float3) -> float {
@@ -696,6 +700,40 @@ static const float RESTIR_FOOTPRINT = 0.0025132741228718345;
     default:
     return min(max(max(throughput.x, max(throughput.y, throughput.z)) / density, 0.0f), 1.0f);
     }
+}
+
+// Temporal confidence cap, lowered where the previous frame duplicated samples (Sec. 5), duplicated 0 otherwise
+[CudaDeviceExport] public func confidenceCap(duplicated: float) -> float {
+    return interpolate(RESTIR_CAP, RESTIR_CAP_MIN, pow(duplicated, RESTIR_DUPLICATION_ALPHA));
+}
+// Target plumbing: FlexLight's mix for WGSL, flex-cuda-pt's a + (b - a) * t for every other target
+float interpolate(float a, float b, float t) {
+    __target_switch {
+    case wgsl: __intrinsic_asm "mix($0, $1, $2)";
+    default: return a + (b - a) * t;
+    }
+}
+
+// MIS weights of temporal reuse: of the current sample of confidence c and target p_c against the previous one shifted
+// here, and of the previous one, confidence c_t, against the current one shifted back, by the targets g of the shifts
+[CudaDeviceExport] public func temporalWeights(c: float, p_c: float, c_t: float, p_t: float, g_previous: float, g_current: float) -> float2 {
+    return float2(c * p_c / (c * p_c + c_t * g_previous), c_t * p_t / (c_t * p_t + c * g_current));
+}
+
+// Share of a pair of spatial reuse (Sec. 3.2) in the confidence c_sum of all: the neighbor's confidence c_n and the
+// current pixel's, split evenly across the pairs into c_pair
+[CudaDeviceExport] public func pairShare(c_n: float, c_pair: float, c_sum: float) -> float {
+    return (c_n + c_pair) / c_sum;
+}
+
+// MIS weight of the neighbor's sample of a pair, of target p_n, against the current pixel's shifted to it, g_here
+[CudaDeviceExport] public func neighborWeight(share: float, c_n: float, p_n: float, c_pair: float, g_here: float) -> float {
+    return share * c_n * p_n / (c_n * p_n + c_pair * g_here);
+}
+
+// The canonical sample's share against the neighbor, which the consumers count where its target p_c is positive
+[CudaDeviceExport] public func canonicalWeight(share: float, c_pair: float, p_c: float, c_n: float, g_there: float) -> float {
+    return share * c_pair * p_c / (c_pair * p_c + c_n * g_there);
 }
 
 // Light tree of flex-cuda-pt's renderer.cu, transpiled in its order with its names and expressions; the loops down the

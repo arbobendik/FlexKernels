@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 143;
+const OUTPUTS = 148;
 // As pathtracer-compute.wgsl declares it
 const MATERIAL = /* wgsl */ `
 struct Material {
@@ -259,6 +259,12 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     let d_start = 1.0 + v[17];
     let throughput = albedo * (1.0 + 2.0 * v[16]);
     let density = 0.25 + v[17];
+    let r_c = 1.0 + 3.0 * albedo.x;
+    let p_c = rgb_to_greyscale(albedo);
+    let c_n = 2.0 * albedo.y;
+    let c_pair = 0.5 + albedo.x;
+    let c_sum = 3.0 + albedo.z;
+    let p_pair = v[17] - 0.5;
     ${FLEXLIGHT ? `r[136] = bitcast<u32>(select(-1.0f, 1.0f, v[17] > 0.0f || dot(g_n, in_dir) < 0.0f));
     let geometry_density = abs(dot(g_n, out_dir)) / (d_here * d_here);
     let threshold = RESTIR_FOOTPRINT / (abs(dot(n, in_dir)) / (d_start * d_start));
@@ -267,16 +273,36 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[141] = u32(albedo.z - 0.2 > 0.0f && (v[15] == 0.0 || v[16] >= RESTIR_ROUGHNESS));
     let importancy_factor: vec3<f32> = throughput / density;
     r[142] = bitcast<u32>(clamp(max(importancy_factor.x, max(importancy_factor.y, importancy_factor.z)), 0.0f, 1.0f));
-` : `r[136] = bitcast<u32>(facingSign(v[17], g_n, in_dir));
+    let cap: f32 = mix(RESTIR_CAP, RESTIR_CAP_MIN, pow(albedo.x * v[17], RESTIR_DUPLICATION_ALPHA));
+    r[144] = bitcast<u32>(r_c * p_c / (r_c * p_c + cap * albedo.z));
+    r[145] = bitcast<u32>(cap * albedo.y / (cap * albedo.y + r_c * v[16]));
+    let share: f32 = (c_n + c_pair) / c_sum;
+    var canonical = 0.0;
+    if (p_pair > 0.0f) {
+        canonical += share * c_pair * p_pair / (c_pair * p_pair + c_n * albedo.x);
+    }
+    r[146] = bitcast<u32>(share * c_n * albedo.z / (c_n * albedo.z + c_pair * v[16]));
+    r[147] = bitcast<u32>(canonical);` : `r[136] = bitcast<u32>(facingSign(v[17], g_n, in_dir));
     let geometry_density = geometryDensity(g_n, out_dir, d_here);
     let threshold = footprintThreshold(geometryDensity(n, in_dir, d_start));
     r[139] = u32(withinFootprint(v[17] < 1.0, v[15] < 1.0, 400.0 * albedo.x, geometry_density, threshold));
     r[140] = u32(withinInverseFootprint(400.0 * albedo.y, v[17] == 0.0, abs(dot(g_n, in_dir)), d_here, threshold));
     r[141] = u32(roughLobe(albedo.z - 0.2, v[15] == 0.0, v[16]));
     r[142] = bitcast<u32>(survivalProbability(throughput, density));
-`}
+    let cap = confidenceCap(albedo.x * v[17]);
+    let temporal = temporalWeights(r_c, p_c, cap, albedo.y, albedo.z, v[16]);
+    r[144] = bitcast<u32>(temporal.x);
+    r[145] = bitcast<u32>(temporal.y);
+    let share = pairShare(c_n, c_pair, c_sum);
+    var canonical = 0.0;
+    if (p_pair > 0.0f) {
+        canonical += canonicalWeight(share, c_pair, p_pair, c_n, albedo.x);
+    }
+    r[146] = bitcast<u32>(neighborWeight(share, c_n, albedo.z, c_pair, v[16]));
+    r[147] = bitcast<u32>(canonical);`}
     r[137] = bitcast<u32>(geometry_density);
     r[138] = bitcast<u32>(threshold);
+    r[143] = bitcast<u32>(cap);
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
