@@ -663,6 +663,9 @@ __extern_cpp public struct Selection {
 
 static const float RESTIR_ROUGHNESS = 0.2;
 static const float RESTIR_FOOTPRINT = 0.0025132741228718345;
+static const float RESTIR_CAP = 20.0;
+static const float RESTIR_CAP_MIN = 1.0;
+static const float RESTIR_DUPLICATION_ALPHA = 0.1;
 
 [CudaDeviceExport] public func facingSign(transmission: float, face: float3, direction: float3) -> float {
     return transmission > 0.0f || dot(face, direction) < 0.0f ? 1.0f : -1.0f;
@@ -675,6 +678,13 @@ static const float RESTIR_FOOTPRINT = 0.0025132741228718345;
     return clamp(max(importancy_factor.x, max(importancy_factor.y, importancy_factor.z)), 0.0f, 1.0f);
     default:
     return min(max(max(throughput.x, max(throughput.y, throughput.z)) / density, 0.0f), 1.0f);
+    }
+}
+
+float interpolate(float a, float b, float t) {
+    __target_switch {
+    case wgsl: __intrinsic_asm "mix($0, $1, $2)";
+    default: return a + (b - a) * t;
     }
 }
 
