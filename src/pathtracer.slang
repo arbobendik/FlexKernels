@@ -589,6 +589,44 @@ __extern_cpp public struct Selection {
 }
 
 
+static const float RESTIR_ROUGHNESS = 0.2;
+static const float RESTIR_FOOTPRINT = 0.0025132741228718345;
+
+[CudaDeviceExport] public func facingSign(transmission: float, face: float3, direction: float3) -> float {
+    return transmission > 0.0f || dot(face, direction) < 0.0f ? 1.0f : -1.0f;
+}
+
+[CudaDeviceExport] public func geometryDensity(geometry_n: float3, direction: float3, distance: float) -> float {
+    return abs(dot(geometry_n, direction)) / (distance * distance);
+}
+
+[CudaDeviceExport] public func footprintThreshold(geometry_density: float) -> float {
+    return RESTIR_FOOTPRINT / geometry_density;
+}
+
+[CudaDeviceExport] public func withinFootprint(open: bool, prev_rough: bool, prev_pdf: float, geometry_density: float, threshold: float) -> bool {
+    return open && prev_rough && prev_pdf * geometry_density * threshold <= 1.0f;
+}
+
+[CudaDeviceExport] public func withinInverseFootprint(pdf: float, diffuse: bool, prev_cos: float, distance: float, threshold: float) -> bool {
+    return pdf > 0.0f && (diffuse || pdf * prev_cos / (distance * distance) * threshold <= 1.0f);
+}
+
+[CudaDeviceExport] public func roughLobe(pdf: float, diffuse: bool, roughness: float) -> bool {
+    return pdf > 0.0f && (diffuse || roughness >= RESTIR_ROUGHNESS);
+}
+
+[CudaDeviceExport] public func survivalProbability(throughput: float3, density: float) -> float {
+    __target_switch {
+    case wgsl:
+    let importancy_factor: float3 = throughput / density;
+    return clamp(max(importancy_factor.x, max(importancy_factor.y, importancy_factor.z)), 0.0f, 1.0f);
+    default:
+    return min(max(max(throughput.x, max(throughput.y, throughput.z)) / density, 0.0f), 1.0f);
+    }
+}
+
+
 __target_intrinsic(cuda, "LightNode")
 __extern_cpp public struct LightBounds {
     __extern_cpp public float3 low;

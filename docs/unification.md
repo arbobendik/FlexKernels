@@ -74,6 +74,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `Reservoir`, `Shift`, `Selection` | h:27, 41, cu:565 | wgsl:1810, 1842, 1847 | 1 | **Shared** | FlexLight's; `Reservoir` and `Shift` `__target_intrinsic(cuda)`, as the host sizes its buffers by `renderer.h`'s, whose `rc` is a `Hit`: the shared code only copies `rc` and never constructs a `Reservoir` |
 | `offer`, `offerShifted`, `finalize`, `withEnd` | cu:753-782 | wgsl:1949-1980 | 1 | **Shared** | FlexLight's: `offer` draws through `pcg`, renderer.cu's `random` on CUDA, `withEnd` inserts its bits, which every candidate leaves clear for CUDA's OR |
 | MIS weights of temporal and paired spatial reuse | inline in `__raygen__temporal`, `__raygen__spatial` | inline in `restir_temporal`, `restir_spatial` | 1 | Local | Identical but the confidence cap, `mix` vs `a + (b - a) * t`, yet written inline in both entry points: functions of their own would change FlexLight's structure |
+| `facingSign`, `geometryDensity`, `footprintThreshold`, `withinFootprint`, `withinInverseFootprint`, `roughLobe`, `survivalProbability` | inline in `walk` (e102f38) | inline in `facingRay` and `walk` (c4d5892) | 1 | **Shared** | Identical, with `RESTIR_ROUGHNESS` and `RESTIR_FOOTPRINT`; Russian roulette's ratio is FlexLight's clamp of the largest ratio for WGSL and flex-cuda-pt's ratio of the largest for every other target, equal for positive densities |
 | `Domain`, `Vertex` | cu:569-579 | wgsl:1827-1840 | 3 | Local | Hold `Hit`; WGSL's `Vertex` adds `inside` |
 | `extractBits` | cu:590 | builtin | 1 | Local | WGSL builtin |
 | `wrongSide` | cu:639 | wgsl:1988 | 3 | Local | The incoming direction's side of the face vs FlexLight's `inside` state of the path |
@@ -179,6 +180,9 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
   words as renderer.cu's own on a million random nodes, points and picks, with and without `--use_fast_math`.
   The sphere's are pbrt-v4's formulas written out in the kernel, `1 - cos` of the cone by its square root.
   `samplesLights`' is renderer.cu's condition written out in the kernel.
+  ReSTIR's decisions, `facingSign` to `survivalProbability`, are FlexLight's expressions of c4d5892 written out in
+  the kernel with 5a313db's constants, which c4d5892 keeps, on lavapipe, Intel Mesa and NVIDIA every word of the
+  generated code's.
 
 Tolerance: integers (random states, hashes, lobes, decisions, seeds) exactly; floats within
 `1e-5 + (1e-3 + 8 * 2^-23 / alpha^2) * |golden|`, as the GGX denominator, `alpha^2` at a lobe's peak, turns rounding
