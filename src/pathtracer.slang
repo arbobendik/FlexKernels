@@ -603,6 +603,9 @@ __extern_cpp public struct Selection {
 
 static const float RESTIR_ROUGHNESS = 0.2;
 static const float RESTIR_FOOTPRINT = 0.0025132741228718345;
+static const float RESTIR_CAP = 20.0;
+static const float RESTIR_CAP_MIN = 1.0;
+static const float RESTIR_DUPLICATION_ALPHA = 0.1;
 
 [CudaDeviceExport] public func facingSign(transmission: float, face: float3, direction: float3) -> float {
     return transmission > 0.0f || dot(face, direction) < 0.0f ? 1.0f : -1.0f;
@@ -636,6 +639,32 @@ static const float RESTIR_FOOTPRINT = 0.0025132741228718345;
     default:
     return min(max(max(throughput.x, max(throughput.y, throughput.z)) / density, 0.0f), 1.0f);
     }
+}
+
+[CudaDeviceExport] public func confidenceCap(duplicated: float) -> float {
+    return interpolate(RESTIR_CAP, RESTIR_CAP_MIN, pow(duplicated, RESTIR_DUPLICATION_ALPHA));
+}
+float interpolate(float a, float b, float t) {
+    __target_switch {
+    case wgsl: __intrinsic_asm "mix($0, $1, $2)";
+    default: return a + (b - a) * t;
+    }
+}
+
+[CudaDeviceExport] public func temporalWeights(c: float, p_c: float, c_t: float, p_t: float, g_previous: float, g_current: float) -> float2 {
+    return float2(c * p_c / (c * p_c + c_t * g_previous), c_t * p_t / (c_t * p_t + c * g_current));
+}
+
+[CudaDeviceExport] public func pairShare(c_n: float, c_pair: float, c_sum: float) -> float {
+    return (c_n + c_pair) / c_sum;
+}
+
+[CudaDeviceExport] public func neighborWeight(share: float, c_n: float, p_n: float, c_pair: float, g_here: float) -> float {
+    return share * c_n * p_n / (c_n * p_n + c_pair * g_here);
+}
+
+[CudaDeviceExport] public func canonicalWeight(share: float, c_pair: float, p_c: float, c_n: float, g_there: float) -> float {
+    return share * c_pair * p_c / (c_pair * p_c + c_n * g_there);
 }
 
 
