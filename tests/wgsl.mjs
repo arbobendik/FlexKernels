@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 136;
+const OUTPUTS = 143;
 // As pathtracer-compute.wgsl declares it
 const MATERIAL = /* wgsl */ `
 struct Material {
@@ -254,10 +254,33 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     parity_put(&r, 133u, sampleSphere(center, radius, in_dir, albedo.x, albedo.z));`}
     r[125] = bitcast<u32>(pick);
     r[126] = bitcast<u32>(probability);
+    // ReSTIR's decisions on values of the case, either side of each of their thresholds${FLEXLIGHT ? ", as FlexLight's walk, its passes and facingRay write them" : ""}
+    let d_here = 0.5 + v[16];
+    let d_start = 1.0 + v[17];
+    let throughput = albedo * (1.0 + 2.0 * v[16]);
+    let density = 0.25 + v[17];
+    ${FLEXLIGHT ? `r[136] = bitcast<u32>(select(-1.0f, 1.0f, v[17] > 0.0f || dot(g_n, in_dir) < 0.0f));
+    let geometry_density = abs(dot(g_n, out_dir)) / (d_here * d_here);
+    let threshold = RESTIR_FOOTPRINT / (abs(dot(n, in_dir)) / (d_start * d_start));
+    r[139] = u32(v[17] < 1.0 && v[15] < 1.0 && 400.0 * albedo.x * geometry_density * threshold <= 1.0f);
+    r[140] = u32(400.0 * albedo.y > 0.0f && (v[17] == 0.0 || 400.0 * albedo.y * abs(dot(g_n, in_dir)) / (d_here * d_here) * threshold <= 1.0f));
+    r[141] = u32(albedo.z - 0.2 > 0.0f && (v[15] == 0.0 || v[16] >= RESTIR_ROUGHNESS));
+    let importancy_factor: vec3<f32> = throughput / density;
+    r[142] = bitcast<u32>(clamp(max(importancy_factor.x, max(importancy_factor.y, importancy_factor.z)), 0.0f, 1.0f));
+` : `r[136] = bitcast<u32>(facingSign(v[17], g_n, in_dir));
+    let geometry_density = geometryDensity(g_n, out_dir, d_here);
+    let threshold = footprintThreshold(geometryDensity(n, in_dir, d_start));
+    r[139] = u32(withinFootprint(v[17] < 1.0, v[15] < 1.0, 400.0 * albedo.x, geometry_density, threshold));
+    r[140] = u32(withinInverseFootprint(400.0 * albedo.y, v[17] == 0.0, abs(dot(g_n, in_dir)), d_here, threshold));
+    r[141] = u32(roughLobe(albedo.z - 0.2, v[15] == 0.0, v[16]));
+    r[142] = bitcast<u32>(survivalProbability(throughput, density));
+`}
+    r[137] = bitcast<u32>(geometry_density);
+    r[138] = bitcast<u32>(threshold);
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
-const UNSIGNED = [0, 1, 2, 8, 27, 29, 33, 74, 75, 76, 93, 94, 105, 106, 124];
+const UNSIGNED = [0, 1, 2, 8, 27, 29, 33, 74, 75, 76, 93, 94, 105, 106, 124, 139, 140, 141];
 
 Object.assign(globalThis, globals);
 // Dawn tears the device down with the GPU object, so it stays referenced

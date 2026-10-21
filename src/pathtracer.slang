@@ -647,6 +647,57 @@ __extern_cpp public struct Selection {
     return candidate;
 }
 
+// Decisions of ReSTIR PT both consumers make inline alike, by their expressions; each consumer keeps the loops, seeds
+// and reads around them
+
+// Single-vertex roughness threshold (Sec. 4.2)
+static const float RESTIR_ROUGHNESS = 0.2;
+// Dual ray footprint constant c / 100 * 4 PI of Eq. 5 with c = 0.02
+static const float RESTIR_FOOTPRINT = 0.0025132741228718345;
+
+// Sign that turns a hit's normals toward the side the ray arrives from, which surfaces transmitting light keep
+[CudaDeviceExport] public func facingSign(transmission: float, face: float3, direction: float3) -> float {
+    return transmission > 0.0f || dot(face, direction) < 0.0f ? 1.0f : -1.0f;
+}
+
+// Density of a segment's end in area measure per solid angle at its start
+[CudaDeviceExport] public func geometryDensity(geometry_n: float3, direction: float3, distance: float) -> float {
+    return abs(dot(geometry_n, direction)) / (distance * distance);
+}
+
+// Primary ray footprint (Eq. 5) of the camera's hit
+[CudaDeviceExport] public func footprintThreshold(geometry_density: float) -> float {
+    return RESTIR_FOOTPRINT / geometry_density;
+}
+
+// Ray footprint criterion for reconnecting from the previous vertex to this one (Eq. 5)
+[CudaDeviceExport] public func withinFootprint(open: bool, prev_rough: bool, prev_pdf: float, geometry_density: float, threshold: float) -> bool {
+    return open && prev_rough && prev_pdf * geometry_density * threshold <= 1.0f;
+}
+
+// The criterion in the other direction, from this vertex along the sampled lobe
+[CudaDeviceExport] public func withinInverseFootprint(pdf: float, diffuse: bool, prev_cos: float, distance: float, threshold: float) -> bool {
+    return pdf > 0.0f && (diffuse || pdf * prev_cos / (distance * distance) * threshold <= 1.0f);
+}
+
+// Whether a sampled lobe is rough enough to reconnect through (Sec. 4.2)
+[CudaDeviceExport] public func roughLobe(pdf: float, diffuse: bool, roughness: float) -> bool {
+    return pdf > 0.0f && (diffuse || roughness >= RESTIR_ROUGHNESS);
+}
+
+// Russian roulette's probability of continuing a path of a throughput over the density of its choices. Target
+// plumbing: FlexLight's clamp of the largest ratio for WGSL, flex-cuda-pt's ratio of the largest for every other
+// target, equal for positive densities
+[CudaDeviceExport] public func survivalProbability(throughput: float3, density: float) -> float {
+    __target_switch {
+    case wgsl:
+    let importancy_factor: float3 = throughput / density;
+    return clamp(max(importancy_factor.x, max(importancy_factor.y, importancy_factor.z)), 0.0f, 1.0f);
+    default:
+    return min(max(max(throughput.x, max(throughput.y, throughput.z)) / density, 0.0f), 1.0f);
+    }
+}
+
 // Light tree of flex-cuda-pt's renderer.cu, transpiled in its order with its names and expressions; the loops down the
 // tree stay with each consumer, which reads its nodes, and take one step each of pickChild or childShare
 

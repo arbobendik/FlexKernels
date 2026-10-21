@@ -39,6 +39,7 @@ struct Result {
     float importance_first, importance_second; unsigned child;
     float pick, probability, share_first, share_second, solid_angle, power_weight, power_full, sphere_density;
     Vec sphere_direction;
+    float facing, geometry_density, threshold; unsigned footprint, inverse_footprint, rough; float survival;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -143,6 +144,17 @@ __device__ Result evaluate(const Case& c) {
     const float center[] = {2 * c.in[9], 2 * c.in[10], 2 * c.in[11]}, radius = 0.5f + 2 * c.in[16];
     r.sphere_density = sphereDensity(vec(center), radius, in_dir);
     r.sphere_direction = sampleSphere(vec(center), radius, in_dir, albedo.x, albedo.z);
+    // ReSTIR's decisions on values of the case, either side of each of their thresholds
+    const Vec g_n = vec(c.in + 9);
+    r.facing = facingSign(c.in[17], g_n, in_dir);
+    r.geometry_density = geometryDensity(g_n, out_dir, 0.5f + c.in[16]);
+    r.threshold = footprintThreshold(geometryDensity(n, in_dir, 1 + c.in[17]));
+    r.footprint = withinFootprint(c.in[17] < 1, c.in[15] < 1, 400 * albedo.x, r.geometry_density, r.threshold);
+    r.inverse_footprint = withinInverseFootprint(400 * albedo.y, c.in[17] == 0, fabsf(dot3(g_n, in_dir)), 0.5f + c.in[16],
+        r.threshold);
+    r.rough = roughLobe(albedo.z - 0.2f, c.in[15] == 0, c.in[16]);
+    const float throughput[] = {albedo.x * (1 + 2 * c.in[16]), albedo.y * (1 + 2 * c.in[16]), albedo.z * (1 + 2 * c.in[16])};
+    r.survival = survivalProbability(vec(throughput), 0.25f + c.in[17]);
     return r;
 }
 
@@ -214,6 +226,8 @@ int main() {
             r.probability, r.share_first, r.share_second, r.solid_angle);
         printf(" %.9g %.9g", r.power_weight, r.power_full);
         printf(" %.9g", r.sphere_density); print(r.sphere_direction);
+        printf(" %.9g %.9g %.9g %u %u %u %.9g", r.facing, r.geometry_density, r.threshold, r.footprint,
+            r.inverse_footprint, r.rough, r.survival);
         printf("\n");
     }
 }
