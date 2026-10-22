@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
-const OUTPUTS = 149;
+const OUTPUTS = 156;
 const MATERIAL = /* wgsl */ `
 struct Material {
     albedo: vec3<f32>,
@@ -358,6 +358,14 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     let angle_tan: vec3<f32> = clamp(tan(angles), vec3<f32>(0.0f), vec3<f32>(PI * 0.25f));
     r[148] = bitcast<u32>(clamp(dot(diffs * angle_tan, geometry_uvw), 0.0f, min_edge_length * 0.125f));` : `r[148] = bitcast<u32>(geometryOffset(t[0], t[1], t[2], normals[0], normals[1], normals[2], geometry_n, geometry_uvw,
         offset_ray_target));`}
+    let shadow_start = 2.0 * in_dir;
+    let shadow = out_dir * (1.0 + 3.0 * v[16]) - in_dir;
+    let light_offset = 0.1 * albedo.x * (1.0 - v[17]);
+    ${FLEXLIGHT ? `parity_put(&r, 149u, n * (sign(dot(n, shadow_start - out_dir)) * light_offset));
+    r[152] = bitcast<u32>(length(shadow) * (1.0f - 1e-4f));
+    parity_put(&r, 153u, select(vec3<f32>(0.0), select(vec3<f32>(0.0), through, straight.p_refract > 0.0), material.ior == 1.0f) * albedo.z + (1.0f - albedo.z));` : `parity_put(&r, 149u, shadowLift(n, light_offset, shadow_start, out_dir));
+    r[152] = bitcast<u32>(shadowLength(shadow));
+    parity_put(&r, 153u, occluderTransmittance(in_dir, n, material, albedo.z));`}
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats
