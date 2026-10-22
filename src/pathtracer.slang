@@ -593,6 +593,23 @@ __extern_cpp public struct BSDFLobes {
     return material.transmission * G1(material.roughness * material.roughness, abs(dot(n, dir))) * (1.0f - F_greyscale) * material.albedo;
 }
 
+
+// Shadow end lifted off the emitter by its geometry offset, toward start
+[CudaDeviceExport] public func shadowLift(light_n: float3, light_offset: float, start: float3, end: float3) -> float3 {
+    return light_n * (sign(dot(light_n, start - end)) * light_offset);
+}
+
+// A relative 1e-4 short of the end
+[CudaDeviceExport] public func shadowLength(shadow: float3) -> float {
+    return length(shadow) * (1.0f - 1e-4f);
+}
+
+// Covered share straight through at IOR 1, else blocked; the uncovered rest passes
+[CudaDeviceExport] public func occluderTransmittance(toward: float3, n: float3, material: Material, coverage: float) -> float3 {
+    let through: float3 = material.ior == 1.0f ? straightThrough(toward, n, material) : float3(0.0f);
+    return through * coverage + (1.0f - coverage);
+}
+
 public static const uint LOBE_DIFFUSE = 0u;
 public static const uint LOBE_REFRACT = 1u;
 public static const uint LOBE_REFLECT = 2u;
