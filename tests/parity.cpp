@@ -40,7 +40,7 @@ struct Result {
     float pick, probability, share_first, share_second, solid_angle, power_weight, power_full, sphere_density;
     Vec sphere_direction;
     float facing, geometry_density, threshold; unsigned footprint, inverse_footprint, rough; float survival, cap;
-    Vec2 temporal; float neighbor, canonical, geometry_offset;
+    Vec2 temporal; float neighbor, canonical, geometry_offset; Vec lift; float shadow_length; Vec transmittance;
 };
 
 __device__ float dot3(Vec a, Vec b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -173,6 +173,12 @@ __device__ Result evaluate(const Case& c) {
     }
     const float uvw[] = {1 - u - w, u, w};
     r.geometry_offset = geometryOffset(in_dir, out_dir, g_n, n, vec(n1), vec(n2), vec(face), vec(uvw), vec(position));
+    // A shadow segment of the case: the lift of its end, turned either way, its length and an occluder layer's transmittance
+    const float start[] = {2 * c.in[0], 2 * c.in[1], 2 * c.in[2]}, shadow[] = {c.in[3] * (1 + 3 * c.in[16]) - c.in[0],
+        c.in[4] * (1 + 3 * c.in[16]) - c.in[1], c.in[5] * (1 + 3 * c.in[16]) - c.in[2]};
+    r.lift = shadowLift(n, 0.1f * albedo.x * (1 - c.in[17]), vec(start), out_dir);
+    r.shadow_length = shadowLength(vec(shadow));
+    r.transmittance = occluderTransmittance(in_dir, n, material, albedo.z);
     return r;
 }
 
@@ -247,6 +253,7 @@ int main() {
         printf(" %.9g %.9g %.9g %u %u %u %.9g %.9g", r.facing, r.geometry_density, r.threshold, r.footprint,
             r.inverse_footprint, r.rough, r.survival, r.cap);
         printf(" %.9g %.9g %.9g %.9g %.9g", r.temporal.x, r.temporal.y, r.neighbor, r.canonical, r.geometry_offset);
+        print(r.lift); printf(" %.9g", r.shadow_length); print(r.transmittance);
         printf("\n");
     }
 }

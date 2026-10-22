@@ -44,6 +44,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `samplesLights` | inline in `walk` cu:1094 (`bd5216f`) | `neeDecision` wgsl:1356 | 2, flex-cuda-pt | **Shared** | renderer.cu's surfaces that sample lights, all but smooth mirrors and glass, as emission is weighted against light sampling with the light tree; in place of FlexLight's `neeDecision` between the two, plain Fresnel |
 | `neeBSDF` | `lightBSDF` cu:998 (`2782758`) | `skyBSDF` wgsl:1195 (`d20d420`) | 2, FlexLight | **Shared** | FlexLight's balance heuristic per lobe, over the density of the sample, on the side the consumer's `wrongSide` selects; flex-cuda-pt's power heuristic as an option, in FlexLight's form |
 | `straightThrough` | inline in `sampleLight` cu:960 (`2782758`) | – | 2 | **Shared** | Shadow rays passing straight through equal IORs, as `sampleBSDF`'s refraction lobe carries them on average; flex-cuda-pt's lacked the share of metallic reflection, `1 - F`. FlexLight's shadow rays stop at every surface |
+| `shadowLift`, `shadowLength`, `occluderTransmittance` | `sampleLight` cu:917-951 (1ae631c) | `sampleLightTree` PC:746 (1864279) | 2 | **Shared** | One shadow segment for both consumers at the user's direction: FlexLight's lift of the end by the emitter's offset, turned toward the start, which the consumer adds where it forms the segment; renderer.cu's length, short of the end by a relative 1e-4, in place of FlexLight's skip of the emitter's triangle; and renderer.cu's transmittance of an occluder's layer |
 | `Material` (FlexLight) | – | wgsl:104, `rasterizer-compute.wgsl`:93 | 3 | Local | Laid out by the TypeScript upload and read from bindings: the shared code declares it `__target_intrinsic(wgsl, "Material")`, as FlexLight's own, and `__target_intrinsic(cuda, "BSDFMaterial")`, which flex-cuda-pt's `renderer.h` declares with the same fields and `walk` fills from its `Surface` |
 | `LOBE_DIFFUSE`, `LOBE_REFRACT` | cu:207 | wgsl:1746 | 1 | Local, inlined | Equal, constants (see `PI`) |
 
@@ -187,6 +188,9 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
   function's: its driver fuses the multiply-adds of the inlined call otherwise.
   `geometryOffset`'s is `surfaceAt`'s expressions written out in the kernel, on lavapipe, Intel Mesa and NVIDIA every
   word of the generated code's.
+  `shadowLift`'s is `sampleLightTree`'s lift written out with the turn, `shadowLength`'s renderer.cu's expression, both
+  every word of the generated code's; `occluderTransmittance`'s is renderer.cu's expression over the straight-through
+  throughput of `straightThrough`'s golden, which it equals within the tolerance as that does.
 
 Tolerance: integers (random states, hashes, lobes, decisions, seeds) exactly; floats within
 `1e-5 + (1e-3 + 8 * 2^-23 / alpha^2) * |golden|`, as the GGX denominator, `alpha^2` at a lobe's peak, turns rounding

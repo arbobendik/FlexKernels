@@ -571,6 +571,26 @@ __extern_cpp public struct BSDFLobes {
     return material.transmission * G1(material.roughness * material.roughness, abs(dot(n, dir))) * (1.0f - F_greyscale) * material.albedo;
 }
 
+// Shadow segments, alike in both consumers: from the start lift places off the shaded point, to the sampled point on
+// an emitter lifted by the emitter's own offset, short of that end by a relative 1e-4, which keeps it off the emitter
+
+// Lift of the end of a shadow ray at end on an emitter, along the emitter's smooth normal light_n turned toward start,
+// by the emitter's geometry offset there; each consumer adds it where it forms the segment
+[CudaDeviceExport] public func shadowLift(light_n: float3, light_offset: float, start: float3, end: float3) -> float3 {
+    return light_n * (sign(dot(light_n, start - end)) * light_offset);
+}
+
+// Length a shadow ray tests of the segment shadow from its start to its end
+[CudaDeviceExport] public func shadowLength(shadow: float3) -> float {
+    return length(shadow) * (1.0f - 1e-4f);
+}
+
+// Transmittance of one layer of an occluder: straight through equal IORs where it covers, all of it where it does not
+[CudaDeviceExport] public func occluderTransmittance(toward: float3, n: float3, material: Material, coverage: float) -> float3 {
+    let through: float3 = material.ior == 1.0f ? straightThrough(toward, n, material) : float3(0.0f);
+    return through * coverage + (1.0f - coverage);
+}
+
 public static const uint LOBE_DIFFUSE = 0u;
 public static const uint LOBE_REFRACT = 1u;
 
