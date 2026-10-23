@@ -411,7 +411,9 @@ if (FLEXLIGHT) {
       "(1.0f - n_dot_h) * (1.0f + n_dot_h) + numerator * n_dot_h * n_dot_h;\n" +
       "    return numerator / max(PI * denom * denom, 1.17549435e-38f);")
     .replace("let k: f32 = alpha * 0.5f;\n    return n_dot_x / max(n_dot_x * (1.0f - k) + k, BIAS);",
-      "return smithG1(alpha, n_dot_x);");
+      "return smithG1(alpha, n_dot_x);")
+    .replace("(1.0f - material.metallic);", "(1.0f - material.metallic) * (1.0f - fresnel(abs(v_dot_h), eta_i, eta_o));")
+    .replace("max(diffuse_weight * (1.0f - F_greyscale), 0.0f);", "max(diffuse_weight, 0.0f);");
   source += source.match(/fn beerLambert\([^]*?\n\}/)[0]
     .replace("beerLambert", "parity_beerLambert")
     .replace("instance_index: u32", "absorption: vec3<f32>")
