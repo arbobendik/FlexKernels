@@ -45,6 +45,9 @@ $(SLANGC):
 build/parity-cpu: tests/parity.cpp build/cpp/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -Ibuild/cpp $< -o $@
 
+build/albedo-cpu: tests/albedo.cpp build/cpp/pathtracer.cpp
+	$(CXX) -std=c++20 -O2 -Ibuild/cpp $< -o $@
+
 build/parity-cuda: tests/parity.cpp build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h $(REFERENCE)/renderer.h
 	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda -I$(REFERENCE) $< -o $@
 
@@ -59,8 +62,9 @@ lint: $(ACTIONLINT)
 
 test: test-cpu test-wgsl test-vulkan
 
-test-cpu: build/parity-cpu
+test-cpu: build/parity-cpu build/albedo-cpu
 	$< < tests/golden-cuda.txt > build/cpu.txt
+	build/albedo-cpu
 	node tests/compare.mjs tests/golden-cuda.txt build/cpu.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cpu.txt 58
 
