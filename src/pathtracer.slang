@@ -361,11 +361,11 @@ __extern_cpp public struct BSDFLobes {
     // BSDF weights (these are artistic choices to balance the lobes)
     let reflect_weight: float = 1.0f;
     let diffuse_weight: float = (1.0f - material.transmission) * (1.0f - material.metallic) * (1.0f - F_dielectric);
-    let refract_weight: float = material.transmission;
+    let refract_weight: float = material.transmission * (1.0f - material.metallic) * (1.0f - F_dielectric);
     // Add fresnel term for improved sampling performance
     let reflect_component: float = max(reflect_weight * F_greyscale, 0.0f);
     let diffuse_component: float = max(diffuse_weight, 0.0f);
-    let refract_component: float = max(refract_weight * (1.0f - F_greyscale) * sign(length(refracted)), 0.0f);
+    let refract_component: float = max(refract_weight * sign(length(refracted)), 0.0f);
     // Calculate sampling probabilities
     let total_component: float = reflect_component + diffuse_component + refract_component;
     let total_component_inv: float = 1.0f / max(total_component, BIAS);
@@ -428,15 +428,16 @@ __extern_cpp public struct BSDFLobes {
     let m_n_i_dot_l: float = - dot(n_i, l);
     // Microfacet term
     let G1_l: float = smithG1(alpha, max(m_n_i_dot_l, 0.0f));
-    // BSDF = refract_weight * v_dot_h / n_dot_v / n_dot_l * D * G * (1 - F) * JACOBIAN * albedo
-    // => BSDF * n_dot_l = refract_weight * v_dot_h / n_dot_v * D * G * (1 - F) * JACOBIAN * albedo
+    // BSDF = refract_weight * v_dot_h / n_dot_v / n_dot_l * D * G * JACOBIAN * albedo, refract_weight holding (1 - F)
+    // => BSDF * n_dot_l = refract_weight * v_dot_h / n_dot_v * D * G * JACOBIAN * albedo
 
     // throughput = BSDF * n_dot_l / PDF
-    //            = refract_weight * v_dot_h / n_dot_v * D * G * (1 - F) * JACOBIAN * albedo / G1_v / v_dot_h / D * n_dot_v / JACOBIAN
-    //            = refract_weight * G * (1 - F) * albedo / G1_v
+    //            = refract_weight * v_dot_h / n_dot_v * D * G * JACOBIAN * albedo / G1_v / v_dot_h / D * n_dot_v / JACOBIAN
+    //            = refract_weight * G * albedo / G1_v
 
     // G = G1_v * G1_l
-    return lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) * material.albedo / lobes.p_refract;
+    // => throughput = refract_weight * G1_l * albedo
+    return lobes.refract_weight * G1_l * material.albedo / lobes.p_refract;
 }
 
 // Refractive case of sampleBSDF, through its half vector ggx_n
@@ -588,8 +589,7 @@ __extern_cpp public struct BSDFLobes {
 // eta_i = eta_o => F = 0, l = -v
 // => throughput = transmission * (1 - metallic) * G1_l * albedo
 [CudaDeviceExport] public func straightThrough(dir: float3, n: float3, material: Material) -> float3 {
-    let F_greyscale: float = rgb_to_greyscale(material.albedo * material.metallic);
-    return material.transmission * smithG1(material.roughness * material.roughness, abs(dot(n, dir))) * (1.0f - F_greyscale) * material.albedo;
+    return material.transmission * (1.0f - material.metallic) * smithG1(material.roughness * material.roughness, abs(dot(n, dir))) * material.albedo;
 }
 
 
