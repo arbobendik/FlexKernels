@@ -353,16 +353,18 @@ __extern_cpp public struct BSDFLobes {
     // Try refraction through the properly oriented half vector
     let eta: float = eta_i / eta_o;
     let refracted: float3 = normalize(refract(in_dir, ggx_n, eta));
-    // Calculate fresnel term
-    var F: float3 = mix(float3(fresnel(abs(v_dot_h), eta_i, eta_o)), material.albedo, material.metallic);
+    // Calculate fresnel terms: the dielectric's, and mixed with metallic reflection
+    let F_dielectric: float = fresnel(abs(v_dot_h), eta_i, eta_o);
+    var F: float3 = mix(float3(F_dielectric), material.albedo, material.metallic);
     let F_greyscale: float = rgb_to_greyscale(F);
     // BSDF weights (these are artistic choices to balance the lobes)
     let reflect_weight: float = 1.0f;
-    let diffuse_weight: float = (1.0f - material.transmission) * (1.0f - material.metallic);
+    // The diffuse of what the dielectric does not reflect, which conserves energy beside the reflection
+    let diffuse_weight: float = (1.0f - material.transmission) * (1.0f - material.metallic) * (1.0f - F_dielectric);
     let refract_weight: float = material.transmission;
     // Add fresnel term for improved sampling performance
     let reflect_component: float = max(reflect_weight * F_greyscale, 0.0f);
-    let diffuse_component: float = max(diffuse_weight * (1.0f - F_greyscale), 0.0f);
+    let diffuse_component: float = max(diffuse_weight, 0.0f);
     let refract_component: float = max(refract_weight * (1.0f - F_greyscale) * sign(length(refracted)), 0.0f);
     // Calculate sampling probabilities
     let total_component: float = reflect_component + diffuse_component + refract_component;
