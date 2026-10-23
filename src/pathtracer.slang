@@ -20,6 +20,8 @@ __extern_cpp public struct Material {
     __extern_cpp public float transmission;
     __extern_cpp public float ior;
     __extern_cpp public float3 absorption;
+    __extern_cpp public float3 specular_tint = float3(1.0f);
+    __extern_cpp public float specular_level = 1.0f;
 };
 
 __extern_cpp public struct RandomSphere {
@@ -336,8 +338,8 @@ __extern_cpp public struct BSDFLobes {
     __extern_cpp public float3 F;
     __extern_cpp public float F_greyscale;
     __extern_cpp public float reflect_weight;
-    __extern_cpp public float diffuse_weight;
-    __extern_cpp public float refract_weight;
+    __extern_cpp public float3 diffuse_weight;
+    __extern_cpp public float3 refract_weight;
     __extern_cpp public float p_diffuse;
     __extern_cpp public float p_reflect;
     __extern_cpp public float p_refract;
@@ -361,17 +363,27 @@ __extern_cpp public struct BSDFLobes {
     // Try refraction through the properly oriented half vector
     let eta: float = eta_i / eta_o;
     let refracted: float3 = normalize(refract(in_dir, ggx_n, eta));
-    let F_dielectric: float = fresnel(abs(v_dot_h), eta_i, eta_o);
-    var F: float3 = mix(float3(F_dielectric), material.albedo, material.metallic);
+    // F0 = r^2, r = sqrt(specular_level) * |eta_i - eta_o| / (eta_i + eta_o)
+    // F0 = ((eta_level - 1) / (eta_level + 1))^2 => eta_level = (1 + r) / (1 - r)
+    // F_dielectric = specular_tint * F0 + (1 - specular_tint * F0) * (F(eta_level) - F0) / (1 - F0), 1 past total
+    // internal reflection
+    let r: float = min(sqrt(material.specular_level) * abs(eta_i - eta_o) / (eta_i + eta_o), 1.0f - BIAS);
+    let f0: float = r * r;
+    let eta_level: float = (1.0f + r) / (1.0f - r);
+    let F_level: float = fresnel(abs(v_dot_h), eta_i > eta_o ? eta_level : 1.0f, eta_i > eta_o ? 1.0f : eta_level);
+    let total: bool = eta_i * eta_i * (1.0f - v_dot_h * v_dot_h) >= eta_o * eta_o;
+    let F_dielectric: float3 = total ? float3(1.0f) : material.specular_tint * f0 + (1.0f - material.specular_tint * f0)
+        * (F_level - f0) / (1.0f - f0);
+    var F: float3 = mix(F_dielectric, material.albedo, material.metallic);
     let F_greyscale: float = rgb_to_greyscale(F);
     // BSDF weights (these are artistic choices to balance the lobes)
     let reflect_weight: float = 1.0f;
-    let diffuse_weight: float = (1.0f - material.transmission) * (1.0f - material.metallic) * (1.0f - F_dielectric);
-    let refract_weight: float = material.transmission * (1.0f - material.metallic) * (1.0f - F_dielectric);
+    let diffuse_weight: float3 = (1.0f - material.transmission) * (1.0f - material.metallic) * (1.0f - F_dielectric);
+    let refract_weight: float3 = material.transmission * (1.0f - material.metallic) * (1.0f - F_dielectric);
     // Add fresnel term for improved sampling performance
     let reflect_component: float = max(reflect_weight * F_greyscale, 0.0f);
-    let diffuse_component: float = max(diffuse_weight, 0.0f);
-    let refract_component: float = max(refract_weight * sign(length(refracted)), 0.0f);
+    let diffuse_component: float = max(rgb_to_greyscale(diffuse_weight), 0.0f);
+    let refract_component: float = max(rgb_to_greyscale(refract_weight) * sign(length(refracted)), 0.0f);
     // Calculate sampling probabilities
     let total_component: float = reflect_component + diffuse_component + refract_component;
     let total_component_inv: float = 1.0f / max(total_component, BIAS);
