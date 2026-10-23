@@ -107,7 +107,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[33] = hemisphere.state;
     parity_put(&r, 34u, hemisphere.value);
     // The normal map of the triangle of the case's directions, with UVs of positive area
-    r[37] = bitcast<u32>(G1(alpha, abs(dot(n, in_dir))));
+    r[37] = bitcast<u32>(smithG1(alpha, abs(dot(n, in_dir))));
     let uv = albedo.xy;
     parity_put(&r, 38u, tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec3<f32>(v[9], v[10], v[11]), uv,
         vec2<f32>(uv.x + 0.5, uv.y + 0.1 * albedo.z), vec2<f32>(uv.x + 0.2 * albedo.x, uv.y + 0.6), n)));
@@ -357,13 +357,16 @@ const readback = buffer(results.size, GPUBufferUsage.MAP_READ | GPUBufferUsage.C
 device.queue.writeBuffer(cases, 0, inputs);
 let source = readFileSync(process.argv[2], "utf8");
 if (FLEXLIGHT) {
-  // Only the allowed changes to 5a313db: surface tint, a separate absorption color and D without cancellation or BIAS.
+  // Only the allowed changes to 5a313db: surface tint, a separate absorption color, D without cancellation or BIAS and
+  // G1 the exact Smith masking.
   source = source.replace("return vec3<f32>(lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) / lobes.p_refract);",
     "return lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) * material.albedo / lobes.p_refract;")
     .replace("mix(lobes.F, vec3<f32>(lobes.F_greyscale), lobes.colorless_reflection)", "lobes.F")
     .replace("n_dot_h * n_dot_h * (numerator - 1.0f) + 1.0f;\n    return numerator / max(PI * denom * denom, BIAS);",
       "(1.0f - n_dot_h) * (1.0f + n_dot_h) + numerator * n_dot_h * n_dot_h;\n" +
-      "    return numerator / max(PI * denom * denom, 1.17549435e-38f);");
+      "    return numerator / max(PI * denom * denom, 1.17549435e-38f);")
+    .replace("let k: f32 = alpha * 0.5f;\n    return n_dot_x / max(n_dot_x * (1.0f - k) + k, BIAS);",
+      "return smithG1(alpha, n_dot_x);");
   source += source.match(/fn beerLambert\([^]*?\n\}/)[0]
     .replace("beerLambert", "parity_beerLambert")
     .replace("instance_index: u32", "absorption: vec3<f32>")

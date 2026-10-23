@@ -155,15 +155,12 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     return numerator / max(PI * denom * denom, 1.17549435e-38f);
 }
 
-[CudaDeviceExport] public func G1(alpha: float, n_dot_x: float) -> float {
-    let k: float = alpha * 0.5f;
-    return n_dot_x / max(n_dot_x * (1.0f - k) + k, BIAS);
-}
-
-// Exact Smith masking of GGX, the visible normal density sampleGGXVNDF draws from
+// Exact Smith masking of GGX, the visible normal density sampleGGXVNDF draws from; one for a smooth surface, which
+// masks nothing at any angle, where the expression comes to 0 / 0 at a tangent direction
 [CudaDeviceExport] public func smithG1(alpha: float, n_dot_x: float) -> float {
     let alpha_sq: float = alpha * alpha;
-    return 2.0f * n_dot_x / (n_dot_x + sqrt(alpha_sq + (1.0f - alpha_sq) * n_dot_x * n_dot_x));
+    let g1: float = 2.0f * n_dot_x / (n_dot_x + sqrt(alpha_sq + (1.0f - alpha_sq) * n_dot_x * n_dot_x));
+    return select(1.0f, g1, alpha > 0.0f);
 }
 
 [CudaDeviceExport] public func fresnel(cos_theta: float, eta_i: float, eta_o: float) -> float {
@@ -382,7 +379,7 @@ __extern_cpp public struct BSDFLobes {
     if (lobe == LOBE_REFRACT) {
         let m_n_i_dot_l: float = - dot(n_i, l);
         // Microfacet term
-        let G1_l: float = G1(alpha, max(m_n_i_dot_l, 0.0f));
+        let G1_l: float = smithG1(alpha, max(m_n_i_dot_l, 0.0f));
         // BSDF = refract_weight * v_dot_h / n_dot_v / n_dot_l * D * G * (1 - F) * JACOBIAN * albedo
         // => BSDF * n_dot_l = refract_weight * v_dot_h / n_dot_v * D * G * (1 - F) * JACOBIAN * albedo
 
@@ -396,7 +393,7 @@ __extern_cpp public struct BSDFLobes {
     }
     let n_i_dot_l: float = dot(n_i, l);
     // Torrance-Sparrow
-    let G1_l: float = G1(alpha, max(n_i_dot_l, 0.0f));
+    let G1_l: float = smithG1(alpha, max(n_i_dot_l, 0.0f));
     // BSDF = reflect_weight * D * G * F / (4 * n_dot_v * n_dot_l)
     // => BSDF * n_dot_l = reflect_weight * D * G * F / (4 * n_dot_v)
 
@@ -562,7 +559,7 @@ __extern_cpp public struct BSDFLobes {
 // the share Fresnel leaves, metallic reflection's alone as the dielectric's vanishes
 [CudaDeviceExport] public func straightThrough(dir: float3, n: float3, material: Material) -> float3 {
     let F_greyscale: float = rgb_to_greyscale(material.albedo * material.metallic);
-    return material.transmission * G1(material.roughness * material.roughness, abs(dot(n, dir))) * (1.0f - F_greyscale) * material.albedo;
+    return material.transmission * smithG1(material.roughness * material.roughness, abs(dot(n, dir))) * (1.0f - F_greyscale) * material.albedo;
 }
 
 // Shadow segments, alike in both consumers: from the start lift places off the shaded point, to the sampled point on
