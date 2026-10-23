@@ -163,7 +163,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[28] = bitcast<u32>(normal.value);
     r[29] = sphere.state;
     parity_put(&r, 30u, sphere.value);
-    r[37] = bitcast<u32>(G1(alpha, abs(dot(n, in_dir))));
+    r[37] = bitcast<u32>(smithG1(alpha, abs(dot(n, in_dir))));
     let uv = albedo.xy;
     parity_put(&r, 38u, tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec3<f32>(v[9], v[10], v[11]), uv,
         vec2<f32>(uv.x + 0.5, uv.y + 0.1 * albedo.z), vec2<f32>(uv.x + 0.2 * albedo.x, uv.y + 0.6), n)));
@@ -393,7 +393,9 @@ if (FLEXLIGHT) {
     .replace("mix(lobes.F, vec3<f32>(lobes.F_greyscale), lobes.colorless_reflection)", "lobes.F")
     .replace("n_dot_h * n_dot_h * (numerator - 1.0f) + 1.0f;\n    return numerator / max(PI * denom * denom, BIAS);",
       "(1.0f - n_dot_h) * (1.0f + n_dot_h) + numerator * n_dot_h * n_dot_h;\n" +
-      "    return numerator / max(PI * denom * denom, 1.17549435e-38f);");
+      "    return numerator / max(PI * denom * denom, 1.17549435e-38f);")
+    .replace("let k: f32 = alpha * 0.5f;\n    return n_dot_x / max(n_dot_x * (1.0f - k) + k, BIAS);",
+      "return smithG1(alpha, n_dot_x);");
   source += source.match(/fn beerLambert\([^]*?\n\}/)[0]
     .replace("beerLambert", "parity_beerLambert")
     .replace("instance_index: u32", "absorption: vec3<f32>")
