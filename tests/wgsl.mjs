@@ -358,9 +358,10 @@ device.queue.writeBuffer(cases, 0, inputs);
 let source = readFileSync(process.argv[2], "utf8");
 if (FLEXLIGHT) {
   // Only the allowed changes to 5a313db: surface tint, a separate absorption color, D without cancellation or BIAS, G1
-  // the exact Smith masking and the diffuse of what the dielectric does not reflect.
+  // the exact Smith masking and the diffuse and refraction of what the dielectric does not reflect, refraction of the
+  // share not metallic.
   source = source.replace("return vec3<f32>(lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) / lobes.p_refract);",
-    "return lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) * material.albedo / lobes.p_refract;")
+    "return lobes.refract_weight * G1_l * material.albedo / lobes.p_refract;")
     .replace("mix(lobes.F, vec3<f32>(lobes.F_greyscale), lobes.colorless_reflection)", "lobes.F")
     .replace("n_dot_h * n_dot_h * (numerator - 1.0f) + 1.0f;\n    return numerator / max(PI * denom * denom, BIAS);",
       "(1.0f - n_dot_h) * (1.0f + n_dot_h) + numerator * n_dot_h * n_dot_h;\n" +
@@ -368,7 +369,11 @@ if (FLEXLIGHT) {
     .replace("let k: f32 = alpha * 0.5f;\n    return n_dot_x / max(n_dot_x * (1.0f - k) + k, BIAS);",
       "return smithG1(alpha, n_dot_x);")
     .replace("(1.0f - material.metallic);", "(1.0f - material.metallic) * (1.0f - fresnel(abs(v_dot_h), eta_i, eta_o));")
-    .replace("max(diffuse_weight * (1.0f - F_greyscale), 0.0f);", "max(diffuse_weight, 0.0f);");
+    .replace("max(diffuse_weight * (1.0f - F_greyscale), 0.0f);", "max(diffuse_weight, 0.0f);")
+    .replace("= material.transmission;",
+      "= material.transmission * (1.0f - material.metallic) * (1.0f - fresnel(abs(v_dot_h), eta_i, eta_o));")
+    .replace("max(refract_weight * (1.0f - F_greyscale) * sign(length(refracted)), 0.0f);",
+      "max(refract_weight * sign(length(refracted)), 0.0f);");
   source += source.match(/fn beerLambert\([^]*?\n\}/)[0]
     .replace("beerLambert", "parity_beerLambert")
     .replace("instance_index: u32", "absorption: vec3<f32>")
