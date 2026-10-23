@@ -77,8 +77,9 @@ __device__ Result evaluate(const Case& c) {
         {c.in[12] + 0.2f * c.in[12], c.in[13] + 0.6f}};
     r.normal_map = tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec(c.in + 9), vec2(uv[0]), vec2(uv[1]),
         vec2(uv[2]), n));
-    const float zero[] = {0, 0, 0};
-    const Mat material = {albedo, vec(zero), c.in[16], c.in[15], c.in[17], fmaxf(c.in[18], c.in[19])};
+    const float zero[] = {0, 0, 0}, one[] = {1, 1, 1};  // No absorption, an untinted specular at its level
+    const Mat material = {albedo, vec(zero), c.in[16], c.in[15], c.in[17], fmaxf(c.in[18], c.in[19]), vec(zero), vec(one),
+        1};
     const float h[] = {minus_in[0] + c.in[3], minus_in[1] + c.in[4], minus_in[2] + c.in[5]}, scale = rnorm(h);
     const float ggx_n[] = {h[0] * scale, h[1] * scale, h[2] * scale};
     r.lobes = bsdfLobes(in_dir, vec(minus_in), vec(n_i), vec(ggx_n), material, c.in[18], c.in[19]);
@@ -236,8 +237,8 @@ int main() {
         const BSDFLobes& l = r.lobes;
         printf(" %.9g", r.g1); print(r.normal_map);
         printf(" %.9g %.9g", l.v_dot_h, l.n_dot_h); print(l.refracted); print(l.F);
-        printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g", l.F_greyscale, l.reflect_weight, l.diffuse_weight,
-            l.refract_weight, l.p_diffuse, l.p_reflect, l.p_refract);
+        printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g", l.F_greyscale, l.reflect_weight, l.diffuse_weight.x,
+            l.refract_weight.x, l.p_diffuse, l.p_reflect, l.p_refract);  // Untinted, the weights' channels are equal
         for (unsigned lobe = 0; lobe < 3; lobe++) { print(r.lobe_throughput[lobe]); printf(" %.9g", r.lobe_density[lobe]); }
         print(r.sample.unit_direction); print(r.sample.throughput);
         printf(" %u %u %u %.9g", r.sample.random_state, r.sample.refracted, r.sample.lobe, r.sample.pdf);
