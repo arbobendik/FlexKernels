@@ -323,11 +323,11 @@ __extern_cpp public struct BSDFLobes {
     // BSDF weights (these are artistic choices to balance the lobes)
     let reflect_weight: float = 1.0f;
     let diffuse_weight: float = (1.0f - material.transmission) * (1.0f - material.metallic) * (1.0f - F_dielectric);
-    let refract_weight: float = material.transmission;
+    let refract_weight: float = material.transmission * (1.0f - material.metallic) * (1.0f - F_dielectric);
     // Add fresnel term for improved sampling performance
     let reflect_component: float = max(reflect_weight * F_greyscale, 0.0f);
     let diffuse_component: float = max(diffuse_weight, 0.0f);
-    let refract_component: float = max(refract_weight * (1.0f - F_greyscale) * sign(length(refracted)), 0.0f);
+    let refract_component: float = max(refract_weight * sign(length(refracted)), 0.0f);
     // Calculate sampling probabilities
     let total_component: float = reflect_component + diffuse_component + refract_component;
     let total_component_inv: float = 1.0f / max(total_component, BIAS);
@@ -362,7 +362,9 @@ __extern_cpp public struct BSDFLobes {
         //            = refract_weight * G * (1 - F) * albedo / G1_v
 
         // G = G1_v * G1_l
-        return lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) * material.albedo / lobes.p_refract;
+        // refract_weight holds (1 - F)
+        // => throughput = refract_weight * G1_l * albedo
+        return lobes.refract_weight * G1_l * material.albedo / lobes.p_refract;
     }
     let n_i_dot_l: float = dot(n_i, l);
     // Torrance-Sparrow
@@ -529,8 +531,7 @@ __extern_cpp public struct BSDFLobes {
 // eta_i = eta_o => F = 0, l = -v
 // => throughput = transmission * (1 - metallic) * G1_l * albedo
 [CudaDeviceExport] public func straightThrough(dir: float3, n: float3, material: Material) -> float3 {
-    let F_greyscale: float = rgb_to_greyscale(material.albedo * material.metallic);
-    return material.transmission * smithG1(material.roughness * material.roughness, abs(dot(n, dir))) * (1.0f - F_greyscale) * material.albedo;
+    return material.transmission * (1.0f - material.metallic) * smithG1(material.roughness * material.roughness, abs(dot(n, dir))) * material.albedo;
 }
 
 
