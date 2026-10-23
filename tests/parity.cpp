@@ -64,7 +64,7 @@ __device__ Result evaluate(const Case& c) {
     r.normal_value = normal.value;
     r.sphere_state = sphere.state;
     r.sphere = sphere.value;
-    r.g1 = G1(alpha, fabsf(n_dot_in));
+    r.g1 = smithG1(alpha, fabsf(n_dot_in));
     const float uv[][2] = {{c.in[12], c.in[13]}, {c.in[12] + 0.5f, c.in[13] + 0.1f * c.in[14]},
         {c.in[12] + 0.2f * c.in[12], c.in[13] + 0.6f}};
     r.normal_map = tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec(c.in + 9), vec2(uv[0]), vec2(uv[1]),
