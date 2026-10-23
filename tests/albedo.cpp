@@ -4,10 +4,9 @@
 
 int main() {
     const float COSINES[] = {1, 0.5f, 0.2f};
-    const Material MATERIALS[] = {{Vector<float, 3>(1, 1, 1), Vector<float, 3>(0, 0, 0), 0.5f, 1, 0, 1.5f},
-        {Vector<float, 3>(1, 1, 1), Vector<float, 3>(0, 0, 0), 0.2f, 0, 0, 1.5f},
-        {Vector<float, 3>(1, 1, 1), Vector<float, 3>(0, 0, 0), 1, 0, 0, 1.5f},
-        {Vector<float, 3>(0.5f, 0.5f, 0.5f), Vector<float, 3>(0, 0, 0), 0.2f, 1, 1, 1.5f}};
+    const Vector<float, 3> ZERO(0, 0, 0), ONE(1, 1, 1);
+    const Material MATERIALS[] = {{ONE, ZERO, 0.5f, 1, 0, 1.5f, ZERO, ONE, 1}, {ONE, ZERO, 0.2f, 0, 0, 1.5f, ZERO, ONE, 1},
+        {ONE, ZERO, 1, 0, 0, 1.5f, ZERO, ONE, 1}, {Vector<float, 3>(0.5f, 0.5f, 0.5f), ZERO, 0.2f, 1, 1, 1.5f, ZERO, ONE, 1}};
     const float ALBEDOS[][3] = {{0.9158f, 0.8551f, 0.8315f}, {0.9998f, 0.9990f, 0.9877f}, {0.9209f, 0.9420f, 0.9478f},
         {0.4992f, 0.4978f, 0.4875f}};
     int failed = 0;
@@ -18,6 +17,22 @@ int main() {
             sum += sampleBSDF(in_dir, n, MATERIALS[m], 1, 1.5f, hash(i)).throughput.x;
         printf("albedo of material %d at cosine %g: %.4f, exact %.4f\n", m, COSINES[k], sum / (1 << 18), ALBEDOS[m][k]);
         failed |= fabs(sum / (1 << 18) - ALBEDOS[m][k]) > 0.01;
+    }
+    const Vector<float, 3> TINT(1, 0.5f, 0.25f), RED(1, 0, 0), normal(0, 0, -1), grazing(0.98f, 0, -0.2f), n(0, 0, 1);
+    const Material SPECULAR[] = {{ZERO, ZERO, 0.001f, 0, 0, 1.5f, ZERO, ONE, 2}, {ZERO, ZERO, 0.001f, 0, 0, 1.5f, ZERO, ONE, 0},
+        {ZERO, ZERO, 0.001f, 0, 0, 1.5f, ZERO, RED, 1}, {ONE, ZERO, 0.2f, 0, 0, 1.5f, ZERO, TINT, 2},
+        {ZERO, ZERO, 0.001f, 0, 0, 10, ZERO, ONE, 2}, {ONE, ZERO, 0.001f, 0, 1, 1.5f, ZERO, ONE, 0}};
+    const float REFLECTED[][3] = {{0.08f, 0.08f, 0.08f}, {0, 0, 0}, {0.04f, 0, 0}};
+    for (int m = 0; m < 6; m++) {
+        double sum[3] = {};
+        for (unsigned i = 0; i < 1u << 18; i++) {
+            const Vector<float, 3> t = sampleBSDF(m == 5 ? grazing : normal, n, SPECULAR[m], m == 5 ? 1.5f : 1,
+                m == 5 ? 1 : SPECULAR[m].ior, hash(i)).throughput;
+            sum[0] += t.x / (1 << 18), sum[1] += t.y / (1 << 18), sum[2] += t.z / (1 << 18);
+        }
+        printf("specular %d: %.4f %.4f %.4f\n", m, sum[0], sum[1], sum[2]);
+        for (int c = 0; c < 3; c++) failed |= m < 3 ? fabs(sum[c] - REFLECTED[m][c]) > 0.002f
+            : sum[c] > 1.002f || (m > 3 && sum[c] < 0.99f);
     }
     return failed;
 }
