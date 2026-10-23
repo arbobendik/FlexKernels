@@ -161,15 +161,17 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     return numerator / max(PI * denom * denom, 1.17549435e-38f);
 }
 
+// Masking of a direction, the exact Smith one of GGX that the visible normal density the BSDF samples assumes
 [CudaDeviceExport] public func G1(alpha: float, n_dot_x: float) -> float {
-    let k: float = alpha * 0.5f;
-    return n_dot_x / max(n_dot_x * (1.0f - k) + k, BIAS);
+    return smithG1(alpha, n_dot_x);
 }
 
-// Exact Smith masking of GGX, the visible normal density sampleGGXVNDF draws from
+// Exact Smith masking of GGX, the visible normal density sampleGGXVNDF draws from; one for a smooth surface, which
+// masks nothing at any angle, where the expression comes to 0 / 0 at a tangent direction
 [CudaDeviceExport] public func smithG1(alpha: float, n_dot_x: float) -> float {
     let alpha_sq: float = alpha * alpha;
-    return 2.0f * n_dot_x / (n_dot_x + sqrt(alpha_sq + (1.0f - alpha_sq) * n_dot_x * n_dot_x));
+    let g1: float = 2.0f * n_dot_x / (n_dot_x + sqrt(alpha_sq + (1.0f - alpha_sq) * n_dot_x * n_dot_x));
+    return select(1.0f, g1, alpha > 0.0f);
 }
 
 [CudaDeviceExport] public func fresnel(cos_theta: float, eta_i: float, eta_o: float) -> float {

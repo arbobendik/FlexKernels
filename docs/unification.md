@@ -37,7 +37,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | Name | CUDA | WGSL | Class | Status | Reason |
 |---|---|---|---|---|---|
 | `trowbridgeReitz`, `smithG1`, `fresnel` | cu:94, 61, 104 | wgsl:691, 703, 708 | 1 | **Shared** | Identical; then D without the cancellation and floor that cut its peak off below roughness 0.22, an allowed change to both goldens |
-| `G1` | cu:100 | wgsl:697 | 2, FlexLight | **Shared** | FlexLight's Schlick `k = alpha / 2`; flex-cuda-pt had the exact Smith masking |
+| `G1` | cu:100 | wgsl:697 | 2, FlexLight | **Shared** | FlexLight's Schlick `k = alpha / 2`; flex-cuda-pt had the exact Smith masking, which the shared one returns, as the VNDF density `sampleBSDF` draws from assumes: an allowed change to the WGSL golden |
 | `sampleGGXVNDF`, `sampleCosWeightedHemisphere`, `tangentToWorld`, `worldToTangent` | cu:131, 153, 162, 172 | wgsl:726, 748, 757, 767 | 1 | **Shared** | Identical |
 | `normalMapTBN`, `tangentToWorldNormalMap` | cu:184, 203 | wgsl:779, 801 | 2, FlexLight | **Shared** | FlexLight's `mat3x3<f32>` and handedness, which flips the tangent where flex-cuda-pt turned the bitangent; Slang writes the columns as `float3x3(t, b, n)` and `tbn * v` as `mul(v, tbn)`, which WGSL gets back as written. CUDA takes the prelude's `Matrix<float, 3, 3>`, named `SlangMatrix` across the header, for its own `Matrix` |
 | `BSDF`, `SampleBSDF`, `BSDFLobes`, `sampleHalfVector`, `bsdfLobes`, `lobeThroughput`, `lobeDensity`, `sampleBSDF`, `connectBSDF` | cu:438, 210, 221, 235, 246, 278, 325, 360, 411 | wgsl:807-1032 | 2, FlexLight | **Shared** | FlexLight's plain Fresnel, undimmed diffuse and clamped density on its `Material`, whose albedo tints every surface interaction, the diffuse, metallic reflection and refraction, its absorption left to `beerLambert`; flex-cuda-pt's tint, level and Smith masking go |
@@ -173,8 +173,8 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
   throughputs of refraction and reflection in `lobeThroughput`, `sampleBSDF`, `connectBSDF` and `BSDF` and `beerLambert`,
   and since D lost its cancellation and floor, D and the densities, are 5a313db's on lavapipe with only the allowed
   changes applied by the harness: refraction times the albedo, reflection using `F`, its original `beerLambert` reading
-  the absorption color passed to it, and D over `(1 - n_dot_h) (1 + n_dot_h) + alpha^2 n_dot_h^2` without BIAS; every
-  other column is 5a313db's, word for word.
+  the absorption color passed to it, D over `(1 - n_dot_h) (1 + n_dot_h) + alpha^2 n_dot_h^2` without BIAS, and `G1`
+  returning `smithG1`, which moves the throughputs again; every other column is 5a313db's, word for word.
   The C++ and CUDA targets leave out `neeBSDF` where it draws, toward the side of a diffuse lobe; the golden of its power
   heuristic is flex-cuda-pt's `lightBSDF` of `2782758` on FlexLight's `connectBSDF`, over the density.
   `straightThrough`'s is FlexLight's refraction throughput times its probability through the normal at equal IORs.
