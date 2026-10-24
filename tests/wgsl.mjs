@@ -18,7 +18,8 @@ struct Material {
     ior: f32,
     absorption: vec3<f32>,
     specular_tint: vec3<f32>,
-    specular_level: f32
+    specular_level: f32,
+    translucent: vec3<f32>
 };
 `;
 // The light tree of flex-cuda-pt's renderer.cu, as it transpiles it, for the goldens of what FlexLight had none of
@@ -114,7 +115,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     parity_put(&r, 38u, tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec3<f32>(v[9], v[10], v[11]), uv,
         vec2<f32>(uv.x + 0.5, uv.y + 0.1 * albedo.z), vec2<f32>(uv.x + 0.2 * albedo.x, uv.y + 0.6), n)));
     // The material of the case and the BSDF on it through the half vector of its directions
-    let material = Material(albedo, vec3<f32>(0.0), v[16], v[15], v[17], max(v[18], v[19])${FLEXLIGHT ? "" : ", vec3<f32>(0.0), vec3<f32>(1.0), 1.0"});
+    let material = Material(albedo, vec3<f32>(0.0), v[16], v[15], v[17], max(v[18], v[19])${FLEXLIGHT ? "" : ", vec3<f32>(0.0), vec3<f32>(1.0), 1.0, vec3<f32>(0.0)"});
     let ggx_n = normalize(- in_dir + out_dir);
     let lobes = bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19]);
     r[41] = bitcast<u32>(lobes.v_dot_h);
