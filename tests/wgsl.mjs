@@ -359,7 +359,7 @@ const readback = buffer(results.size, GPUBufferUsage.MAP_READ | GPUBufferUsage.C
 device.queue.writeBuffer(cases, 0, inputs);
 let source = readFileSync(process.argv[2], "utf8");
 if (FLEXLIGHT) {
-  // Only the allowed changes to 5a313db: surface tint, a separate absorption color, D without cancellation or BIAS, G1
+  // Only the allowed changes to 754e9a0: surface tint, a separate absorption color, D without cancellation or BIAS, G1
   // the exact Smith masking and the diffuse and refraction of what the dielectric does not reflect, refraction of the
   // share not metallic.
   source = source.replace("return vec3<f32>(lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) / lobes.p_refract);",
