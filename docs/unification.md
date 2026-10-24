@@ -1,7 +1,7 @@
 # Unifying the FlexCudaPT and FlexLight kernels
 
 Line numbers refer to the current mains, the identity baseline: flex-cuda-pt `02d0bf1` (`cu` =
-`src/shaders/renderer.cu`, `h` = `src/shaders/renderer.h`) and FlexLight `5a313db` (`wgsl` =
+`src/shaders/renderer.cu`, `h` = `src/shaders/renderer.h`) and FlexLight `754e9a0` (`wgsl` =
 `src/flexlight/webgpu/shaders/pathtracer-compute.wgsl`, `shift` = `.../pathtracer-shift.wgsl`, `ts` =
 `src/flexlight/webgpu/restir.ts`), before either consumed FlexKernels.
 
@@ -24,7 +24,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `pcg` | cu:53 | wgsl:246 | 3 | **Shared**, per target | The generators differ: CUDA advances to the hash and draws its 24 high bits, FlexLight advances the LCG state and draws the hash over `UINT_MAX`, which reaches 1. Each target keeps its consumer's exactly (`__target_switch`) |
 | `normal_distribution`, `random_sphere`, `random_hemisphere` | cu:67, 76, 83 | wgsl:257, 266, 273 | 1 | **Shared** | Same math on each target's `pcg`; CUDA has no caller |
 | `random` | cu:48 | – | 3 | Local | CUDA only, its draw is the CUDA branch of `pcg` |
-| `Random`, `RandomSphere`, `RandomHemisphere`, `rgb_to_greyscale`, `pcg`, `normal_distribution`, `random_sphere`, `random_hemisphere`, `normalMapTBN`, `tangentToWorldNormalMap` of the rasterizer | – | `rasterizer-compute.wgsl`:226-282 (`5a313db`) | 1 | **Shared** | Identical copies; the rasterizer takes `pathtracer.wgsl` as the path tracer does |
+| `Random`, `RandomSphere`, `RandomHemisphere`, `rgb_to_greyscale`, `pcg`, `normal_distribution`, `random_sphere`, `random_hemisphere`, `normalMapTBN`, `tangentToWorldNormalMap` of the rasterizer | – | `rasterizer-compute.wgsl`:226-282 (`754e9a0`) | 1 | **Shared** | Identical copies; the rasterizer takes `pathtracer.wgsl` as the path tracer does |
 | `trowbridgeReitz` of the rasterizer | – | `rasterizer-compute.wgsl`:424 | 1 | **Shared** | The shared one over two half vectors: called per vector, bit-identical on lavapipe, Intel and NVIDIA for 65536 pairs |
 | `fresnel`, `BSDF` of the rasterizer | – | `rasterizer-compute.wgsl`:440, 481 | 3 | Local | The rasterizer's direct lighting by Schlick's Fresnel, its own model; renamed `fresnelSchlick` and `directBSDF`, as WGSL has no overloads |
 | `rgb_to_greyscale`, `safeDivide` | cu:57, 748 | wgsl:242, 1944 | 1 | **Shared** | Identical outputs (`select` vs ternaries) |
@@ -42,9 +42,9 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `normalMapTBN`, `tangentToWorldNormalMap` | cu:184, 203 | wgsl:779, 801 | 2, FlexLight | **Shared** | FlexLight's `mat3x3<f32>` and handedness, which flips the tangent where flex-cuda-pt turned the bitangent; Slang writes the columns as `float3x3(t, b, n)` and `tbn * v` as `mul(v, tbn)`, which WGSL gets back as written. CUDA takes the prelude's `Matrix<float, 3, 3>`, named `SlangMatrix` across the header, for its own `Matrix` |
 | `BSDF`, `SampleBSDF`, `BSDFLobes`, `sampleHalfVector`, `bsdfLobes`, `lobeThroughput`, `lobeDensity`, `sampleBSDF`, `connectBSDF` | cu:438, 210, 221, 235, 246, 278, 325, 360, 411 | wgsl:807-1032 | 2, FlexLight | **Shared** | FlexLight's plain Fresnel, its diffuse and refraction then dimmed by what the dielectric reflects, refraction of the share not metallic, and clamped density on its `Material`, whose albedo tints every surface interaction, the diffuse, metallic reflection and refraction, its absorption left to `beerLambert`; the dielectric's Fresnel then by Blender's Specular IOR Level and Tint, its reflectance at normal incidence scaled and tinted, white at grazing; flex-cuda-pt's Smith masking goes |
 | `samplesLights` | inline in `walk` cu:1094 (`bd5216f`) | `neeDecision` wgsl:1356 | 2, flex-cuda-pt | **Shared** | renderer.cu's surfaces that sample lights, all but smooth mirrors and glass, as emission is weighted against light sampling with the light tree; in place of FlexLight's `neeDecision` between the two, plain Fresnel |
-| `neeBSDF` | `lightBSDF` cu:998 (`2782758`) | `skyBSDF` wgsl:1195 (`d20d420`) | 2, FlexLight | **Shared** | FlexLight's balance heuristic per lobe, over the density of the sample, on the side the consumer's `wrongSide` selects; flex-cuda-pt's power heuristic as an option, in FlexLight's form |
+| `neeBSDF` | `lightBSDF` cu:998 (`2782758`) | `skyBSDF` wgsl:1195 (`be9b457`) | 2, FlexLight | **Shared** | FlexLight's balance heuristic per lobe, over the density of the sample, on the side the consumer's `wrongSide` selects; flex-cuda-pt's power heuristic as an option, in FlexLight's form |
 | `straightThrough` | inline in `sampleLight` cu:960 (`2782758`) | – | 2 | **Shared** | Shadow rays passing straight through equal IORs, as `sampleBSDF`'s refraction lobe carries them on average; flex-cuda-pt's lacked the share of metallic reflection, now `1 - metallic`. FlexLight's shadow rays stop at every surface |
-| `shadowLift`, `shadowLength`, `occluderTransmittance` | `sampleLight` cu:917-951 (1ae631c) | `sampleLightTree` PC:746 (1864279) | 2 | **Shared** | One shadow segment for both consumers at the user's direction: FlexLight's lift of the end by the emitter's offset, turned toward the start, which the consumer adds where it forms the segment; renderer.cu's length, short of the end by a relative 1e-4, in place of FlexLight's skip of the emitter's triangle; and renderer.cu's transmittance of an occluder's layer |
+| `shadowLift`, `shadowLength`, `occluderTransmittance` | `sampleLight` cu:917-951 (1ae631c) | `sampleLightTree` PC:746 (0d8bb26) | 2 | **Shared** | One shadow segment for both consumers at the user's direction: FlexLight's lift of the end by the emitter's offset, turned toward the start, which the consumer adds where it forms the segment; renderer.cu's length, short of the end by a relative 1e-4, in place of FlexLight's skip of the emitter's triangle; and renderer.cu's transmittance of an occluder's layer |
 | `Material` (FlexLight) | – | wgsl:104, `rasterizer-compute.wgsl`:93 | 3 | Local | Laid out by the TypeScript upload and read from bindings: the shared code declares it `__target_intrinsic(wgsl, "Material")`, as FlexLight's own, and `__target_intrinsic(cuda, "BSDFMaterial")`, which flex-cuda-pt's `renderer.h` declares with the same fields, the specular tint and level last, and `walk` fills from its `Surface` |
 | `LOBE_DIFFUSE`, `LOBE_REFRACT` | cu:207 | wgsl:1746 | 1 | Local, inlined | Equal, constants (see `PI`) |
 
@@ -58,11 +58,11 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `Op`, op enum, `logarithm`, `divide`, `texel`, `shade` | h:9-11, cu:451-500 | `textureSample`, `surfaceAt` wgsl:181, 1253 | 3 | Local | The Blender node interpreter has no counterpart: FlexLight's materials are fixed texture slots, `Op`'s union has none in Slang, and texels are flat pointers vs texture atlases |
 | `beerLambert` | cu:510 | wgsl:1348 | 2, FlexLight | **Shared** | FlexLight's on an absorption color, which FlexLight's `Material` gained, where it took the instance's albedo from `instance_material`; flex-cuda-pt's goes; each consumer reads it at its call site |
 | `faceNormal`, `smoothNormal`, `hitPosition` | cu:605-623 | inline in `surfaceAt`, wgsl:1881 | 3 | Local | Data access: flat pointers vs instanced textures |
-| `geometryOffset` | cu:813-826 (94f161f) | inline in `surfaceAt` (84cfac0) | 2, FlexLight | **Shared** | At the user's direction FlexLight's tangents, `tan(acos(c))`, where flex-cuda-pt took `sqrt(1 - c^2) / c`, and its order of terms; each consumer passes the triangle, its normals and the point it reads |
+| `geometryOffset` | cu:813-826 (94f161f) | inline in `surfaceAt` (54964fb) | 2, FlexLight | **Shared** | At the user's direction FlexLight's tangents, `tan(acos(c))`, where flex-cuda-pt took `sqrt(1 - c^2) / c`, and its order of terms; each consumer passes the triangle, its normals and the point it reads |
 | `LightBounds`, `importance`, `cosSubClamped`, `sinSubClamped`, `sine`, `solidAngle`, `pickChild`, `childShare`, `powerHeuristic` | h:38, cu:867-899, 995 and the steps of `sampleLight` and `lightPdf` (`bd5216f`) | – | 1 | **Shared** | renderer.cu's light tree, transpiled, for FlexLight's to come; `LightBounds` holds a node's emitters alone, each consumer keeps its tree, and is `__target_intrinsic(cuda)` renderer.h's `LightNode`. Each consumer loops down its own nodes one `pickChild` or `childShare` step at a time |
 | `sphereDensity`, `sampleSphere` | – | – | 1 | **Shared** | Cone sampling toward FlexLight's point lights as spheres and its density in solid angle, so that hits on them can be weighted against light sampling (pbrt-v4's Sphere::Sample) |
 | `sampleLight`, `lightPdf` | cu:915, 980 (`bd5216f`) | `Light`, `sampleLight`, `occluded` wgsl:113, 1054, 1154 | 3 | Local | The visibility test traverses, the nodes are read from each consumer's own data |
-| `pointLightRadiance` | – | wgsl:1238 | 1 | **Shared** | The math of `calculatePointLightContrib`, `color * intensity / (PI * radius * radius)`: corrected from 5a313db's extra factor of four at the user's direction so light hits agree with direct lighting; the light lookup stays in FlexLight |
+| `pointLightRadiance` | – | wgsl:1238 | 1 | **Shared** | The math of `calculatePointLightContrib`, `color * intensity / (PI * radius * radius)`: corrected from 754e9a0's extra factor of four at the user's direction so light hits agree with direct lighting; the light lookup stays in FlexLight |
 | `LightSample`, `NEESample`, `reservoirSample`, `calculatePointLightContrib`, `SamplePreCalc`, `SampledColor`, `lightTrace` | – | wgsl:1033-1364 | 3 | Local | FlexLight only; `calculatePointLightContrib` reads its light and calls `pointLightRadiance` |
 | `environment` | cu:661 | wgsl:1931 | 3 | Local | World shader program vs equirectangular map or ambient |
 | `env_map_sample`, `environmentMapped`, `environmentPdf`, `searchCDF`, `skyRadiance`, `SkySample`, `sampleSky`, `escapeWeight` | – | wgsl:1529-1626 | 3 | Local | FlexLight's environment NEE |
@@ -75,8 +75,8 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `Camera`, `Settings`, `Scene`, `Transform`, uniforms | h:5, 44, 51 | wgsl:34-52, shift:7-22 | 3 | Local | Bindings |
 | `Reservoir`, `Shift`, `Selection` | h:27, 41, cu:565 | wgsl:1810, 1842, 1847 | 1 | **Shared** | FlexLight's; `Reservoir` and `Shift` `__target_intrinsic(cuda)`, as the host sizes its buffers by `renderer.h`'s, whose `rc` is a `Hit`: the shared code only copies `rc` and never constructs a `Reservoir` |
 | `offer`, `offerShifted`, `finalize`, `withEnd` | cu:753-782 | wgsl:1949-1980 | 1 | **Shared** | FlexLight's: `offer` draws through `pcg`, renderer.cu's `random` on CUDA, `withEnd` inserts its bits, which every candidate leaves clear for CUDA's OR |
-| `temporalWeights`, `pairShare`, `neighborWeight`, `canonicalWeight`, `confidenceCap` | inline in `__raygen__temporal`, `__raygen__spatial` (e102f38) | inline in `restir_temporal`, `restir_spatial` (c4d5892) | 1 | **Shared** | The MIS weights of temporal and paired spatial reuse, at the user's direction: identical but the confidence cap, `mix` for WGSL and `a + (b - a) * t` for every other target |
-| `facingSign`, `geometryDensity`, `footprintThreshold`, `withinFootprint`, `withinInverseFootprint`, `roughLobe`, `survivalProbability` | inline in `walk` (e102f38) | inline in `facingRay` and `walk` (c4d5892) | 1 | **Shared** | Identical, with `RESTIR_ROUGHNESS` and `RESTIR_FOOTPRINT`; Russian roulette's ratio is FlexLight's clamp of the largest ratio for WGSL and flex-cuda-pt's ratio of the largest for every other target, equal for positive densities |
+| `temporalWeights`, `pairShare`, `neighborWeight`, `canonicalWeight`, `confidenceCap` | inline in `__raygen__temporal`, `__raygen__spatial` (e102f38) | inline in `restir_temporal`, `restir_spatial` (a4acf92) | 1 | **Shared** | The MIS weights of temporal and paired spatial reuse, at the user's direction: identical but the confidence cap, `mix` for WGSL and `a + (b - a) * t` for every other target |
+| `facingSign`, `geometryDensity`, `footprintThreshold`, `withinFootprint`, `withinInverseFootprint`, `roughLobe`, `survivalProbability` | inline in `walk` (e102f38) | inline in `facingRay` and `walk` (a4acf92) | 1 | **Shared** | Identical, with `RESTIR_ROUGHNESS` and `RESTIR_FOOTPRINT`; Russian roulette's ratio is FlexLight's clamp of the largest ratio for WGSL and flex-cuda-pt's ratio of the largest for every other target, equal for positive densities |
 | `Domain`, `Vertex` | cu:569-579 | wgsl:1827-1840 | 3 | Local | Hold `Hit`; WGSL's `Vertex` adds `inside` |
 | `extractBits` | cu:590 | builtin | 1 | Local | WGSL builtin |
 | `wrongSide` | cu:639 | wgsl:1988 | 3 | Local | The incoming direction's side of the face vs FlexLight's `inside` state of the path |
@@ -113,7 +113,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
   and C++ alike; structs and their fields carry `__extern_cpp`. Everything else gets Slang's `_0` suffix (CUDA
   `static`). None of the generated names (`Random_x24init_0`, `dot_0`, `cross_0`, ...) occurs in what stays in either
   consumer.
-- `src/pathtracer.slang` transpiles FlexLight `5a313db` line for line, in the order of its file, with its names, expressions, comments and order; in
+- `src/pathtracer.slang` transpiles FlexLight `754e9a0` line for line, in the order of its file, with its names, expressions, comments and order; in
   Slang's syntax, WGSL's `fn` reads `func`, `const` `static const` (`static let` would be an uninitialized private
   variable), struct members `__extern_cpp public T name;`, `f32`/`u32`/`vec3<f32>` `float`/`uint`/`float3`, and
   `ptr<function, u32>` `inout uint`, and WGSL's `select(f, t, cond)` keeps its argument order through an overload in
@@ -163,7 +163,7 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
 - `tests/golden-cuda.txt`: `make golden REFERENCE=<flex-cuda-pt 02d0bf1>/src/shaders` host-compiles the unmodified
   `renderer.cu` against `tests/shim`, its D without cancellation or BIAS, and reproduces it byte for byte: the functions
   both consumers had alike.
-- `tests/golden-wgsl.txt`: `make golden-wgsl WGSL_REFERENCE=<FlexLight 5a313db>/.../pathtracer-compute.wgsl`
+- `tests/golden-wgsl.txt`: `make golden-wgsl WGSL_REFERENCE=<FlexLight 754e9a0>/.../pathtracer-compute.wgsl`
   appends the kernel of `tests/wgsl.mjs` with `--flexlight` to the reference shader and runs it through Dawn, here in
   `ubuntu:24.04` with lavapipe as CI runs it: every column. For the generated code the kernel prepends FlexLight's
   `Material`, which FlexLight's shader declares, and calls the same functions. Its `pcg` columns differ from CUDA's,
@@ -171,11 +171,11 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
   columns drawing random numbers, which each target draws from its own generator: `sampleBSDF`, the diffuse
   `connectBSDF`, `BSDF` and what the resampling chooses. Since the albedo stopped standing in for absorption, the
   throughputs of refraction and reflection in `lobeThroughput`, `sampleBSDF`, `connectBSDF` and `BSDF` and `beerLambert`,
-  and since D lost its cancellation and floor, D and the densities, are 5a313db's on lavapipe with only the allowed
+  and since D lost its cancellation and floor, D and the densities, are 754e9a0's on lavapipe with only the allowed
   changes applied by the harness: refraction times the albedo, reflection using `F`, its original `beerLambert` reading
   the absorption color passed to it, D over `(1 - n_dot_h) (1 + n_dot_h) + alpha^2 n_dot_h^2` without BIAS, `G1`
   returning `smithG1`, which moves the throughputs again, and the diffuse weight times `1 - fresnel` and the refraction
-  weight times `(1 - metallic) (1 - fresnel)`, their lobes chosen by those weights; every other column is 5a313db's,
+  weight times `(1 - metallic) (1 - fresnel)`, their lobes chosen by those weights; every other column is 754e9a0's,
   word for word.
   The C++ and CUDA targets leave out `neeBSDF` where it draws, toward the side of a diffuse lobe; the golden of its power
   heuristic is flex-cuda-pt's `lightBSDF` of `2782758` on FlexLight's `connectBSDF`, over the density.
@@ -184,8 +184,8 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
   words as renderer.cu's own on a million random nodes, points and picks, with and without `--use_fast_math`.
   The sphere's are pbrt-v4's formulas written out in the kernel, `1 - cos` of the cone by its square root.
   `samplesLights`' is renderer.cu's condition written out in the kernel.
-  ReSTIR's decisions, `facingSign` to `canonicalWeight`, are FlexLight's expressions of c4d5892 written out in the
-  kernel with 5a313db's constants, which c4d5892 keeps, on lavapipe every word of the generated code's, and on NVIDIA.
+  ReSTIR's decisions, `facingSign` to `canonicalWeight`, are FlexLight's expressions of a4acf92 written out in the
+  kernel with 754e9a0's constants, which a4acf92 keeps, on lavapipe every word of the generated code's, and on NVIDIA.
   On Intel Mesa the first temporal weight is 1 or 2 ulps off in 39 cases, also with FlexLight's text as the
   function's: its driver fuses the multiply-adds of the inlined call otherwise.
   `geometryOffset`'s is `surfaceAt`'s expressions written out in the kernel, on lavapipe, Intel Mesa and NVIDIA every
@@ -204,12 +204,12 @@ refraction under total internal reflection.
 | `make test-cpu` | Slang C++ target vs CUDA goldens / vs FlexLight goldens, CI | 288 / 288, bit-identical / worst 0.013 of the tolerance |
 | `make test-wgsl` | Generated WGSL vs FlexLight goldens, Dawn on lavapipe (CI) | 288 / 288, bit-identical |
 | `make test-wgsl` | The same on the local Intel Mesa | 1 of 288 cases off: a component of `sampleBSDF`'s direction at 1.46 of the tolerance, as FlexLight's own shader on that device |
-| `tests/wgsl.mjs` | Generated WGSL vs FlexLight's own shader `5a313db` on the same device: lavapipe, Intel Mesa, NVIDIA 615.78 | every column of all 288 cases bit-identical on each, the random draws included |
+| `tests/wgsl.mjs` | Generated WGSL vs FlexLight's own shader `754e9a0` on the same device: lavapipe, Intel Mesa, NVIDIA 615.78 | every column of all 288 cases bit-identical on each, the random draws included |
 | `make test-cuda` | Generated CUDA on the local RTX 5090 vs CUDA goldens / vs FlexLight goldens | 288 / 288, worst 0.099 / 0.016 of the tolerance |
 
 ## Identity of the consumers
 
-Against the baselines flex-cuda-pt `6652e76` and FlexLight `5a313db`, `feat/flexkernels` vendoring FlexKernels
+Against the baselines flex-cuda-pt `6652e76` and FlexLight `754e9a0`, `feat/flexkernels` vendoring FlexKernels
 `719529b`. flex-cuda-pt's `main` moved from `02d0bf1` during the port (readback through a shared in-memory file,
 `--use_fast_math`), with `renderer.cu` and `renderer.h` unchanged, so the line numbers above and the CUDA goldens still
 hold; the branch was rebased onto it and checked against both.
@@ -231,14 +231,14 @@ hold; the branch was rebased onto it and checked against both.
   through Dawn on the 288 inputs. `rasterizer-compute.wgsl` lost 58 lines.
 - The line-for-line transpile: the flex-cuda-pt renders stay bit-identical to `6652e76`, and the path tracer's
   composed shader (`bsdf.wgsl` and `pathtracer-compute.wgsl`) and the rasterizer's (`random.wgsl` and
-  `rasterizer-compute.wgsl`) return bit-identical results to FlexLight `5a313db`'s shaders through Dawn on Intel and
+  `rasterizer-compute.wgsl`) return bit-identical results to FlexLight `754e9a0`'s shaders through Dawn on Intel and
   NVIDIA, which fuse multiply-adds where lavapipe does not.
 - Independent verifier reviews of both diffs (call-site mapping, removed code still referenced, RNG consumption order)
   found no behavior change.
 
 - Both consumers: a commit per FlexKernels step, each vendoring that step's kernels and built.
 - FlexLight: `bash ./build-script` passes and all 9 WGSL modules validate as above. Its composed shader,
-  `pathtracer.wgsl` before `pathtracer-compute.wgsl`, returns words bit-identical to `5a313db`'s shader for every column
+  `pathtracer.wgsl` before `pathtracer-compute.wgsl`, returns words bit-identical to `754e9a0`'s shader for every column
   of the parity kernel on Intel and NVIDIA. `pathtracer-compute.wgsl` lost 327 lines and gained none since the single
   source; `rasterizer-compute.wgsl` lost 43 and gained 9 (the per-vector `trowbridgeReitz` and two renames).
 - flex-cuda-pt: `make` and `make test` pass, the test expecting FlexLight's BSDF: reflection untinted at any specular
