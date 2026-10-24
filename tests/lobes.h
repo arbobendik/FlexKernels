@@ -11,16 +11,19 @@ static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m
     TermsV throughput;
     if (lobe == 0) {
         BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, sampledHalf(in_dir, n, m, random_init), m, eta_i, eta_o);
+        h.translucent_share = translucentShare(m);
         pdf = diffusePDF(n_i_dot_l, 0, n_i_dot_v, alpha, h, eta_i, eta_o);
         throughput = diffuseBSDF(out_dir, n_i, alpha, m, h);
     } else if (lobe == 1) {
         const TermsV h_t = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
         l_dot_h = dot_0(out_dir, h_t);
         BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, h_t, m, eta_i, eta_o);
+        h.translucent_share = translucentShare(m);
         pdf = refractPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, h, eta_i, eta_o);
         throughput = refractBSDF(out_dir, n_i, alpha, m, h);
     } else {
         BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, reflectedHalf(in_dir, out_dir), m, eta_i, eta_o);
+        h.translucent_share = translucentShare(m);
         pdf = reflectPDF(n_i_dot_l, 0, n_i_dot_v, alpha, h, eta_i, eta_o);
         throughput = reflectBSDF(out_dir, n_i, alpha, m, h);
     }
