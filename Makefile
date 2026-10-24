@@ -19,6 +19,7 @@ build/cuda/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	mkdir -p build/cuda
 	$(SLANGC) $(SLANGFLAGS) $< -target cuda -o $@
 	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#define Matrix SlangMatrix\n#include "slang-cuda-prelude.h"|' $@
+	sed -i 's|^__device__ BSDFLobes bsdfLobes(|__device__ __forceinline__ BSDFLobes bsdfLobes(|' $@
 	echo '#undef Matrix' >> $@
 
 build/cuda/slang-cuda-prelude.h: $(SLANGC)
