@@ -91,5 +91,59 @@ int main() {
     }
     printf("translucent tilted: worst bin off its density by %.2f of the tolerance\n", worst_bin);
     failed |= worst_bin > 1;
+    // Sheen: alone over black, its albedo E by midpoint quadrature over the hemisphere, which sheenAlbedo's table is
+    // nowhere below, sampling returns E over max(1, its table's); over white diffuse, at most and within 1% of all it
+    // receives; each sample with the density and throughput connectBSDF and BSDF give its direction
+    const float ROUGHNESSES[] = {0.05f, 0.1f, 0.3f, 0.5f, 1}, VIEWS[] = {1, 0.5f, 0.2f, 0.02f};
+    for (const float r : ROUGHNESSES) for (const float mu : VIEWS) {
+        const Vector<float, 3> in_dir(sqrtf(1 - mu * mu), 0, -mu), v(-in_dir.x, 0, mu);
+        double albedo = 0, alone = 0, over = 0, worst = 0;
+        for (int i = 0; i < 512; i++) for (int j = 0; j < 1024; j++) {
+            const float t = (i + 0.5f) / 512 * PI / 2, phi = (j + 0.5f) / 1024 * 2 * PI;
+            const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
+            albedo += sheenBRDF(l, v, n, r) * cosf(t) * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
+        }
+        const float table = sheenAlbedo(mu, r);
+        const Material SHEEN[] = {{ZERO, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r},
+            {ONE, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r}};
+        for (unsigned i = 0; i < 1u << 18; i++) {
+            const SampleBSDF s = sampleBSDF(in_dir, n, SHEEN[0], 1, 1, hash(i), Vector<float, 2>(0, 0));
+            const SampleBSDF w = sampleBSDF(in_dir, n, SHEEN[1], 1, 1, hash(i), Vector<float, 2>(0, 0));
+            const SampleBSDF c = connectBSDF(in_dir, w.unit_direction, n, SHEEN[1], 1, 1, w.lobe, hash(i));
+            const float f = BSDF(in_dir, w.unit_direction, n, n, SHEEN[1], 1, 1, hash(i)).x;
+            alone += s.throughput.x / (1 << 18), over += w.throughput.x / (1 << 18);
+            if (w.pdf > 0) worst = fmax(worst, fmax(fabs(c.pdf / w.pdf - 1), fabs(f / (w.throughput.x * w.pdf) - 1)));
+        }
+        const double expect = albedo / fmax(1, table);
+        printf("sheen %g at cosine %g: albedo %.4f, table %.4f, alone %.4f of %.4f, over white %.4f, worst mismatch %.2g\n",
+            r, mu, albedo, table, alone, expect, over, worst);
+        failed |= table < albedo * 0.999 || fabs(alone - expect) > 0.01 * fmax(expect, 0.05) || over > 1.002
+            || over < 0.99 || worst > 1e-5;
+    }
+    // Colored sheens, pure red and blue by weights 0.4 and 1, over white diffuse and a white metal near smooth: every
+    // channel at most and within 1% of all it receives, to four standard errors of its mean, the base scaled per channel
+    // by what the sheen takes
+    const Vector<float, 3> TINTS[] = {Vector<float, 3>(1, 0, 0), Vector<float, 3>(0, 0, 1)};
+    const float WEIGHTS[] = {0.4f, 1}, TINTED_ROUGHNESSES[] = {0.1f, 0.5f}, TINTED_VIEWS[] = {1, 0.2f, 0.02f};
+    for (const float weight : WEIGHTS) for (const Vector<float, 3> tint : TINTS) for (int metal = 0; metal < 2; metal++)
+    for (const float r : TINTED_ROUGHNESSES) for (const float mu : TINTED_VIEWS) {
+        const Vector<float, 3> in_dir(sqrtf(1 - mu * mu), 0, -mu);
+        const Material colored = {ONE, ZERO, metal ? 0.01f : 1, float(metal), 0, 1, ZERO, ONE, 1, ZERO,
+            Vector<float, 3>(tint.x * weight, tint.y * weight, tint.z * weight), r};
+        double sum[3] = {}, squares[3] = {};
+        for (unsigned i = 0; i < 1u << 18; i++) {
+            const Vector<float, 3> t = sampleBSDF(in_dir, n, colored, 1, 1, hash(i), Vector<float, 2>(0, 0)).throughput;
+            const double c[3] = {t.x, t.y, t.z};
+            for (int k = 0; k < 3; k++) sum[k] += c[k] / (1 << 18), squares[k] += c[k] * c[k] / (1 << 18);
+        }
+        bool bad = false;
+        for (int k = 0; k < 3; k++) {
+            const double error = 4 * sqrt(fmax(squares[k] - sum[k] * sum[k], 0) / (1 << 18));
+            bad |= sum[k] > 1 + error || sum[k] < 0.99 - error;
+        }
+        printf("colored sheen %g %g %g over %s, r %g, cosine %g: %.4f %.4f %.4f%s\n", tint.x * weight, tint.y * weight,
+            tint.z * weight, metal ? "metal" : "diffuse", r, mu, sum[0], sum[1], sum[2], bad ? " FAILED" : "");
+        failed |= bad;
+    }
     return failed;
 }
