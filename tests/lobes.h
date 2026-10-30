@@ -1,7 +1,7 @@
 // sampleBSDF's lobes toward a given out_dir for the tests, by their BSDF and PDF functions
 using TermsV = Vector<float, 3>;
 // sampleBSDF's lobe toward a given out_dir by its half vector terms and its BSDF and PDF functions, as the walk's
-// replay takes it: diffuse 0, refract 1, reflect 2, directions it can't sample carrying nothing
+// replay takes it: diffuse 0, refract 1, reflect 2, sheen 4, directions it can't sample carrying nothing
 static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m, float eta_i, float eta_o,
     unsigned lobe, unsigned random_init) {
     const float n_dot_v = dot_0(n, negate_0(in_dir)), alpha = m.roughness * m.roughness;
@@ -21,6 +21,11 @@ static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m
         h.translucent_share = translucentShare(m);
         pdf = refractPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, h, eta_i, eta_o);
         throughput = refractBSDF(out_dir, n_i, alpha, m, h);
+    } else if (lobe == 4) {
+        BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, reflectedHalf(in_dir, out_dir), m, eta_i, eta_o);
+        h.translucent_share = translucentShare(m);
+        pdf = sheenVelvetPDF(n_i_dot_l, 0, n_i_dot_v, alpha, h, eta_i, eta_o);
+        throughput = sheenVelvetBSDF(out_dir, n_i, alpha, m, h);
     } else {
         BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, reflectedHalf(in_dir, out_dir), m, eta_i, eta_o);
         h.translucent_share = translucentShare(m);
