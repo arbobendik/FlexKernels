@@ -75,7 +75,8 @@ __device__ Result evaluate(const Case& c) {
         1};
     const float h[] = {minus_in[0] + c.in[3], minus_in[1] + c.in[4], minus_in[2] + c.in[5]}, scale = rnorm(h);
     const float ggx_n[] = {h[0] * scale, h[1] * scale, h[2] * scale};
-    r.lobes = bsdfLobes(in_dir, vec(minus_in), vec(n_i), vec(ggx_n), material, c.in[18], c.in[19]);
+    r.lobes = bsdfLobes(in_dir, vec(minus_in), vec(n_i), vec(ggx_n), material, c.in[18], c.in[19],
+        sheenAlbedo(vec(minus_in), vec(n_i), material));
     const float p_lobe[] = {r.lobes.p_diffuse, r.lobes.p_refract, r.lobes.p_reflect};
     for (unsigned lobe = 0; lobe < 3; lobe++) {
         const bool side = lobe == 1 ? dot3(vec(n_i), out_dir) < 0 : dot3(vec(n_i), out_dir) > 0;
@@ -96,8 +97,8 @@ __device__ Result evaluate(const Case& c) {
         r.connected[lobe] = vec(weighted);
         r.connected_pdf[lobe] = s.pdf;
     }
-    FixedArray<Vec, 3> throughputs;
-    FixedArray<float, 3> pdfs;
+    FixedArray<Vec, 4> throughputs;
+    FixedArray<float, 4> pdfs;
     r.bsdf = BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19],
         dot_0(vec(c.in + 9), -in_dir) * dot_0(vec(c.in + 9), out_dir) <= 0, c.random_state, &throughputs, &pdfs);
     r.nee = neeDecision(material, dot_0(n, -in_dir), c.in[18], c.in[19]);
@@ -118,7 +119,7 @@ __device__ Result evaluate(const Case& c) {
     BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, c.random_state, &throughputs, &pdfs);
     const float pdf = 0.5f + c.in[17];
     float balance[3] = {}, power[3] = {};
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         if (!(pdfs[i] > 0)) continue;
         const float ratio = pdfs[i] / pdf;
         const float t[] = {throughputs[i].x * pdfs[i], throughputs[i].y * pdfs[i], throughputs[i].z * pdfs[i]};
