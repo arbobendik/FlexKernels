@@ -77,5 +77,57 @@ int main() {
     }
     printf("translucent tilted: worst bin off its density by %.2f of the tolerance\n", worst_bin);
     failed |= worst_bin > 1;
+    const float ROUGHNESSES[] = {0.05f, 0.1f, 0.3f, 0.5f, 1}, VIEWS[] = {1, 0.5f, 0.2f, 0.02f};
+    for (const float r : ROUGHNESSES) for (const float mu : VIEWS) {
+        const Vector<float, 3> in_dir(sqrtf(1 - mu * mu), 0, -mu), v(-in_dir.x, 0, mu);
+        const Material SHEEN[] = {{ZERO, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r},
+            {ONE, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r}};
+        // By quadrature: the sheen lobe alone, E / max(E_table, 1), and over white, at most 1 where E_table >= E
+        double albedo = 0, white = 0, alone = 0, over = 0, worst = 0, alone2 = 0, over2 = 0;
+        for (int i = 0; i < 512; i++) for (int j = 0; j < 1024; j++) {
+            const float t = (i + 0.5f) / 512 * PI / 2, phi = (j + 0.5f) / 1024 * 2 * PI;
+            const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
+            albedo += faceBSDF(in_dir, l, n, n, SHEEN[0], 1, 1, 0).x * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
+            white += faceBSDF(in_dir, l, n, n, SHEEN[1], 1, 1, 0).x * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
+        }
+        for (unsigned i = 0; i < 1u << 18; i++) {
+            const SampleBSDF s = sampleBSDF(in_dir, n, SHEEN[0], 1, 1, hash(i), Vector<float, 2>(0, 0));
+            const SampleBSDF w = sampleBSDF(in_dir, n, SHEEN[1], 1, 1, hash(i), Vector<float, 2>(0, 0));
+            const SampleBSDF c = towardLobe(in_dir, w.unit_direction, n, SHEEN[1], 1, 1, w.lobe, hash(i));
+            alone += s.throughput.x / (1 << 18), over += w.throughput.x / (1 << 18);
+            alone2 += s.throughput.x * s.throughput.x / (1 << 18), over2 += w.throughput.x * w.throughput.x / (1 << 18);
+            if (w.pdf > 0)
+                worst = fmax(worst, fmax(fabs(c.pdf / w.pdf - 1), fabs(c.throughput.x / w.throughput.x - 1)));
+        }
+        // 4 standard errors of the sampled means
+        const double se = 4 * sqrt(fmax(alone2 - alone * alone, 0) / (1 << 18)) + 0.002,
+            over_se = 4 * sqrt(fmax(over2 - over * over, 0) / (1 << 18)) + 0.002;
+        printf("sheen %g at cosine %g: alone %.4f of %.4f, over white %.4f of %.4f, worst mismatch %.2g\n", r, mu,
+            alone, albedo, over, white, worst);
+        failed |= fabs(alone - albedo) > se || fabs(over - white) > over_se || white > 1.002 || white < 0.99
+            || worst > 1e-5;
+    }
+    const Vector<float, 3> TINTS[] = {Vector<float, 3>(1, 0, 0), Vector<float, 3>(0, 0, 1)};
+    const float WEIGHTS[] = {0.4f, 1}, TINTED_ROUGHNESSES[] = {0.1f, 0.5f}, TINTED_VIEWS[] = {1, 0.2f, 0.02f};
+    for (const float weight : WEIGHTS) for (const Vector<float, 3> tint : TINTS) for (int metal = 0; metal < 2; metal++)
+    for (const float r : TINTED_ROUGHNESSES) for (const float mu : TINTED_VIEWS) {
+        const Vector<float, 3> in_dir(sqrtf(1 - mu * mu), 0, -mu);
+        const Material colored = {ONE, ZERO, metal ? 0.01f : 1, float(metal), 0, 1, ZERO, ONE, 1, ZERO,
+            Vector<float, 3>(tint.x * weight, tint.y * weight, tint.z * weight), r};
+        double sum[3] = {}, squares[3] = {};
+        for (unsigned i = 0; i < 1u << 18; i++) {
+            const Vector<float, 3> t = sampleBSDF(in_dir, n, colored, 1, 1, hash(i), Vector<float, 2>(0, 0)).throughput;
+            const double c[3] = {t.x, t.y, t.z};
+            for (int k = 0; k < 3; k++) sum[k] += c[k] / (1 << 18), squares[k] += c[k] * c[k] / (1 << 18);
+        }
+        bool bad = false;
+        for (int k = 0; k < 3; k++) {
+            const double error = 4 * sqrt(fmax(squares[k] - sum[k] * sum[k], 0) / (1 << 18));
+            bad |= sum[k] > 1 + error || sum[k] < 0.99 - error;
+        }
+        printf("colored sheen %g %g %g over %s, r %g, cosine %g: %.4f %.4f %.4f%s\n", tint.x * weight, tint.y * weight,
+            tint.z * weight, metal ? "metal" : "diffuse", r, mu, sum[0], sum[1], sum[2], bad ? " FAILED" : "");
+        failed |= bad;
+    }
     return failed;
 }
