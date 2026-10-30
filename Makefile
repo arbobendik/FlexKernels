@@ -26,6 +26,8 @@ build/cuda/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	# bsdfLobes inlined, as nvcc inlines it into consumers' code without the translucent share's callers, which grow it
 	# past nvcc's threshold: consumers specializing a material's constants fold them only through inlined code
 	sed -i 's|^__device__ BSDFLobes bsdfLobes(|__device__ __forceinline__ BSDFLobes bsdfLobes(|' $@
+	# connectBSDF likewise, which the sheen's branches grow past it where consumers specialize the sheen only after nvcc
+	sed -i 's|^__device__ SampleBSDF connectBSDF(|__device__ __forceinline__ SampleBSDF connectBSDF(|' $@
 	echo '#undef Matrix' >> $@
 
 build/cuda/slang-cuda-prelude.h: $(SLANGC)
