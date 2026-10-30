@@ -5,6 +5,64 @@ public static const float MAX_SAFE_INTEGER_FOR_F32 = 8388607.0;
 public static const uint UINT_MAX = 4294967295u;
 public static const float BIAS = 0.0000152587890625;
 public static const float INV_PI = 0.3183098861837907;
+// SHEEN_ALBEDO nodes per side, least sheen_roughness
+public static const uint SHEEN_NODES = 24u;
+public static const float SHEEN_LEAST = 0.05f;
+// albedo = integral f * n_dot_l dl over the hemisphere, f of the sheen lobe
+// SHEEN_ALBEDO[i * SHEEN_NODES + j] = ln(albedo) at
+// sqrt(n_dot_v) = i / (SHEEN_NODES - 1)
+// sqrt(sheen_roughness) = sqrt(SHEEN_LEAST) + j / (SHEEN_NODES - 1) * (1 - sqrt(SHEEN_LEAST))
+// exp(bilinear SHEEN_ALBEDO) >= albedo
+public static const float SHEEN_ALBEDO[576] = {
+    0.6209f, 0.4945f, 0.3808f, 0.2844f, 0.2001f, 0.1258f, 0.0599f, 0.0011f, -0.0516f, -0.0989f, -0.1416f, -0.1801f,
+    -0.2151f, -0.2469f, -0.2759f, -0.3023f, -0.3265f, -0.3486f, -0.3689f, -0.3876f, -0.4048f, -0.4207f, -0.4344f, -0.4493f,
+    0.5924f, 0.4705f, 0.3590f, 0.2644f, 0.1815f, 0.1083f, 0.0433f, -0.0147f, -0.0666f, -0.1134f, -0.1555f, -0.1937f,
+    -0.2282f, -0.2597f, -0.2883f, -0.3145f, -0.3384f, -0.3604f, -0.3805f, -0.3990f, -0.4161f, -0.4318f, -0.4454f, -0.4607f,
+    0.5228f, 0.4060f, 0.3026f, 0.2125f, 0.1333f, 0.0632f, 0.0007f, -0.0551f, -0.1052f, -0.1504f, -0.1912f, -0.2281f,
+    -0.2617f, -0.2922f, -0.3200f, -0.3455f, -0.3687f, -0.3901f, -0.4097f, -0.4277f, -0.4444f, -0.4597f, -0.4739f, -0.4880f,
+    0.4357f, 0.3277f, 0.2316f, 0.1473f, 0.0728f, 0.0066f, -0.0526f, -0.1056f, -0.1534f, -0.1965f, -0.2355f, -0.2709f,
+    -0.3031f, -0.3324f, -0.3592f, -0.3836f, -0.4060f, -0.4266f, -0.4455f, -0.4629f, -0.4790f, -0.4938f, -0.5075f, -0.5209f,
+    0.3313f, 0.2346f, 0.1474f, 0.0701f, 0.0014f, -0.0601f, -0.1152f, -0.1649f, -0.2097f, -0.2503f, -0.2872f, -0.3206f,
+    -0.3511f, -0.3790f, -0.4044f, -0.4277f, -0.4490f, -0.4687f, -0.4867f, -0.5033f, -0.5187f, -0.5329f, -0.5460f, -0.5586f,
+    0.2111f, 0.1279f, 0.0511f, -0.0177f, -0.0797f, -0.1355f, -0.1860f, -0.2316f, -0.2730f, -0.3107f, -0.3449f, -0.3762f,
+    -0.4047f, -0.4307f, -0.4546f, -0.4765f, -0.4966f, -0.5151f, -0.5321f, -0.5478f, -0.5623f, -0.5758f, -0.5882f, -0.6001f,
+    0.0755f, 0.0080f, -0.0565f, -0.1157f, -0.1698f, -0.2192f, -0.2642f, -0.3052f, -0.3427f, -0.3769f, -0.4082f, -0.4368f,
+    -0.4630f, -0.4871f, -0.5091f, -0.5294f, -0.5481f, -0.5653f, -0.5811f, -0.5957f, -0.6093f, -0.6218f, -0.6334f, -0.6445f,
+    -0.0757f, -0.1249f, -0.1757f, -0.2238f, -0.2689f, -0.3108f, -0.3496f, -0.3854f, -0.4184f, -0.4487f, -0.4766f, -0.5023f,
+    -0.5259f, -0.5476f, -0.5676f, -0.5860f, -0.6030f, -0.6187f, -0.6333f, -0.6467f, -0.6591f, -0.6706f, -0.6813f, -0.6916f,
+    -0.2432f, -0.2712f, -0.3064f, -0.3421f, -0.3770f, -0.4106f, -0.4423f, -0.4722f, -0.5001f, -0.5260f, -0.5501f, -0.5724f,
+    -0.5931f, -0.6122f, -0.6299f, -0.6462f, -0.6614f, -0.6754f, -0.6884f, -0.7004f, -0.7116f, -0.7220f, -0.7316f, -0.7409f,
+    -0.4281f, -0.4315f, -0.4492f, -0.4710f, -0.4946f, -0.5188f, -0.5427f, -0.5658f, -0.5880f, -0.6090f, -0.6287f, -0.6473f,
+    -0.6647f, -0.6808f, -0.6959f, -0.7100f, -0.7230f, -0.7351f, -0.7464f, -0.7569f, -0.7667f, -0.7758f, -0.7843f, -0.7925f,
+    -0.6323f, -0.6076f, -0.6052f, -0.6112f, -0.6221f, -0.6358f, -0.6509f, -0.6666f, -0.6824f, -0.6979f, -0.7129f, -0.7272f,
+    -0.7409f, -0.7538f, -0.7659f, -0.7774f, -0.7881f, -0.7981f, -0.8075f, -0.8163f, -0.8245f, -0.8321f, -0.8393f, -0.8463f,
+    -0.8579f, -0.8012f, -0.7760f, -0.7641f, -0.7606f, -0.7624f, -0.7677f, -0.7751f, -0.7838f, -0.7931f, -0.8028f, -0.8125f,
+    -0.8220f, -0.8312f, -0.8401f, -0.8486f, -0.8567f, -0.8644f, -0.8717f, -0.8785f, -0.8850f, -0.8910f, -0.8967f, -0.9024f,
+    -1.1077f, -1.0143f, -0.9633f, -0.9311f, -0.9114f, -0.8999f, -0.8941f, -0.8922f, -0.8929f, -0.8954f, -0.8991f, -0.9035f,
+    -0.9085f, -0.9136f, -0.9189f, -0.9242f, -0.9294f, -0.9344f, -0.9393f, -0.9440f, -0.9485f, -0.9527f, -0.9568f, -0.9610f,
+    -1.3850f, -1.2495f, -1.1692f, -1.1141f, -1.0760f, -1.0495f, -1.0313f, -1.0188f, -1.0106f, -1.0054f, -1.0024f, -1.0011f,
+    -1.0009f, -1.0015f, -1.0028f, -1.0044f, -1.0064f, -1.0085f, -1.0107f, -1.0130f, -1.0153f, -1.0175f, -1.0198f, -1.0223f,
+    -1.6942f, -1.5102f, -1.3965f, -1.3154f, -1.2565f, -1.2131f, -1.1808f, -1.1565f, -1.1382f, -1.1244f, -1.1139f, -1.1060f,
+    -1.1001f, -1.0956f, -1.0923f, -1.0900f, -1.0883f, -1.0871f, -1.0864f, -1.0860f, -1.0858f, -1.0858f, -1.0860f, -1.0867f,
+    -2.0409f, -1.8008f, -1.6487f, -1.5379f, -1.4554f, -1.3928f, -1.3446f, -1.3070f, -1.2773f, -1.2538f, -1.2349f, -1.2196f,
+    -1.2072f, -1.1970f, -1.1886f, -1.1817f, -1.1759f, -1.1710f, -1.1669f, -1.1635f, -1.1606f, -1.1581f, -1.1560f, -1.1547f,
+    -2.4327f, -2.1270f, -1.9306f, -1.7857f, -1.6761f, -1.5916f, -1.5253f, -1.4725f, -1.4300f, -1.3954f, -1.3669f, -1.3433f,
+    -1.3235f, -1.3068f, -1.2927f, -1.2806f, -1.2701f, -1.2611f, -1.2533f, -1.2464f, -1.2404f, -1.2350f, -1.2303f, -1.2267f,
+    -2.8799f, -2.4966f, -2.2486f, -2.0641f, -1.9233f, -1.8135f, -1.7264f, -1.6562f, -1.5990f, -1.5517f, -1.5123f, -1.4791f,
+    -1.4510f, -1.4269f, -1.4061f, -1.3881f, -1.3724f, -1.3586f, -1.3464f, -1.3357f, -1.3261f, -1.3175f, -1.3098f, -1.3036f,
+    -3.3975f, -2.9209f, -2.6120f, -2.3810f, -2.2036f, -2.0643f, -1.9529f, -1.8625f, -1.7882f, -1.7262f, -1.6741f, -1.6299f,
+    -1.5920f, -1.5593f, -1.5309f, -1.5061f, -1.4843f, -1.4650f, -1.4479f, -1.4326f, -1.4189f, -1.4065f, -1.3954f, -1.3863f,
+    -4.0081f, -3.4164f, -3.0342f, -2.7475f, -2.5265f, -2.3521f, -2.2121f, -2.0978f, -2.0031f, -1.9239f, -1.8568f, -1.7995f,
+    -1.7502f, -1.7074f, -1.6700f, -1.6372f, -1.6082f, -1.5824f, -1.5595f, -1.5389f, -1.5204f, -1.5037f, -1.4886f, -1.4761f,
+    -4.7491f, -4.0092f, -3.5364f, -3.1814f, -2.9070f, -2.6900f, -2.5150f, -2.3715f, -2.2523f, -2.1520f, -2.0668f, -1.9937f,
+    -1.9306f, -1.8756f, -1.8274f, -1.7849f, -1.7473f, -1.7138f, -1.6839f, -1.6570f, -1.6328f, -1.6110f, -1.5911f, -1.5747f,
+    -5.6876f, -4.7403f, -4.1526f, -3.7111f, -3.3695f, -3.0986f, -2.8796f, -2.6994f, -2.5492f, -2.4224f, -2.3144f, -2.2214f,
+    -2.1409f, -2.0707f, -2.0090f, -1.9546f, -1.9063f, -1.8633f, -1.8248f, -1.7903f, -1.7592f, -1.7310f, -1.7055f, -1.6843f,
+    -6.6894f, -5.3435f, -4.8626f, -4.3441f, -3.9339f, -3.6027f, -3.3310f, -3.1051f, -2.9151f, -2.7539f, -2.6159f, -2.4969f,
+    -2.3936f, -2.3034f, -2.2242f, -2.1544f, -2.0924f, -2.0373f, -1.9880f, -1.9437f, -1.9039f, -1.8679f, -1.8348f, -1.8078f,
+    -9.6955f, -7.6249f, -6.6107f, -5.7233f, -5.0483f, -4.5213f, -4.1012f, -3.7605f, -3.4801f, -3.2464f, -3.0496f, -2.8823f,
+    -2.7388f, -2.6148f, -2.5070f, -2.4127f, -2.3296f, -2.2562f, -2.1909f, -2.1327f, -2.0805f, -2.0335f, -1.9905f, -1.9537f
+};
 
 public float3 normalize(float3 a) {
     __target_switch {
@@ -67,6 +125,8 @@ __extern_cpp public struct Material {
     __extern_cpp public float3 specular_tint = float3(1.0f);
     __extern_cpp public float specular_level = 1.0f;
     __extern_cpp public float3 translucent = float3(0.0f);
+    __extern_cpp public float3 sheen = float3(0.0f);
+    __extern_cpp public float sheen_roughness = 0.5f;
 };
 
 __extern_cpp public struct Random {
@@ -248,6 +308,7 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 }
 
 // out_dir on in_dir's side of g_n: BSDF * n_dot_l = throughput_diffuse * PDF_diffuse + throughput_reflect * PDF_reflect
+// + throughput_sheen * PDF_sheen
 // otherwise: BSDF * n_dot_l = throughput_refract * PDF_refract
 // as throughput = BSDF_lobe * n_dot_l / PDF_lobe
 [CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {
@@ -255,7 +316,8 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     if (dot(g_n, negate(in_dir)) * dot(g_n, out_dir) > 0.0f) {
         let diffuse: SampleBSDF = connectBSDF(in_dir, out_dir, n, material, eta_i, eta_o, 0u, random_state);
         let reflection: SampleBSDF = connectBSDF(in_dir, out_dir, n, material, eta_i, eta_o, 2u, random_state);
-        return diffuse.throughput * diffuse.pdf + reflection.throughput * reflection.pdf;
+        let sheen: SampleBSDF = connectBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_SHEEN_VELVET, random_state);
+        return diffuse.throughput * diffuse.pdf + reflection.throughput * reflection.pdf + sheen.throughput * sheen.pdf;
     }
     let refraction: SampleBSDF = connectBSDF(in_dir, out_dir, n, material, eta_i, eta_o, 1u, random_state);
     return refraction.throughput * refraction.pdf;
@@ -302,6 +364,10 @@ __extern_cpp public struct BSDFLobes {
     __extern_cpp public float p_refract;
     // Share of the diffuse lobe's samples sent through the surface
     __extern_cpp public float translucent_share;
+    // Sheen lobe weight, probability and v, 0 without sheen
+    __extern_cpp public float3 sheen;
+    __extern_cpp public float p_sheen_velvet;
+    __extern_cpp public float3 view;
 }
 
 [CudaDeviceExport] public func sampleHalfVector(v: float3, n_i: float3, alpha: float, inout random_state: uint) -> float3 {
@@ -333,23 +399,55 @@ __extern_cpp public struct BSDFLobes {
     let total: bool = eta_i * eta_i * (1.0f - v_dot_h * v_dot_h) >= eta_o * eta_o;
     let F_dielectric: float3 = total ? float3(1.0f) : material.specular_tint * f0 + (1.0f - material.specular_tint * f0)
         * (F_level - f0) / (1.0f - f0);
-    var F: float3 = mix(F_dielectric, material.albedo, material.metallic);
+    // albedo = exp(bilinear SHEEN_ALBEDO)
+    // BSDF = sheen * f
+    // sheen = material.sheen / max(albedo, 1)
+    // => integral BSDF * n_dot_l dl = material.sheen * min(albedo, 1)
+    // scale = 1 - material.sheen * min(albedo, 1)
+    // sheen_component = greyscale(material.sheen) * min(albedo, 1)
+    var scale: float3 = float3(1.0f);
+    var sheen_component: float = 0.0f;
+    var sheen: float3 = float3(0.0f);
+    var view: float3 = float3(0.0f);
+    if (rgb_to_greyscale(material.sheen) > 0.0f) {
+        let x: float = clamp(sqrt(max(dot(n_i, v), 0.0f)), 0.0f, 1.0f) * float(SHEEN_NODES - 1u);
+        let i: uint = min(uint(x), SHEEN_NODES - 2u);
+        let least: float = sqrt(SHEEN_LEAST);
+        let y: float = (clamp(sqrt(max(material.sheen_roughness, 0.0f)), least, 1.0f) - least) / (1.0f - least)
+            * float(SHEEN_NODES - 1u);
+        let j: uint = min(uint(y), SHEEN_NODES - 2u);
+        let k: uint = i * SHEEN_NODES + j;
+        let u: float = x - float(i);
+        let t: float = y - float(j);
+        let a: float = SHEEN_ALBEDO[k] + (SHEEN_ALBEDO[k + SHEEN_NODES] - SHEEN_ALBEDO[k]) * u;
+        let b: float = SHEEN_ALBEDO[k + 1u] + (SHEEN_ALBEDO[k + SHEEN_NODES + 1u] - SHEEN_ALBEDO[k + 1u]) * u;
+        let albedo: float = exp(a + (b - a) * t);
+        scale = 1.0f - material.sheen * min(albedo, 1.0f);
+        sheen_component = rgb_to_greyscale(material.sheen) * min(albedo, 1.0f);
+        sheen = material.sheen / max(albedo, 1.0f);
+        view = v;
+    }
+    var F: float3 = mix(F_dielectric, material.albedo, material.metallic) * scale;
     let F_greyscale: float = rgb_to_greyscale(F);
     // BSDF weights (these are artistic choices to balance the lobes)
     let reflect_weight: float = 1.0f;
-    let diffuse_weight: float3 = (1.0f - material.transmission) * (1.0f - material.metallic) * (1.0f - F_dielectric);
-    let refract_weight: float3 = material.transmission * (1.0f - material.metallic) * (1.0f - F_dielectric);
+    let diffuse_weight: float3 = (1.0f - material.transmission) * (1.0f - material.metallic) * (1.0f - F_dielectric)
+        * scale;
+    let refract_weight: float3 = material.transmission * (1.0f - material.metallic) * (1.0f - F_dielectric) * scale;
     // Add fresnel term for improved sampling performance
     let reflect_component: float = max(reflect_weight * F_greyscale, 0.0f);
     let diffuse_component: float = max(rgb_to_greyscale(diffuse_weight), 0.0f);
     let refract_component: float = max(rgb_to_greyscale(refract_weight) * sign(length(refracted)), 0.0f);
-    // Calculate sampling probabilities
-    let total_component: float = reflect_component + diffuse_component + refract_component;
-    let total_component_inv: float = 1.0f / max(total_component, BIAS);
-    let p_diffuse: float = diffuse_component * total_component_inv;
-    let p_reflect: float = reflect_component * total_component_inv;
-    let p_refract: float = refract_component * total_component_inv;
-    return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect, p_refract, 0.0f);
+    // p_sheen_velvet = min(sheen_component, 1), 1 without base lobes
+    // p_lobe = lobe_component / base_component * (1 - p_sheen_velvet)
+    let base_component: float = reflect_component + diffuse_component + refract_component;
+    let p_sheen_velvet: float = select(min(sheen_component, 1.0f), 1.0f,
+        sheen_component > 0.0f && !(base_component > 0.0f));
+    let base_component_inv: float = (1.0f - p_sheen_velvet) / max(base_component, BIAS);
+    let p_diffuse: float = diffuse_component * base_component_inv;
+    let p_reflect: float = reflect_component * base_component_inv;
+    let p_refract: float = refract_component * base_component_inv;
+    return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect, p_refract, 0.0f, sheen, p_sheen_velvet, view);
 }
 
 // translucent_share = greyscale(translucent) / (greyscale(albedo) + greyscale(translucent))
@@ -377,6 +475,25 @@ __extern_cpp public struct BSDFLobes {
         let color: float3 = select(material.albedo, select(material.albedo, material.translucent, through)
             / select(1.0f - share, share, through), share > 0.0f);
         return lobes.diffuse_weight * color / lobes.p_diffuse;
+    }
+    if (lobe == LOBE_SHEEN_VELVET) {
+        let h: float3 = normalize(l + lobes.view);
+        let n_dot_h: float = dot(n_i, h);
+        let n_dot_l: float = max(dot(n_i, l), 0.0f);
+        let n_dot_v: float = max(dot(n_i, lobes.view), 0.0f);
+        // r = max(sheen_roughness, SHEEN_LEAST)
+        // D = (2 + 1 / r) * sin(theta_h)^(1 / r) / (2 * PI)
+        // sin(theta_h)^(1 / r) = (1 - n_dot_h^2)^(0.5 / r)
+        // V = 1 / (4 * (n_dot_l + n_dot_v - n_dot_l * n_dot_v))
+        // => f = D * V
+        let inv_r: float = 1.0f / max(material.sheen_roughness, SHEEN_LEAST);
+        let f: float = (2.0f + inv_r) * pow(max(1.0f - n_dot_h * n_dot_h, 0.0f), 0.5f * inv_r) * 0.5f * INV_PI
+            / max(4.0f * (n_dot_l + n_dot_v - n_dot_l * n_dot_v), BIAS);
+        // BSDF = sheen * f
+        // PDF = p_sheen_velvet / (2 * PI)
+        // throughput = BSDF * n_dot_l / PDF
+        // => throughput = sheen * f * n_dot_l * 2 * PI / p_sheen_velvet
+        return lobes.sheen * (f * n_dot_l * 2.0f * PI / lobes.p_sheen_velvet);
     }
     if (lobe == LOBE_REFRACT) {
         let m_n_i_dot_l: float = - dot(n_i, l);
@@ -418,6 +535,11 @@ __extern_cpp public struct BSDFLobes {
         let share: float = lobes.translucent_share;
         return select(0.0f, select(lobes.p_diffuse * n_i_dot_l * INV_PI, lobes.p_diffuse * abs(n_i_dot_l) * INV_PI
             * select(1.0f - share, share, n_i_dot_l < 0.0f), share > 0.0f), n_i_dot_v > 0.0f);
+    }
+    if (lobe == LOBE_SHEEN_VELVET) {
+        // PDF_UNIFORM_HEMISPHERE = 1 / (2 * PI)
+        // => PDF = p_sheen_velvet / (2 * PI)
+        return select(0.0f, lobes.p_sheen_velvet * 0.5f * INV_PI, n_i_dot_l > 0.0f && n_i_dot_v > 0.0f);
     }
     // PDF_VNDF = G1_v * v_dot_h * D / n_dot_v
     let pdf_h: float = select(0.0f, smithG1(alpha, n_i_dot_v) * lobes.v_dot_h * trowbridgeReitz(alpha, lobes.n_dot_h) / n_i_dot_v, alpha > 0.0f && lobes.v_dot_h > 0.0f && lobes.n_dot_h > 0.0f && n_i_dot_v > 0.0f);
@@ -461,15 +583,31 @@ __extern_cpp public struct BSDFLobes {
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     let random_p: Random = pcg(random_state);
     random_state = random_p.state;
+    // Sheen case
+    // Sample uniform hemisphere, n_dot_l = random_s_1.value
+    if (random_p.value < lobes.p_sheen_velvet) {
+        let random_s_1: Random = pcg(random_state);
+        let random_s_2: Random = pcg(random_s_1.state);
+        sample.random_state = random_s_2.state;
+        let across: float = sqrt(max(0.0f, 1.0f - random_s_1.value * random_s_1.value));
+        let phi: float = 2.0f * PI * random_s_2.value;
+        sample.unit_direction = tangentToWorld(float3(across * cos(phi), random_s_1.value, across * sin(phi)), n_i);
+        sample.throughput = lobeThroughput(sample.unit_direction, n_i, alpha, material, lobes, LOBE_SHEEN_VELVET);
+        sample.pdf = lobeDensity(random_s_1.value, 0.0f, n_i_dot_v, alpha, lobes, eta_i, eta_o, LOBE_SHEEN_VELVET);
+        sample.lobe = LOBE_SHEEN_VELVET;
+        return sample;
+    }
+    // The base lobes over the rest
+    let u: float = random_p.value - lobes.p_sheen_velvet;
     // Diffuse case
-    if (random_p.value < lobes.p_diffuse) {
+    if (u < lobes.p_diffuse) {
         let random_d_1: Random = pcg(random_state);
         let random_d_2: Random = pcg(random_d_1.state);
         sample.random_state = random_d_2.state;
         // Sample cosine weighted hemisphere
         let cosine_hemisphere: float3 = sampleCosWeightedHemisphere(random_d_1.value, random_d_2.value);
         // Behind the surface with probability translucent_share: cosine sample mirrored across the tangent plane
-        let through: bool = random_p.value < lobes.p_diffuse * lobes.translucent_share;
+        let through: bool = u < lobes.p_diffuse * lobes.translucent_share;
         let toward: float = select(cosine_hemisphere.y, - cosine_hemisphere.y, through);
         sample.unit_direction = tangentToWorld(float3(cosine_hemisphere.x, toward, cosine_hemisphere.z), n_i);
         sample.throughput = lobeThroughput(sample.unit_direction, n_i, alpha, material, lobes, 0u);
@@ -478,7 +616,7 @@ __extern_cpp public struct BSDFLobes {
         return sample;
     }
     // Refractive case
-    if (random_p.value < lobes.p_diffuse + lobes.p_refract) {
+    if (u < lobes.p_diffuse + lobes.p_refract) {
         // Refraction is valid
         sample.unit_direction = lobes.refracted;
         sample.pdf = lobeDensity(0.0f, dot(sample.unit_direction, ggx_n), n_i_dot_v, alpha, lobes, eta_i, eta_o, 1u);
@@ -553,7 +691,9 @@ __extern_cpp public struct BSDFLobes {
 // => BSDF * n_dot_l / pdf * w_power = throughput * PDF_lobe / (pdf * (1 + (PDF_lobe / pdf)^2))
 [CudaDeviceExport] public func neeBSDF(in_dir: float3, dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, refracted: bool, pdf: float, power: bool, random_state: uint) -> float3 {
     var f: float3 = float3(0.0f);
-    for (var lobe: uint = 0u; lobe < 3u; lobe++) {
+    // Diffuse, refraction, reflection and sheen lobes
+    for (var i: uint = 0u; i < 4u; i++) {
+        let lobe: uint = i == 3u ? LOBE_SHEEN_VELVET : i;
         // Translucent diffuse lobe: through the shading normal on the refracted side
         if (lobe == LOBE_DIFFUSE && rgb_to_greyscale(material.translucent) > 0.0f
             ? (dot(n, dir) * dot(n, negate(in_dir)) < 0.0f) == refracted : (lobe == LOBE_REFRACT) == refracted) {
@@ -596,6 +736,8 @@ __extern_cpp public struct BSDFLobes {
 
 public static const uint LOBE_DIFFUSE = 0u;
 public static const uint LOBE_REFRACT = 1u;
+// 3 is the walk's LOBE_NONE of camera rays
+public static const uint LOBE_SHEEN_VELVET = 4u;
 
 public static const uint PATH_END = 0u;
 public static const uint PATH_TYPE = 12u;
