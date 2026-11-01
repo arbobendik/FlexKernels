@@ -13,6 +13,8 @@ public static const float INV_PI = 0.3183098861837907;
 // SHEEN_ALBEDO's nodes per side, and the least sheen roughness, below which it is taken as that
 public static const uint SHEEN_NODES = 24u;
 public static const float SHEEN_LEAST = 0.05f;
+// The least normal float, which D's denominators are floored at so that D stays finite
+public static const float LEAST_NORMAL = 1.17549435e-38f;
 // Log of the directional albedo of sheenBRDF at the nodes of the square roots of the view cosine, from 0 to 1, by the
 // rows, and of the roughness, from SHEEN_LEAST to 1: midpoint quadrature over the hemisphere, each cell's nodes raised
 // until its bilinear reading, at four points per side, is nowhere below the albedo, rounded up (tests/albedo.cpp)
@@ -147,6 +149,12 @@ __extern_cpp public struct Material {
     // built before it keep their BSDF
     __extern_cpp public float3 sheen = float3(0.0f);
     __extern_cpp public float sheen_roughness = 0.5f;
+    // Blender's Principled Anisotropic, a negative one swapping the roughnesses along tangent and bitangent, its magnitude
+    // below 1 / 0.9, past Principled's 1, to reach the Glossy BSDF's; its rotation in turns about the normal; and the
+    // hit's tangent, which each consumer must write per hit; by default none, so consumers built before it keep their BSDF
+    __extern_cpp public float anisotropy = 0.0f;
+    __extern_cpp public float anisotropic_rotation = 0.0f;
+    __extern_cpp public float3 tangent = float3(0.0f);
 };
 
 __extern_cpp public struct Random {
@@ -219,7 +227,7 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     // off below roughness 0.22, so that densities and BSDF match what sampleBSDF draws; floored at the least normal
     // float, which the peak's denominator falls under below roughness 1e-5, so that D stays finite
     let denom: float = (1.0f - n_dot_h) * (1.0f + n_dot_h) + numerator * n_dot_h * n_dot_h;
-    return numerator / max(PI * denom * denom, 1.17549435e-38f);
+    return numerator / max(PI * denom * denom, LEAST_NORMAL);
 }
 
 // Exact Smith masking of GGX, the visible normal density sampleGGXVNDF draws from; one for a smooth surface, which
@@ -413,20 +421,42 @@ __extern_cpp public struct BSDFLobes {
     // direction its distribution takes: none without it
     __extern_cpp public float3 sheen;
     __extern_cpp public float3 view;
+    // An anisotropic material's tangent and roughnesses along it and its bitangent, and its visible normal density's G1
+    // toward the view times D at the half vector, by bsdfLobes: none without it
+    __extern_cpp public float3 tangent;
+    __extern_cpp public float2 alphas;
+    __extern_cpp public float visible;
 }
 
-[CudaDeviceExport] public func sampleHalfVector(v: float3, n_i: float3, alpha: float, inout random_state: uint) -> float3 {
+// An anisotropic material's frame, by anisotropicFrame: its tangent and its roughnesses along it and its bitangent,
+// those 0 for any other material, the one condition every anisotropic branch tests
+__extern_cpp public struct AnisotropicFrame {
+    __extern_cpp public float3 tangent;
+    __extern_cpp public float2 alphas;
+}
+
+// The half vector of the material, an anisotropic one's in its frame of the same draws, branched on as bsdfLobes' sheen
+[CudaDeviceExport] public func sampleMaterialHalfVector(v: float3, n_i: float3, alpha: float, frame: AnisotropicFrame, inout random_state: uint) -> float3 {
     // Generate random values for sampling
     let random_h_1: Random = pcg(random_state);
     let random_h_2: Random = pcg(random_h_1.state);
     random_state = random_h_2.state;
+    if (frame.alphas.x > 0.0f) {
+        let h: float3 = sampleAnisotropicVNDF(anisotropicLocal(v, frame.tangent, n_i), frame.alphas, random_h_1.value, random_h_2.value);
+        return h.x * frame.tangent + h.y * cross(n_i, frame.tangent) + h.z * n_i;
+    }
     let v_tangent: float3 = worldToTangent(v, n_i);
     let ggx_n: float3 = sampleGGXVNDF(v_tangent.xzy, alpha, random_h_1.value, random_h_2.value).xzy;
     // Transform half vector back to world space
     return tangentToWorld(ggx_n, n_i);
 }
 
-[CudaDeviceExport] public func bsdfLobes(in_dir: float3, v: float3, n_i: float3, ggx_n: float3, material: Material, eta_i: float, eta_o: float) -> BSDFLobes {
+// The isotropic material's, which the parity harness takes alone
+[CudaDeviceExport] public func sampleHalfVector(v: float3, n_i: float3, alpha: float, inout random_state: uint) -> float3 {
+    return sampleMaterialHalfVector(v, n_i, alpha, AnisotropicFrame(float3(0.0f), float2(0.0f)), random_state);
+}
+
+[CudaDeviceExport] public func bsdfLobes(in_dir: float3, v: float3, n_i: float3, ggx_n: float3, material: Material, eta_i: float, eta_o: float, frame: AnisotropicFrame) -> BSDFLobes {
     // Calculate shared half vector dot products
     let v_dot_h: float = dot(ggx_n, v);
     let n_dot_h: float = dot(n_i, ggx_n);
@@ -477,9 +507,15 @@ __extern_cpp public struct BSDFLobes {
     let p_diffuse: float = (diffuse_component + sheen_component) * total_component_inv;
     let p_reflect: float = reflect_component * total_component_inv;
     let p_refract: float = refract_component * total_component_inv;
+    // An anisotropic material's visible normal density's G1 toward v times D at ggx_n, which lobeDensity takes in place
+    // of the isotropic one's: branched on, as the sheen
+    var visible: float = 0.0f;
+    if (frame.alphas.x > 0.0f) {
+        visible = anisotropicG1(anisotropicLocal(v, frame.tangent, n_i), frame.alphas) * anisotropicD(anisotropicLocal(ggx_n, frame.tangent, n_i), frame.alphas);
+    }
     // Its translucent share the callers set, from translucentShare: computed here, it kept nvcc from inlining this, and
     // consumers specializing a material's constants fold them only through inlined code
-    return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect, p_refract, 0.0f, sheen, view);
+    return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect, p_refract, 0.0f, sheen, view, frame.tangent, frame.alphas, visible);
 }
 
 // Estevez and Kulla's Charlie sheen distribution of roughness r, at least SHEEN_LEAST, by Ashikhmin's visibility
@@ -515,6 +551,49 @@ __extern_cpp public struct BSDFLobes {
     return select(0.0f, translucent / (rgb_to_greyscale(material.albedo) + translucent), translucent > 0.0f);
 }
 
+// Anisotropic GGX, of the frame of the hit's tangent made normal to the normal facing the view and turned about it by
+// the material's rotation, its roughnesses along the tangent and the bitangent by Blender's Principled mapping, once per
+// sample. Branched on where the isotropic lobe's terms are, as bsdfLobes' sheen, so that consumers without it compile
+// those as before; its terms inlinable, which an anisotropic scene on OptiX would otherwise call on every evaluation
+[CudaDeviceExport] public func anisotropicFrame(material: Material, n_i: float3) -> AnisotropicFrame {
+    let alpha: float = material.roughness * material.roughness;
+    if (material.anisotropy == 0.0f || !(alpha > 0.0f)) {
+        return AnisotropicFrame(float3(0.0f), float2(0.0f));
+    }
+    // At the pole of Blender's radial tangent, where it lies along the normal, any perpendicular, as the frame needs one
+    let projected: float3 = material.tangent - n_i * dot(n_i, material.tangent);
+    let t: float3 = normalize(select(tangentToWorld(float3(1.0f, 0.0f, 0.0f), n_i), projected, dot(projected, projected) > 0.0f));
+    let angle: float = 2.0f * PI * material.anisotropic_rotation;
+    let aspect: float = sqrt(1.0f - 0.9f * abs(material.anisotropy));
+    let ratio: float = select(aspect, 1.0f / aspect, material.anisotropy < 0.0f);
+    return AnisotropicFrame(t * cos(angle) + cross(n_i, t) * sin(angle), float2(alpha / ratio, alpha * ratio));
+}
+
+// w in the frame of the tangent t about the normal n, the normal in z
+[CudaDeviceExport] public func anisotropicLocal(w: float3, t: float3, n: float3) -> float3 {
+    return float3(dot(w, t), dot(w, cross(n, t)), dot(w, n));
+}
+
+// D at the half vector h in the frame, of roughnesses alphas, floored as trowbridgeReitz
+[CudaDeviceExport] public func anisotropicD(h: float3, alphas: float2) -> float {
+    let x: float = h.x / alphas.x;
+    let y: float = h.y / alphas.y;
+    let denom: float = x * x + y * y + h.z * h.z;
+    return 1.0f / max(PI * alphas.x * alphas.y * denom * denom, LEAST_NORMAL);
+}
+
+// Exact Smith masking toward w in the frame: smithG1 at the roughness projected onto w's azimuth
+[CudaDeviceExport] public func anisotropicG1(w: float3, alphas: float2) -> float {
+    let n_dot_w: float = max(w.z, 0.0f);
+    return 2.0f * n_dot_w / (n_dot_w + length(float3(alphas.x * w.x, alphas.y * w.y, n_dot_w)));
+}
+
+// Sampling of its visible normals toward Ve in the frame: sampleGGXVNDF's, stretched by each roughness (Heitz 2018)
+[CudaDeviceExport] public func sampleAnisotropicVNDF(Ve: float3, alphas: float2, U1: float, U2: float) -> float3 {
+    let Nh: float3 = sampleGGXVNDF(normalize(float3(alphas.x * Ve.x, alphas.y * Ve.y, Ve.z)), 1.0f, U1, U2);
+    return normalize(float3(alphas.x * Nh.x, alphas.y * Nh.y, Nh.z));
+}
+
 // Throughput of sampleBSDF leaving along l by lobe
 [CudaDeviceExport] public func lobeThroughput(l: float3, n_i: float3, alpha: float, material: Material, lobes: BSDFLobes, lobe: uint) -> float3 {
     if (lobe == LOBE_DIFFUSE) {
@@ -544,7 +623,11 @@ __extern_cpp public struct BSDFLobes {
     if (lobe == LOBE_REFRACT) {
         let m_n_i_dot_l: float = - dot(n_i, l);
         // Microfacet term
-        let G1_l: float = smithG1(alpha, max(m_n_i_dot_l, 0.0f));
+        var G1_l: float = smithG1(alpha, max(m_n_i_dot_l, 0.0f));
+        // An anisotropic material's masking toward l in its frame; target plumbing: negate(x) for - x, see negate
+        if (lobes.alphas.x > 0.0f) {
+            G1_l = anisotropicG1(anisotropicLocal(l, lobes.tangent, negate(n_i)), lobes.alphas);
+        }
         // BSDF = refract_weight * v_dot_h / n_dot_v / n_dot_l * D * G * (1 - F) * JACOBIAN * albedo
         // => BSDF * n_dot_l = refract_weight * v_dot_h / n_dot_v * D * G * (1 - F) * JACOBIAN * albedo
 
@@ -558,7 +641,11 @@ __extern_cpp public struct BSDFLobes {
     }
     let n_i_dot_l: float = dot(n_i, l);
     // Torrance-Sparrow
-    let G1_l: float = smithG1(alpha, max(n_i_dot_l, 0.0f));
+    var G1_l: float = smithG1(alpha, max(n_i_dot_l, 0.0f));
+    // An anisotropic material's masking toward l in its frame
+    if (lobes.alphas.x > 0.0f) {
+        G1_l = anisotropicG1(anisotropicLocal(l, lobes.tangent, n_i), lobes.alphas);
+    }
     // BSDF = reflect_weight * D * G * F / (4 * n_dot_v * n_dot_l)
     // => BSDF * n_dot_l = reflect_weight * D * G * F / (4 * n_dot_v)
 
@@ -583,7 +670,11 @@ __extern_cpp public struct BSDFLobes {
             * select(1.0f - share, share, n_i_dot_l < 0.0f), share > 0.0f), n_i_dot_v > 0.0f);
     }
     // Visible normal density of the GGX distribution for the sampled half vector
-    let pdf_h: float = select(0.0f, smithG1(alpha, n_i_dot_v) * lobes.v_dot_h * trowbridgeReitz(alpha, lobes.n_dot_h) / n_i_dot_v, alpha > 0.0f && lobes.v_dot_h > 0.0f && lobes.n_dot_h > 0.0f && n_i_dot_v > 0.0f);
+    var pdf_h: float = select(0.0f, smithG1(alpha, n_i_dot_v) * lobes.v_dot_h * trowbridgeReitz(alpha, lobes.n_dot_h) / n_i_dot_v, alpha > 0.0f && lobes.v_dot_h > 0.0f && lobes.n_dot_h > 0.0f && n_i_dot_v > 0.0f);
+    // An anisotropic material's by its lobes, branched on as bsdfLobes' sheen
+    if (lobes.alphas.x > 0.0f) {
+        pdf_h = select(0.0f, lobes.visible * lobes.v_dot_h / n_i_dot_v, lobes.v_dot_h > 0.0f && lobes.n_dot_h > 0.0f && n_i_dot_v > 0.0f);
+    }
     if (lobe == LOBE_REFRACT) {
         // JACOBIAN = eta_o^2 * |l_dot_h| / (eta_i * v_dot_h + eta_o * l_dot_h)^2
 
@@ -618,8 +709,9 @@ __extern_cpp public struct BSDFLobes {
     // Material constants
     let alpha: float = material.roughness * material.roughness;
     // Sample using GGX importance sampling for potential refractive or reflective case
-    let ggx_n: float3 = sampleHalfVector(v, n_i, alpha, random_state);
-    var lobes: BSDFLobes = bsdfLobes(in_dir, v, n_i, ggx_n, material, eta_i, eta_o);
+    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
+    let ggx_n: float3 = sampleMaterialHalfVector(v, n_i, alpha, frame, random_state);
+    var lobes: BSDFLobes = bsdfLobes(in_dir, v, n_i, ggx_n, material, eta_i, eta_o, frame);
     lobes.translucent_share = translucentShare(material);
 
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
@@ -671,15 +763,16 @@ __extern_cpp public struct BSDFLobes {
     let n_dot_v: float = dot(n, v);
     let n_i: float3 = n * sign(n_dot_v);
     let alpha: float = material.roughness * material.roughness;
+    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
     var ggx_n: float3 = normalize(v + out_dir);
     if (lobe == LOBE_DIFFUSE) {
-        ggx_n = sampleHalfVector(v, n_i, alpha, random_state);
+        ggx_n = sampleMaterialHalfVector(v, n_i, alpha, frame, random_state);
     } else if (lobe == LOBE_REFRACT) {
         // Target plumbing: negate(x) for - x, see negate
         let h_t: float3 = negate(eta_i * v + eta_o * out_dir);
         ggx_n = normalize(h_t) * sign(dot(h_t, n_i));
     }
-    var lobes: BSDFLobes = bsdfLobes(in_dir, v, n_i, ggx_n, material, eta_i, eta_o);
+    var lobes: BSDFLobes = bsdfLobes(in_dir, v, n_i, ggx_n, material, eta_i, eta_o, frame);
     lobes.translucent_share = translucentShare(material);
     let pdf: float = lobeDensity(dot(n_i, out_dir), dot(out_dir, ggx_n), abs(n_dot_v), alpha, lobes, eta_i, eta_o, lobe);
     // Directions sampleBSDF can't produce by lobe carry no throughput
@@ -735,6 +828,14 @@ __extern_cpp public struct BSDFLobes {
 // sampleBSDF carries such rays through its refraction lobe: transmission masked toward dir and tinted by the albedo, of
 // the share not metallic, as the dielectric's Fresnel vanishes
 [CudaDeviceExport] public func straightThrough(dir: float3, n: float3, material: Material) -> float3 {
+    // An anisotropic material's masking toward dir in its frame about the normal facing back along dir, as sampleBSDF's
+    // Target plumbing: negate(x) for - x, see negate
+    let n_i: float3 = n * sign(dot(n, negate(dir)));
+    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
+    if (frame.alphas.x > 0.0f) {
+        return material.transmission * (1.0f - material.metallic) * anisotropicG1(anisotropicLocal(dir, frame.tangent,
+            negate(n_i)), frame.alphas) * material.albedo;
+    }
     return material.transmission * (1.0f - material.metallic) * smithG1(material.roughness * material.roughness, abs(dot(n, dir))) * material.albedo;
 }
 
