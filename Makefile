@@ -21,7 +21,7 @@ build/cuda/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#define Matrix SlangMatrix\n#include "slang-cuda-prelude.h"|' $@
 	sed -i 's|^__device__ BSDFLobes bsdfLobes(|__device__ __forceinline__ BSDFLobes bsdfLobes(|' $@
 	sed -i 's|^__device__ SampleBSDF connectBSDF(|__device__ __forceinline__ SampleBSDF connectBSDF(|' $@
-	sed -i -E 's/^__device__ (float3  lobeThroughput|float lobeDensity|float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF)\(/__device__ __forceinline__ \1(/' $@
+	sed -i -E 's/^__device__ (float3  lobeThroughput|float lobeDensity|float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF|float3  sampleHalfVector)\(/__device__ __forceinline__ \1(/' $@
 	echo '#undef Matrix' >> $@
 
 build/cuda/slang-cuda-prelude.h: $(SLANGC)
