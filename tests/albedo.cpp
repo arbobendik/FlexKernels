@@ -145,5 +145,115 @@ int main() {
             tint.z * weight, metal ? "metal" : "diffuse", r, mu, sum[0], sum[1], sum[2], bad ? " FAILED" : "");
         failed |= bad;
     }
+    // Anisotropic GGX of roughnesses along tangent and bitangent: D, and its visible normal density at views of cosines
+    // 1, 0.5 and 0.2 along either, normalized by midpoint quadrature over the half vectors' hemisphere
+    const float ALPHAS[][2] = {{0.5f, 0.1f}, {0.1f, 0.5f}, {0.3f, 0.3f}, {0.05f, 0.4f}};
+    for (const auto &a : ALPHAS) {
+        const Vector<float, 2> alphas(a[0], a[1]);
+        double d = 0, visible[6] = {};
+        for (int i = 0; i < 2048; i++) for (int j = 0; j < 1024; j++) {
+            const float t = (i + 0.5f) / 2048 * PI / 2, phi = (j + 0.5f) / 1024 * 2 * PI;
+            const Vector<float, 3> h(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
+            const double D = anisotropicD(h, alphas) * sinf(t) * (PI / 2 / 2048) * (2 * PI / 1024);
+            d += D * h.z;
+            for (int k = 0; k < 6; k++) {
+                const float s = sqrtf(1 - COSINES[k / 2] * COSINES[k / 2]);
+                const Vector<float, 3> v(k % 2 ? 0 : s, k % 2 ? s : 0, COSINES[k / 2]);
+                visible[k] += anisotropicG1(v, alphas) * fmax(dot(v, h), 0) * D / v.z;
+            }
+        }
+        printf("anisotropic %g %g: D %.5f, visible normals %.5f %.5f %.5f %.5f %.5f %.5f\n", a[0], a[1], d, visible[0],
+            visible[1], visible[2], visible[3], visible[4], visible[5]);
+        failed |= fabs(d - 1) > 1e-3;
+        for (const double x : visible) failed |= fabs(x - 1) > 1e-3;
+    }
+    // A white metal of roughness 0.5 and anisotropy 0.8 or -0.5, and white glass of the first, turned by 0.1 about the
+    // normal from a tangent along x, seen at those cosines along x and y: sampling returns the BSDF's albedo by midpoint
+    // quadrature over the sphere, at most 1, to 3 standard errors, the metals red and blue per channel likewise; each
+    // sample carrying light with the density and throughput connectBSDF and BSDF give it, the metals' BSDF reciprocal and
+    // Torrance-Sparrow's of the roughnesses Blender's Principled mapping gives along the tangent turned
+    const Vector<float, 3> X(1, 0, 0), COLORS[] = {RED, Vector<float, 3>(0, 0, 1)};
+    const float ANISOTROPIES[] = {0.8f, -0.5f, 0.8f}, ROUGHNESS = 0.5f, ALPHA = ROUGHNESS * ROUGHNESS;
+    const auto stretched = [&](int m, Vector<float, 3> albedo) {
+        return Material{albedo, ZERO, ROUGHNESS, float(m < 2), float(m == 2), 1.5f, ZERO, ONE, 1, ZERO, ZERO, 0.5f, ANISOTROPIES[m], 0.1f, X};
+    };
+    const auto unit = [&](Vector<float, 3> a) { const float l = sqrtf(dot(a, a)); return Vector<float, 3>(a.x / l, a.y / l, a.z / l); };
+    const Vector<float, 3> T(cosf(0.2f * PI), sinf(0.2f * PI), 0), B(-T.y, T.x, 0);
+    for (int m = 0; m < 3; m++) for (int k = 0; k < 6; k++) {
+        const Material M = stretched(m, ONE);
+        const float aspect = sqrtf(1 - 0.9f * fabsf(ANISOTROPIES[m])), ax = ANISOTROPIES[m] < 0 ? ALPHA * aspect : ALPHA / aspect,
+            ay = ALPHA * ALPHA / ax, sine = sqrtf(1 - COSINES[k / 2] * COSINES[k / 2]);
+        const auto D = [&](Vector<float, 3> h) { const float x = dot(h, T) / ax, y = dot(h, B) / ay; return 1 / (PI * ax * ay * powf(x * x + y * y + h.z * h.z, 2)); };
+        const auto G1 = [&](Vector<float, 3> w) { return 2 * w.z / (w.z + sqrtf(powf(ax * dot(w, T), 2) + powf(ay * dot(w, B), 2) + w.z * w.z)); };
+        const Vector<float, 3> in_dir(k % 2 ? 0 : sine, k % 2 ? sine : 0, -COSINES[k / 2]), v(-in_dir.x, -in_dir.y, -in_dir.z);
+        double albedo = 0, sum = 0, squares = 0, colored[2][3] = {}, worst = 0;
+        for (int i = 0; i < 1024; i++) for (int j = 0; j < 1024; j++) {
+            const float t = (i + 0.5f) / 1024 * PI, phi = (j + 0.5f) / 1024 * 2 * PI;
+            const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
+            albedo += BSDF(in_dir, l, n, n, M, 1, 1.5f, 0u).x * sinf(t) * (PI / 1024) * (2 * PI / 1024);
+        }
+        for (unsigned i = 0; i < 1u << 18; i++) {
+            const SampleBSDF s = sampleBSDF(in_dir, n, M, 1, 1.5f, hash(i), Vector<float, 2>(0, 0));
+            const SampleBSDF c = connectBSDF(in_dir, s.unit_direction, n, M, 1, 1.5f, s.lobe, hash(i));
+            const Vector<float, 3> l = s.unit_direction;
+            const float f = BSDF(in_dir, l, n, n, M, 1, 1.5f, hash(i)).x;
+            sum += s.throughput.x / (1 << 18), squares += s.throughput.x * s.throughput.x / (1 << 18);
+            if (s.pdf > 0 && s.throughput.x > 0) worst = fmax(worst, fmax(fabs(c.pdf / s.pdf - 1), fabs(f / (s.throughput.x * s.pdf) - 1)));
+            if (m < 2 && s.throughput.x > 0) worst = fmax(worst, fmax(fabs(f / (D(unit(v + l)) * G1(v) * G1(l) / (4 * v.z)) - 1),
+                fabs(f / l.z / (BSDF(Vector<float, 3>(-l.x, -l.y, -l.z), v, n, n, M, 1, 1.5f, 0u).x / v.z) - 1)));
+            for (int r = 0; m < 2 && r < 2; r++) {
+                const Vector<float, 3> t = sampleBSDF(in_dir, n, stretched(m, COLORS[r]), 1, 1.5f, hash(i), Vector<float, 2>(0, 0)).throughput;
+                colored[r][0] += t.x / (1 << 18), colored[r][1] += t.y / (1 << 18), colored[r][2] += t.z / (1 << 18);
+            }
+        }
+        const double error = 3 * sqrt(fmax(squares - sum * sum, 0) / (1 << 18));
+        bool bad = albedo > 1 || fabs(sum - albedo) > error || worst > 1e-4;
+        for (int r = 0; m < 2 && r < 2; r++) {
+            const double color[3] = {COLORS[r].x, COLORS[r].y, COLORS[r].z};
+            for (int ch = 0; ch < 3; ch++) bad |= colored[r][ch] > 1 || fabs(colored[r][ch] - albedo * color[ch]) > error;
+        }
+        printf("anisotropic %s %g along %c at cosine %g: albedo %.4f, sampled %.4f +- %.4f", m < 2 ? "metal" : "glass",
+            ANISOTROPIES[m], k % 2 ? 'y' : 'x', COSINES[k / 2], albedo, sum, error);
+        if (m < 2) printf(", red %.4f, blue %.4f", colored[0][0], colored[1][2]);
+        printf(", worst mismatch %.2g%s\n", worst, bad ? " FAILED" : "");
+        failed |= bad;
+    }
+    // Toward anisotropy 0 the glass's lobes become the isotropic ones; and the density of the second metal's and the
+    // glass's sampling, seen at cosine 0.5 between the axes, in the 64 bins of equal solid angle above: the share of
+    // samples is the density of connectBSDF's lobes integrated over the bin
+    const Vector<float, 3> oblique(0.866f * cosf(0.3f), 0.866f * sinf(0.3f), -0.5f);
+    Material isotropic = stretched(2, ONE), near = isotropic;
+    isotropic.anisotropy = 0, near.anisotropy = 1e-6f;
+    double limit = 0;
+    for (unsigned i = 0; i < 4096; i++) {
+        const SampleBSDF s = sampleBSDF(oblique, n, isotropic, 1, 1.5f, hash(i), Vector<float, 2>(0, 0));
+        const SampleBSDF c = connectBSDF(oblique, s.unit_direction, n, near, 1, 1.5f, s.lobe, hash(i));
+        const SampleBSDF e = connectBSDF(oblique, s.unit_direction, n, isotropic, 1, 1.5f, s.lobe, hash(i));
+        if (e.pdf > 0 && e.throughput.x > 0) limit = fmax(limit, fmax(fabs(c.pdf / e.pdf - 1), fabs(c.throughput.x / e.throughput.x - 1)));
+    }
+    printf("anisotropic glass toward isotropic: worst mismatch %.2g\n", limit);
+    failed |= limit > 1e-4;
+    // At the pole of Blender's radial tangent, where it lies along the normal, the glass still has a frame
+    near.anisotropy = 0.8f, near.tangent = n;
+    const SampleBSDF along = sampleBSDF(oblique, n, near, 1, 1.5f, hash(0), Vector<float, 2>(0, 0));
+    printf("anisotropic glass of a tangent along the normal: %g\n", along.throughput.x * along.pdf);
+    failed |= !isfinite(along.throughput.x * along.pdf);
+    for (int m = 1; m < 3; m++) {
+        const Material M = stretched(m, ONE);
+        double share[64] = {}, worst_bin = 0;
+        for (unsigned i = 0; i < 1u << 22; i++)
+            share[bin(sampleBSDF(oblique, n, M, 1, 1.5f, hash(i), Vector<float, 2>(0, 0)).unit_direction)] += 1.0 / (1 << 22);
+        for (int b = 0; b < 64; b++) {
+            double expect = 0;
+            for (unsigned j = 0; j < 4096; j++) {  // Uniform points of the bin
+                const float z = (b / 8 + (j % 64 + 0.5f) / 64) / 4 - 1, phi = (b % 8 + (j / 64 + 0.5f) / 64) / 8 * 2 * PI - PI;
+                const Vector<float, 3> d(sqrtf(1 - z * z) * cosf(phi), sqrtf(1 - z * z) * sinf(phi), z);
+                for (unsigned lobe = 1; lobe < 3; lobe++) expect += connectBSDF(oblique, d, n, M, 1, 1.5f, lobe, hash(j)).pdf * PI / 16 / 4096;
+            }
+            worst_bin = fmax(worst_bin, fabs(share[b] - expect) / (0.0005 + sqrt(expect / (1 << 22))));
+        }
+        printf("anisotropic %s density: worst bin off by %.2f of the tolerance\n", m < 2 ? "metal" : "glass", worst_bin);
+        failed |= worst_bin > 1;
+    }
     return failed;
 }
