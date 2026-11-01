@@ -17,7 +17,10 @@ struct Material {
     specular_level: f32,
     translucent: vec3<f32>,
     sheen: vec3<f32>,
-    sheen_roughness: f32
+    sheen_roughness: f32,
+    anisotropy: f32,
+    anisotropic_rotation: f32,
+    tangent: vec3<f32>
 };
 `;
 const LIGHT_TREE = /* wgsl */ `
@@ -76,12 +79,13 @@ fn parity_toward(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: 
     var l_dot_h = 0.0;
     var ggx_n = reflectedHalf(in_dir, out_dir);
     if (lobe == 0u) {
-        ggx_n = sampledHalf(in_dir, n, material, random_state);
+        ggx_n = sampledHalf(in_dir, n, material, random_state, anisotropicFrame(material, n_i));
     } else if (lobe == 1u) {
         ggx_n = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
         l_dot_h = dot(out_dir, ggx_n);
     }
-    var lobes = bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, eta_i, eta_o, sheenAlbedo(- in_dir, n_i, material));
+    var lobes = bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, eta_i, eta_o, anisotropicFrame(material, n_i),
+        sheenAlbedo(- in_dir, n_i, material));
     lobes.translucent_share = translucentShare(material);
     let pdf = parity_density(dot(n_i, out_dir), l_dot_h, abs(n_dot_v), alpha, lobes, eta_i, eta_o, lobe);
     if (!(pdf > 0.0)) {
@@ -155,7 +159,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[6] = bitcast<u32>(trowbridgeReitz(alpha, abs(dot(n, out_dir))));
     r[7] = bitcast<u32>(fresnel(abs(dot(n, in_dir)), v[18], v[19]));
     var h_state = random_state;
-    let h = sampleHalfVector(- in_dir, n_i, alpha, &h_state);
+    let h = sampleHalfVector(- in_dir, n_i, alpha, AnisotropicFrame(vec3<f32>(0.0), vec2<f32>(0.0)), &h_state);
     r[8] = h_state;
     parity_put(&r, 9u, h);
     parity_put(&r, 12u, sampleCosWeightedHemisphere(albedo.x, albedo.y));
@@ -173,11 +177,12 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     let uv = albedo.xy;
     parity_put(&r, 38u, tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec3<f32>(v[9], v[10], v[11]), uv,
         vec2<f32>(uv.x + 0.5, uv.y + 0.1 * albedo.z), vec2<f32>(uv.x + 0.2 * albedo.x, uv.y + 0.6), n)));
-    let material = Material(albedo, vec3<f32>(0.0), v[16], v[15], v[17], max(v[18], v[19])${FLEXLIGHT ? "" : ", vec3<f32>(0.0), vec3<f32>(1.0), 1.0, vec3<f32>(0.0), vec3<f32>(0.0), 0.5"});
+    let material = Material(albedo, vec3<f32>(0.0), v[16], v[15], v[17], max(v[18], v[19])${FLEXLIGHT ? "" : ", vec3<f32>(0.0), vec3<f32>(1.0), 1.0, vec3<f32>(0.0), vec3<f32>(0.0), 0.5, 0.0, 0.0, vec3<f32>(0.0)"});
     let ggx_n = normalize(- in_dir + out_dir);
     let lobes = ${FLEXLIGHT
-        ? "bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19])"
-        : "bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19], sheenAlbedo(- in_dir, n_i, material))"};
+        ? "bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19], anisotropicFrame(material, n_i))"
+        : `bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19], anisotropicFrame(material, n_i),
+            sheenAlbedo(- in_dir, n_i, material))`};
     r[41] = bitcast<u32>(lobes.v_dot_h);
     r[42] = bitcast<u32>(lobes.n_dot_h);
     parity_put(&r, 43u, lobes.refracted);
@@ -259,7 +264,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         random_state));
     parity_put(&r, 116u, parity_nee(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, true,
         random_state));`}
-    ${FLEXLIGHT ? `let straight = bsdfLobes(in_dir, - in_dir, n_i, n_i, material, 1.0, 1.0);
+    ${FLEXLIGHT ? `let straight = bsdfLobes(in_dir, - in_dir, n_i, n_i, material, 1.0, 1.0, anisotropicFrame(material, n_i));
     let through = lobeThroughput(in_dir, n_i, alpha, material, straight, 1u) * straight.p_refract;
     parity_put(&r, 119u, select(vec3<f32>(0.0), through, straight.p_refract > 0.0));` : `
     parity_put(&r, 119u, straightThrough(in_dir, n, material));`}

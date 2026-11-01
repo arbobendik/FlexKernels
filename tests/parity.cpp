@@ -51,7 +51,7 @@ __device__ Result evaluate(const Case& c) {
     Result r = {hash(c.random_state), stream(c.random_state, 64u), p.state, p.value, rgb_to_greyscale(albedo),
         smithG1(alpha, fabsf(n_dot_in)), trowbridgeReitz(alpha, fabsf(dot3(n, out_dir))),
         fresnel(fabsf(n_dot_in), c.in[18], c.in[19]), c.random_state};
-    r.h = sampleHalfVector(vec(minus_in), vec(n_i), alpha, &r.h_state);
+    r.h = sampleHalfVector(vec(minus_in), vec(n_i), alpha, AnisotropicFrame{}, &r.h_state);
     r.cosine_hemisphere = sampleCosWeightedHemisphere(albedo.x, albedo.y);
     r.tangent_to_world = tangentToWorld(out_dir, n);
     r.world_to_tangent = worldToTangent(out_dir, n);
@@ -76,7 +76,7 @@ __device__ Result evaluate(const Case& c) {
     const float h[] = {minus_in[0] + c.in[3], minus_in[1] + c.in[4], minus_in[2] + c.in[5]}, scale = rnorm(h);
     const float ggx_n[] = {h[0] * scale, h[1] * scale, h[2] * scale};
     r.lobes = bsdfLobes(in_dir, vec(minus_in), vec(n_i), vec(ggx_n), material, c.in[18], c.in[19],
-        sheenAlbedo(vec(minus_in), vec(n_i), material));
+        anisotropicFrame(material, vec(n_i)), sheenAlbedo(vec(minus_in), vec(n_i), material));
     const float p_lobe[] = {r.lobes.p_diffuse, r.lobes.p_refract, r.lobes.p_reflect};
     for (unsigned lobe = 0; lobe < 3; lobe++) {
         const bool side = lobe == 1 ? dot3(vec(n_i), out_dir) < 0 : dot3(vec(n_i), out_dir) > 0;
