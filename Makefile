@@ -29,7 +29,7 @@ build/cuda/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	# connectBSDF likewise, which the sheen's branches grow past it where consumers specialize the sheen only after nvcc
 	sed -i 's|^__device__ SampleBSDF connectBSDF(|__device__ __forceinline__ SampleBSDF connectBSDF(|' $@
 	# The rest of the BSDF's path consumers inline, so that no lobe's code flips nvcc's choice
-	sed -i -E 's/^__device__ (float3  lobeThroughput|float lobeDensity|float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF)\(/__device__ __forceinline__ \1(/' $@
+	sed -i -E 's/^__device__ (float3  lobeThroughput|float lobeDensity|float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF|float3  sampleMaterialHalfVector)\(/__device__ __forceinline__ \1(/' $@
 	echo '#undef Matrix' >> $@
 
 build/cuda/slang-cuda-prelude.h: $(SLANGC)
