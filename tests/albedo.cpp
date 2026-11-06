@@ -255,5 +255,22 @@ int main() {
         printf("anisotropic %s density: worst bin off by %.2f of the tolerance\n", m < 2 ? "metal" : "glass", worst_bin);
         failed |= worst_bin > 1;
     }
+    // Hair's direction at a row and column comes back to them, also seen and leaving exactly along the fiber
+    const Vector<float, 3> FIBERS[] = {Vector<float, 3>(0, 1, 0), Vector<float, 3>(0.6f, 0, 0.8f), unit(Vector<float, 3>(-0.3f, 0.5f, 0.2f))};
+    const float SIDES[] = {1, -1}, ROWS[] = {64, 192, 128};  // Rows of the light's angle within +-pi/2
+    float hair_miss = 0;
+    for (const Vector<float, 3>& t : FIBERS) for (int k = 0; k < 3; k++) {
+        const Vector<float, 3> in_dir = k < 2 ? Vector<float, 3>(t.x * SIDES[k], t.y * SIDES[k], t.z * SIDES[k]) : oblique;
+        const Vector<float, 3> d = hairDirection(in_dir, t, 0, ROWS[k], 170, 0.3f, 0, 256, 512);
+        // NaN, as of leaving along the fiber, kept
+        const float miss = fabs(hairRow(in_dir, t, d, 0, 0.3f, 0, 256) - ROWS[k]) + fabs(hairColumn(in_dir, t, d, 512) - 170) + 0 * hairColumn(oblique, t, in_dir, 512);
+        hair_miss = miss > hair_miss || miss != miss ? miss : hair_miss;
+    }
+    printf("hair along the fiber: worst row and column miss %g\n", hair_miss);
+    failed |= !(hair_miss < 0.01f);
+    // R's cone tilted by Offset 0.035 as by Chiang's of FK 0e2220e, which peaks at -0.0704 seen across the fiber
+    failed |= !(fabsf(asinf(hairDirection(Vector<float, 3>(-1, 0, 0), Vector<float, 3>(0, 0, 1), 0, 128, 170, 0.05f, 0.035f, 256, 512).z) + 0.0704f) < 0.001f);
+    // A lobe's terms past the four of Chiang's tables, 4 to 7 as Huang's 8, keep its cone and width
+    failed |= hairRow(oblique, FIBERS[2], FIBERS[1], 5, 0.3f, 0.035f, 256) != hairRow(oblique, FIBERS[2], FIBERS[1], 1, 0.3f, 0.035f, 256);
     return failed;
 }

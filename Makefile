@@ -25,7 +25,10 @@ all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h \
 build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR=1
 # flex-cuda-pt's walk features' struct fields, which FlexLight's would carry unused
 build/cuda-restir/pathtracer.cuh: SLANGFLAGS += -DFK_FCPT_WALK=1
-build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_FCPT_WALK=1
+build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_FCPT_WALK=1 -DFK_HAIR=1
+# Hair's tables, read by flex-cuda-pt alone, and the CPU tests
+build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh build/cpp/pathtracer.cpp build/cpp-restir/pathtracer.cpp: SLANGFLAGS += -DFK_HAIR=1
+build/cuda/pathtracer.slang-module: MODULEFLAGS = -DFK_HAIR=1
 # FlexLight's takes the passes as well, flex-cuda-pt's the walk and shift alone, and the Vulkan test both
 build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR_PASSES=1
 build/restir-passes/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1

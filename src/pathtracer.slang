@@ -862,6 +862,34 @@ __extern_cpp public struct AnisotropicFrame {
     return material.transmission * (1.0f - material.metallic) * smithG1(material.roughness * material.roughness, abs(dot(n, dir))) * material.albedo;
 }
 
+#ifdef FK_HAIR  // flex-cuda-pt's alone: FlexLight renders no hair, its shaders unchanged
+// Hair, by Chiang's far field, which is per lobe p (R, TT, TRT, the rest) a longitudinal term in the light's angle
+// theta_i times an azimuthal one in its azimuth phi about the fiber's tangent t from the viewer. The exporter bakes both
+// per material in slices of the viewer's sine: the first in nt rows uniform in asinh of theta_i from the lobe's cone
+// over its width (the R lobe's width w, times 1, 1/2, 2, 2), its cone tilted by the scales' alpha (-2, 1, 4, 0 times;
+// alpha is Blender's Offset as given); the second in np columns. Toward out_dir, term p's row, of lobe p % 4
+static const float HAIR_WIDTHS[4] = {1.0f, 0.5f, 2.0f, 2.0f};
+static const float HAIR_TILTS[4] = {-2.0f, 1.0f, 4.0f, 0.0f};
+[CudaDeviceExport] public func hairRow(in_dir: float3, t: float3, out_dir: float3, p: uint, w: float, alpha: float, nt: uint) -> float {
+    let width: float = w * HAIR_WIDTHS[p % 4u];
+    let cone: float = asin(clamp(dot(out_dir, t), -1.0f, 1.0f)) - asin(clamp(dot(in_dir, t), -1.0f, 1.0f)) - HAIR_TILTS[p % 4u] * alpha;
+    return (asinh(cone / width) / asinh(PI / width) + 1.0f) * 0.5f * float(nt);
+}
+// Toward out_dir, the column, and the direction at a row and column of lobe p, azimuths in t's tangent frame, 0 along t
+[CudaDeviceExport] public func hairColumn(in_dir: float3, t: float3, out_dir: float3, np: uint) -> float {
+    let o: float3 = worldToTangent(out_dir, t);
+    let v: float3 = worldToTangent(in_dir, t);
+    return frac((atan2(o.z, o.x + LEAST_NORMAL) - atan2(- v.z, LEAST_NORMAL - v.x)) / (2.0f * PI) + 0.5f) * float(np);
+}
+[CudaDeviceExport] public func hairDirection(in_dir: float3, t: float3, p: uint, row: float, column: float, w: float, alpha: float, nt: uint, np: uint) -> float3 {
+    let v: float3 = worldToTangent(in_dir, t);
+    let width: float = w * HAIR_WIDTHS[p % 4u];
+    let theta: float = asin(clamp(dot(in_dir, t), -1.0f, 1.0f)) + HAIR_TILTS[p % 4u] * alpha + width * sinh((row * 2.0f / float(nt) - 1.0f) * asinh(PI / width));
+    let phi: float = column * 2.0f * PI / float(np) - PI + atan2(- v.z, LEAST_NORMAL - v.x);
+    return tangentToWorld(float3(cos(theta) * cos(phi), sin(theta), cos(theta) * sin(phi)), t);
+}
+#endif
+
 // Shadow segments, alike in both consumers: from the start lift places off the shaded point, to the sampled point on
 // an emitter lifted by the emitter's own offset, short of that end by a relative 1e-4, which keeps it off the emitter
 
