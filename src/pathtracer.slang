@@ -1063,6 +1063,36 @@ func hairEvaluate(lobes: HairLobes, out_dir: float3, fiber: HairFiber, out pdf: 
     return hairEvaluate(hairLobes(in_dir, t, fiber), out_dir, fiber, pdf);
 }
 
+// A direction leaving the fiber from in_dir: its lobe by its share, then its longitudinal angle by d'Eon's sampling,
+// about the angle that lobe's tilt gives, and its azimuth by the lobe's logistic, uniformly for the rest; the throughput
+// the BSDF times the cosine over the density of every lobe's sampling, refracted but for R
+[CudaDeviceExport] public func sampleHair(in_dir: float3, t: float3, fiber: HairFiber, random_init: uint) -> SampleBSDF {
+    let lobes: HairLobes = hairLobes(in_dir, t, fiber);
+    let random_1: Random = pcg(random_init);
+    let random_2: Random = pcg(random_1.state);
+    let random_3: Random = pcg(random_2.state);
+    var u: float = random_1.value;
+    var p: int = 0;
+    for (; p < 3 && !(u < lobes.share[p]); p++) {
+        u -= lobes.share[p];
+    }
+    u = max(u / lobes.share[p], 1e-5f);
+    let v: float = p == 0 ? fiber.v0 : (p == 1 ? 0.25f * fiber.v : 4.0f * fiber.v);
+    let o: float2 = p < 3 ? hairTilted(lobes.sin_o, lobes.cos_o, fiber.alpha, p) : float2(lobes.sin_o, lobes.cos_o);
+    let c: float = 1.0f + v * log(u + (1.0f - u) * exp(-2.0f / v));
+    let sin_i: float = -c * o.x + sqrt(max(1.0f - c * c, 0.0f)) * cos(2.0f * PI * random_2.value) * o.y;
+    let cos_i: float = sqrt(max(1.0f - sin_i * sin_i, 0.0f));
+    let s: float = fiber.s;
+    let below: float = hairLogisticCdf(-PI, s);
+    let phi: float = p < 3 ? hairDeltaPhi(p, lobes.gamma_o, lobes.gamma_t) + clamp(-s * log(1.0f / (random_3.value
+        * (1.0f - 2.0f * below) + below) - 1.0f), -PI, PI) : 2.0f * PI * random_3.value;
+    let phi_i: float = lobes.phi_o + phi;
+    let out_dir: float3 = sin_i * lobes.x + cos_i * (cos(phi_i) * lobes.y + sin(phi_i) * lobes.z);
+    var pdf: float;
+    let value: float3 = hairEvaluate(lobes, out_dir, fiber, pdf);
+    return SampleBSDF(out_dir, select(float3(0.0f), value / pdf, pdf > 0.0f), random_3.state, p != 0, p == 0 ? 2u : 1u, pdf);
+}
+
 // Shadow segments, alike in both consumers: from the start lift places off the shaded point, to the sampled point on
 // an emitter lifted by the emitter's own offset, short of that end by a relative 1e-4, which keeps it off the emitter
 
