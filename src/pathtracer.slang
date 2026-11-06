@@ -1093,6 +1093,62 @@ func hairEvaluate(lobes: HairLobes, out_dir: float3, fiber: HairFiber, out pdf: 
     return SampleBSDF(out_dir, select(float3(0.0f), value / pdf, pdf > 0.0f), random_3.state, p != 0, p == 0 ? 2u : 1u, pdf);
 }
 
+// Blender's Hair BSDF, its reflection or transmission component (transmission true) about the tangent t, of roughness u
+// along it and v around it, its highlight offset along it, against the shading normal n: a Cauchy distribution of the
+// half angle along the fiber, about the offset, and in azimuth a cosine lobe of width v about the incident direction
+// (reflection, the side n faces) or a Cauchy one about its opposite, on its half of the azimuths (transmission, the
+// other side). Its BSDF times the
+// cosine is its density, so its samples carry a throughput of 1 where it gives them; pdf the density
+[CudaDeviceExport] public func hairComponent(in_dir: float3, out_dir: float3, t: float3, n: float3, u: float, v: float, offset: float, transmission: bool, out pdf: float) -> float {
+    pdf = 0.0f;
+    let ru: float = clamp(u, 0.001f, 1.0f);
+    let rv: float = clamp(v, 0.001f, 1.0f);
+    // Target plumbing: negate(x) for - x, see negate
+    let w: float3 = negate(in_dir);
+    let y: float3 = normalize(w - t * dot(t, w));
+    let theta_r: float = asin(clamp(dot(t, w), -1.0f, 1.0f));
+    let theta_i: float = asin(clamp(dot(t, out_dir), -1.0f, 1.0f));
+    let cos_phi: float = dot(normalize(out_dir - t * dot(t, out_dir)), y);
+    if ((dot(n, out_dir) < 0.0f) != transmission || PI / 2.0f - abs(theta_i) < 0.001f || !transmission && cos_phi < 0.0f) {
+        return 0.0f;
+    }
+    let a: float = atan(((PI / 2.0f + theta_r) / 2.0f - offset) / ru);
+    let b: float = atan(((-PI / 2.0f + theta_r) / 2.0f - offset) / ru);
+    let h: float = (theta_i + theta_r) / 2.0f - offset;
+    let along: float = ru / (2.0f * (h * h + ru * ru) * (a - b) * cos(theta_i));
+    let phi: float = acos(clamp(cos_phi, -1.0f, 1.0f));
+    let p: float = PI - phi;
+    // The transmitted azimuth's Cauchy lobe normalized on the half of the azimuths about the opposite, which it samples
+    if (transmission && p > PI / 2.0f) {
+        return 0.0f;
+    }
+    pdf = along * (transmission ? rv / (2.0f * atan(PI / (2.0f * rv)) * (p * p + rv * rv)) : cos(min(phi / rv, PI) / 2.0f) / (4.0f * rv));
+    return pdf;
+}
+
+// A direction leaving the Hair BSDF's component from in_dir: the half angle along the fiber by its Cauchy distribution,
+// the azimuth by its lobe, with the component's throughput, one where it reaches it, and density
+[CudaDeviceExport] public func sampleHairComponent(in_dir: float3, t: float3, n: float3, u: float, v: float, offset: float, transmission: bool, random_init: uint) -> SampleBSDF {
+    let ru: float = clamp(u, 0.001f, 1.0f);
+    let rv: float = clamp(v, 0.001f, 1.0f);
+    let random_1: Random = pcg(random_init);
+    let random_2: Random = pcg(random_1.state);
+    // Target plumbing: negate(x) for - x, see negate
+    let w: float3 = negate(in_dir);
+    let y: float3 = normalize(w - t * dot(t, w));
+    let x: float3 = cross(y, t);
+    let theta_r: float = asin(clamp(dot(t, w), -1.0f, 1.0f));
+    let a: float = atan(((PI / 2.0f + theta_r) / 2.0f - offset) / ru);
+    let b: float = atan(((-PI / 2.0f + theta_r) / 2.0f - offset) / ru);
+    let theta_i: float = 2.0f * (ru * tan(random_1.value * (a - b) + b) + offset) - theta_r;
+    let phi: float = transmission ? PI + rv * tan(2.0f * atan(PI / (2.0f * rv)) * (random_2.value - 0.5f))
+        : 2.0f * asin(clamp(1.0f - 2.0f * random_2.value, -1.0f, 1.0f)) * rv;
+    let out_dir: float3 = cos(theta_i) * (cos(phi) * y - sin(phi) * x) + sin(theta_i) * t;
+    var pdf: float;
+    let value: float = hairComponent(in_dir, out_dir, t, n, u, v, offset, transmission, pdf);
+    return SampleBSDF(out_dir, float3(select(0.0f, value / pdf, pdf > 0.0f)), random_2.state, transmission, transmission ? 1u : 2u, pdf);
+}
+
 // Shadow segments, alike in both consumers: from the start lift places off the shaded point, to the sampled point on
 // an emitter lifted by the emitter's own offset, short of that end by a relative 1e-4, which keeps it off the emitter
 
