@@ -399,7 +399,7 @@ const UNSIGNED = [0, 1, 2, 8, 27, 29, 33, 74, 75, 76, 93, 94, 105, 106, 124, 139
 Object.assign(globalThis, globals);
 // Kept referenced: the device is torn down with the GPU object
 const gpu = create([]);
-const device = await (await gpu.requestAdapter()).requestDevice();
+const device = await (await gpu.requestAdapter({ powerPreference: "high-performance" })).requestDevice();
 const lines = readFileSync(0, "utf8").trim().split("\n").map((line) => line.trim().split(/\s+/));
 const inputs = new ArrayBuffer(lines.length * 21 * 4);
 lines.forEach((line, i) => {
