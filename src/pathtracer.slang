@@ -887,6 +887,182 @@ public static const uint HAIR_COLOR = 2u;
     return 1.0f + 2.0f * (random - 0.5f) * random_roughness;
 }
 
+// A fiber of Chiang et al. 2016's hair model: its absorption, the longitudinal variance of its first (v0) and other lobes
+// (v), its azimuthal logistic scale s, its scales' tilt alpha, its IOR eta and h, where the ray met its cross-section
+__extern_cpp public struct HairFiber {
+    __extern_cpp public float3 sigma;
+    __extern_cpp public float v;
+    __extern_cpp public float v0;
+    __extern_cpp public float s;
+    __extern_cpp public float alpha;
+    __extern_cpp public float eta;
+    __extern_cpp public float h;
+}
+
+// Chiang's map of a roughness to its longitudinal variance (eq. 7)
+func hairVariance(r: float) -> float {
+    let r2: float = r * r;
+    let r4: float = r2 * r2;
+    let r20: float = r4 * r4 * r4 * r4 * r4;
+    let b: float = 0.726f * r + 0.812f * r2 + 3.7f * r20;
+    return b * b;
+}
+
+// The fiber of Blender's Principled Hair inputs: roughness and radial roughness, at least 0.001 and at most 1, its coat
+// lowering the first lobe's roughness to (1 - coat) of it, mapped to variances and the logistic's scale by Chiang's
+// eq. 7 and 8, its offset the scales' tilt, of the ray met at h across the fiber
+[CudaDeviceExport] public func hairFiber(sigma: float3, roughness: float, radial: float, coat: float, offset: float, ior: float, h: float) -> HairFiber {
+    let v: float = clamp(roughness, 0.001f, 1.0f);
+    let s: float = clamp(radial, 0.001f, 1.0f);
+    let s2: float = s * s;
+    let s11: float = s2 * s2 * s2 * s2 * s2 * s;
+    return HairFiber(sigma, hairVariance(v), hairVariance(clamp((1.0f - clamp(coat, 0.0f, 1.0f)) * v, 0.001f, 1.0f)),
+        (0.265f * s + 1.194f * s2 + 5.372f * s11 * s11) * sqrt(PI / 8.0f), -offset, ior, h);
+}
+
+// Where a ray along in_dir meets a fiber of tangent t at its surface's normal n: the sine of the angle across the fiber
+// from its center, -1 to 1 from one edge to the other, in the frame hairLobes takes about the direction toward the viewer
+[CudaDeviceExport] public func hairOffset(t: float3, n: float3, in_dir: float3) -> float {
+    // Target plumbing: negate(x) for - x, see negate
+    let y: float3 = normalize(cross(t, negate(in_dir)));
+    return dot(cross(n, t), normalize(cross(t, y)));
+}
+
+// The angle a wrapped to -PI to PI
+func hairWrap(a: float) -> float {
+    return a + PI - 2.0f * PI * floor((a + PI) / (2.0f * PI)) - PI;
+}
+
+// The logistic distribution of scale s, its cumulative distribution and on -PI to PI alone
+func hairLogistic(x: float, s: float) -> float {
+    let e: float = exp(-abs(x) / s);
+    return e / (s * (1.0f + e) * (1.0f + e));
+}
+func hairLogisticCdf(x: float, s: float) -> float {
+    return -x / s > 88.0f ? 0.0f : 1.0f / (1.0f + exp(-x / s));
+}
+func hairTrimmedLogistic(x: float, s: float) -> float {
+    return hairLogistic(x, s) / (1.0f - 2.0f * hairLogisticCdf(-PI, s));
+}
+
+// The modified Bessel function I0 by its series to 24 terms, which converge in floats up to 12, and its logarithm,
+// past 12 by its asymptotic series to the third term
+func hairI0(x: float) -> float {
+    let x2: float = x * x;
+    var value: float = 1.0f;
+    var term: float = 1.0f;
+    for (var i: int = 1; i < 24; i++) {
+        term *= x2 / (4.0f * float(i * i));
+        value += term;
+    }
+    return value;
+}
+func hairLogI0(x: float) -> float {
+    let y: float = 1.0f / (8.0f * x);
+    return x > 12.0f ? x - 0.5f * log(2.0f * PI * x) + log(1.0f + y * (1.0f + y * (4.5f + y * 37.5f))) : log(hairI0(x));
+}
+
+// d'Eon et al.'s longitudinal scattering of variance v between the sines and cosines of theta_i and theta_o, by its
+// logarithm at low variance, which overflows otherwise
+func hairLongitudinal(sin_i: float, cos_i: float, sin_o: float, cos_o: float, v: float) -> float {
+    let a: float = cos_i * cos_o / v;
+    let b: float = sin_i * sin_o / v;
+    if (v <= 0.1f) {
+        return exp(hairLogI0(a) - b - 1.0f / v + 0.6931f + log(0.5f / v));
+    }
+    return exp(-b) * hairI0(a) / (sinh(1.0f / v) * 2.0f * v);
+}
+
+// The change in azimuth of the p-th lobe for the angles gamma_o and gamma_t across the fiber, and the lobe's azimuthal
+// scattering at phi
+func hairDeltaPhi(p: int, gamma_o: float, gamma_t: float) -> float {
+    return 2.0f * float(p) * gamma_t - 2.0f * gamma_o + float(p) * PI;
+}
+func hairAzimuthal(phi: float, p: int, s: float, gamma_o: float, gamma_t: float) -> float {
+    return hairTrimmedLogistic(hairWrap(phi - hairDeltaPhi(p, gamma_o, gamma_t)), s);
+}
+
+// The sine and cosine of theta_o tilted for the p-th lobe by the scales: by -2 alpha, alpha and 4 alpha
+func hairTilted(sin_o: float, cos_o: float, alpha: float, p: int) -> float2 {
+    let k: float = p == 0 ? -2.0f : (p == 1 ? 1.0f : 4.0f);
+    let s: float = sin(k * alpha);
+    let c: float = cos(k * alpha);
+    return float2(sin_o * c + cos_o * s, abs(cos_o * c - sin_o * s));
+}
+
+// Of a fiber seen along -in_dir and lit along out_dir, about its tangent t: each lobe's attenuation, R, TT, TRT and the
+// rest, its greyscale share the probability of sampling it, and the fiber's angles
+struct HairLobes {
+    float3 a[4];
+    float share[4];
+    float sin_o;
+    float cos_o;
+    float phi_o;
+    float gamma_o;
+    float gamma_t;
+    float3 x;
+    float3 y;
+    float3 z;
+}
+func hairLobes(in_dir: float3, t: float3, fiber: HairFiber) -> HairLobes {
+    var lobes: HairLobes;
+    // Target plumbing: negate(x) for - x, see negate
+    let v: float3 = negate(in_dir);
+    lobes.x = t;
+    lobes.y = normalize(cross(t, v));
+    lobes.z = normalize(cross(t, lobes.y));
+    lobes.sin_o = dot(v, lobes.x);
+    lobes.cos_o = sqrt(max(1.0f - lobes.sin_o * lobes.sin_o, 0.0f));
+    lobes.phi_o = atan2(dot(v, lobes.z), dot(v, lobes.y));
+    let sin_t: float = lobes.sin_o / fiber.eta;
+    let cos_t: float = sqrt(max(1.0f - sin_t * sin_t, 0.0f));
+    lobes.gamma_o = asin(clamp(fiber.h, -1.0f, 1.0f));
+    let sin_gamma_t: float = fiber.h * lobes.cos_o / sqrt(fiber.eta * fiber.eta - lobes.sin_o * lobes.sin_o);
+    lobes.gamma_t = asin(clamp(sin_gamma_t, -1.0f, 1.0f));
+    // Through the fiber and back, by Beer's law, and Fresnel's reflectance at the fiber's surface
+    let through: float3 = exp(-fiber.sigma * (2.0f * sqrt(max(1.0f - sin_gamma_t * sin_gamma_t, 0.0f)) / cos_t));
+    let f: float = fresnel(lobes.cos_o * sqrt(max(1.0f - fiber.h * fiber.h, 0.0f)), 1.0f, fiber.eta);
+    lobes.a[0] = float3(f);
+    lobes.a[1] = (1.0f - f) * (1.0f - f) * through;
+    lobes.a[2] = lobes.a[1] * through * f;
+    lobes.a[3] = lobes.a[2] * through * f / max(1.0f - through * f, float3(BIAS));
+    var total: float = 0.0f;
+    for (var p: int = 0; p < 4; p++) {
+        lobes.share[p] = rgb_to_greyscale(lobes.a[p]);
+        total += lobes.share[p];
+    }
+    for (var p: int = 0; p < 4; p++) {
+        lobes.share[p] /= max(total, BIAS);
+    }
+    return lobes;
+}
+
+// The fiber's BSDF times the cosine toward out_dir, and pdf the solid angle density sampleHair draws it at
+func hairEvaluate(lobes: HairLobes, out_dir: float3, fiber: HairFiber, out pdf: float) -> float3 {
+    let sin_i: float = dot(out_dir, lobes.x);
+    let cos_i: float = sqrt(max(1.0f - sin_i * sin_i, 0.0f));
+    let phi: float = atan2(dot(out_dir, lobes.z), dot(out_dir, lobes.y)) - lobes.phi_o;
+    var value: float3 = float3(0.0f);
+    pdf = 0.0f;
+    for (var p: int = 0; p < 3; p++) {
+        let o: float2 = hairTilted(lobes.sin_o, lobes.cos_o, fiber.alpha, p);
+        let scattered: float = hairLongitudinal(sin_i, cos_i, o.x, o.y, p == 0 ? fiber.v0 : (p == 1 ? 0.25f * fiber.v
+            : 4.0f * fiber.v)) * hairAzimuthal(phi, p, fiber.s, lobes.gamma_o, lobes.gamma_t);
+        value += lobes.a[p] * scattered;
+        pdf += lobes.share[p] * scattered;
+    }
+    // The rest, about the untilted angle, uniformly in azimuth
+    let rest: float = hairLongitudinal(sin_i, cos_i, lobes.sin_o, lobes.cos_o, 4.0f * fiber.v) / (2.0f * PI);
+    value += lobes.a[3] * rest;
+    pdf += lobes.share[3] * rest;
+    return value;
+}
+
+// The fiber's BSDF times the cosine from in_dir toward out_dir about its tangent t, and its density
+[CudaDeviceExport] public func hairBSDF(in_dir: float3, out_dir: float3, t: float3, fiber: HairFiber, out pdf: float) -> float3 {
+    return hairEvaluate(hairLobes(in_dir, t, fiber), out_dir, fiber, pdf);
+}
+
 // Shadow segments, alike in both consumers: from the start lift places off the shaded point, to the sampled point on
 // an emitter lifted by the emitter's own offset, short of that end by a relative 1e-4, which keeps it off the emitter
 
