@@ -403,5 +403,52 @@ int main() {
         none.z, dark.x / eumelanin, dark.y / eumelanin, dark.z / eumelanin, colour.x, colour.y, colour.z, expect[0], expect[1], expect[2]);
     failed |= none.x != 0 || none.y != 0 || none.z != 0 || fabs(dark.x / eumelanin - 0.506) > 1e-5
         || fabs(dark.z / eumelanin - 1.653) > 1e-5 || fabs(colour.x / expect[0] - 1) > 1e-5 || fabs(colour.z / expect[2] - 1) > 1e-5;
+    // Blender's Hair BSDF: each component, of roughnesses along and around the fiber, holds energy at most 1 by
+    // midpoint quadrature of its BSDF times the cosine over the sphere, reflection none behind the shading normal and
+    // transmission none before it; its samples, where it gives them, carry a throughput of 1 at its density; and the
+    // share of those samples in 64 bins of equal solid angle is its density integrated over the bin
+    const float COMPONENTS[][3] = {{0.1f, 1, 0}, {0.3f, 0.3f, 0.05f}, {1, 0.1f, -0.1f}};
+    // Their energies as this commit measured them, reflection and transmission: pinned, as sampling would follow a
+    // change of the evaluation's bounds
+    const double ENERGIES[][2] = {{0.6468, 0.9465}, {0.9964, 0.9800}, {0.9906, 0.9855}};
+    int component = 0;
+    const Vector<float, 3> TUBE(0, 0, 1);
+    for (const auto &c : COMPONENTS) for (int k = 0; k < 2; k++, component++) {
+        const float l = sqrtf(sinf(0.4f) * sinf(0.4f) + 0.09f + cosf(0.4f) * cosf(0.4f));
+        const Vector<float, 3> view(-sinf(0.4f) / l, 0.3f / l, -cosf(0.4f) / l);
+        double energy = 0, wrong = 0, mismatch = 0, share[64] = {}, worst_bin = 0;
+        for (int i = 0; i < 1024; i++) for (int j = 0; j < 1024; j++) {
+            const float x = (i + 0.5f) / 512 - 1, phi = (j + 0.5f) / 1024 * 2 * PI, r = sqrtf(1 - x * x);
+            const Vector<float, 3> d(x, r * cosf(phi), r * sinf(phi));
+            float pdf;
+            const float f = hairComponent(view, d, AXIS, TUBE, c[0], c[1], c[2], k, &pdf);
+            energy += f * (2.0 / 1024) * (2 * PI / 1024);
+            if ((d.z < 0) != (k == 1) && f != 0) wrong = 1;
+        }
+        unsigned given = 0;
+        for (unsigned i = 0; i < 1u << 22; i++) {
+            const SampleBSDF s = sampleHairComponent(view, AXIS, TUBE, c[0], c[1], c[2], k, hash(i));
+            if (!(s.pdf > 0)) continue;
+            float pdf;
+            hairComponent(view, s.unit_direction, AXIS, TUBE, c[0], c[1], c[2], k, &pdf);
+            mismatch = fmax(mismatch, fmax(fabs(s.throughput.x - 1), fabs(pdf / s.pdf - 1)));
+            share[bin(s.unit_direction)] += 1, given++;
+        }
+        for (int b = 0; b < 64; b++) {
+            double expect = 0;
+            for (unsigned j = 0; j < 4096; j++) {
+                const float z = (b / 8 + (j % 64 + 0.5f) / 64) / 4 - 1, phi = (b % 8 + (j / 64 + 0.5f) / 64) / 8 * 2 * PI - PI;
+                float pdf;
+                hairComponent(view, Vector<float, 3>(sqrtf(1 - z * z) * cosf(phi), sqrtf(1 - z * z) * sinf(phi), z), AXIS, TUBE, c[0], c[1], c[2], k, &pdf);
+                expect += pdf * PI / 16 / 4096;
+            }
+            worst_bin = fmax(worst_bin, fabs(share[b] / (1 << 22) - expect) / (0.0005 + sqrt(expect / (1 << 22))));
+        }
+        const bool bad = energy > 1.001 || fabs(energy - ENERGIES[component / 2][k]) > 1e-3 || wrong || mismatch > 1e-4 || worst_bin > 1;
+        printf("hair BSDF %s %g %g offset %g: energy %.4f, %d on the wrong side, worst mismatch %.2g, worst bin off by %.2f "
+            "of the tolerance%s\n", k ? "transmission" : "reflection", c[0], c[1], c[2], energy, int(wrong), mismatch,
+            worst_bin, bad ? " FAILED" : "");
+        failed |= bad;
+    }
     return failed;
 }
