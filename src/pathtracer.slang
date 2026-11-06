@@ -791,6 +791,31 @@ __extern_cpp public struct AnisotropicFrame {
     return material.transmission * (1.0f - material.metallic) * smithG1(material.roughness * material.roughness, abs(dot(n, dir))) * material.albedo;
 }
 
+#ifdef FK_HAIR
+// Hair (Chiang et al. 2016), baked per lobe p (R, TT, TRT, rest) in nt rows of theta and np columns of phi
+// HAIR_WIDTHS and HAIR_TILTS scale the R lobe's width w and the cuticle tilt alpha per lobe
+static const float HAIR_WIDTHS[4] = {1.0f, 0.5f, 2.0f, 2.0f};
+static const float HAIR_TILTS[4] = {-2.0f, 1.0f, 4.0f, 0.0f};
+[CudaDeviceExport] public func hairRow(in_dir: float3, t: float3, out_dir: float3, p: uint, w: float, alpha: float, nt: uint) -> float {
+    let width: float = w * HAIR_WIDTHS[p % 4u];
+    let cone: float = asin(clamp(dot(out_dir, t), -1.0f, 1.0f)) - asin(clamp(dot(in_dir, t), -1.0f, 1.0f)) - HAIR_TILTS[p % 4u] * alpha;
+    return (asinh(cone / width) / asinh(PI / width) + 1.0f) * 0.5f * float(nt);
+}
+// Column of out_dir's azimuth about t, relative to the reversed view
+[CudaDeviceExport] public func hairColumn(in_dir: float3, t: float3, out_dir: float3, np: uint) -> float {
+    let o: float3 = worldToTangent(out_dir, t);
+    let v: float3 = worldToTangent(in_dir, t);
+    return frac((atan2(o.z, o.x + LEAST_NORMAL) - atan2(- v.z, LEAST_NORMAL - v.x)) / (2.0f * PI) + 0.5f) * float(np);
+}
+[CudaDeviceExport] public func hairDirection(in_dir: float3, t: float3, p: uint, row: float, column: float, w: float, alpha: float, nt: uint, np: uint) -> float3 {
+    let v: float3 = worldToTangent(in_dir, t);
+    let width: float = w * HAIR_WIDTHS[p % 4u];
+    let theta: float = asin(clamp(dot(in_dir, t), -1.0f, 1.0f)) + HAIR_TILTS[p % 4u] * alpha + width * sinh((row * 2.0f / float(nt) - 1.0f) * asinh(PI / width));
+    let phi: float = column * 2.0f * PI / float(np) - PI + atan2(- v.z, LEAST_NORMAL - v.x);
+    return tangentToWorld(float3(cos(theta) * cos(phi), sin(theta), cos(theta) * sin(phi)), t);
+}
+#endif
+
 
 // Shadow end lifted off the emitter by its geometry offset, toward start
 [CudaDeviceExport] public func shadowLift(light_n: float3, light_offset: float, start: float3, end: float3) -> float3 {
