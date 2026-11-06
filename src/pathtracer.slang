@@ -1057,6 +1057,58 @@ func hairEvaluate(lobes: HairLobes, out_dir: float3, fiber: HairFiber, out pdf: 
     return SampleBSDF(out_dir, select(float3(0.0f), value / pdf, pdf > 0.0f), random_3.state, p != 0, p == 0 ? 2u : 1u, pdf);
 }
 
+// Reflection on n's side or transmission past it, roughness u along tangent t and v about it
+// h = (theta_i + theta_r) / 2 - offset, Cauchy of scale ru over theta_i in (-PI / 2, PI / 2)
+// a, b = atan(((+-PI / 2 + theta_r) / 2 - offset) / ru) => along = ru / (2 * (h^2 + ru^2) * (a - b) * cos(theta_i))
+// value = pdf, sampled throughput 1
+[CudaDeviceExport] public func hairComponent(in_dir: float3, out_dir: float3, t: float3, n: float3, u: float, v: float, offset: float, transmission: bool, out pdf: float) -> float {
+    pdf = 0.0f;
+    let ru: float = clamp(u, 0.001f, 1.0f);
+    let rv: float = clamp(v, 0.001f, 1.0f);
+    let w: float3 = negate(in_dir);
+    let y: float3 = normalize(w - t * dot(t, w));
+    let theta_r: float = asin(clamp(dot(t, w), -1.0f, 1.0f));
+    let theta_i: float = asin(clamp(dot(t, out_dir), -1.0f, 1.0f));
+    let cos_phi: float = dot(normalize(out_dir - t * dot(t, out_dir)), y);
+    if ((dot(n, out_dir) < 0.0f) != transmission || PI / 2.0f - abs(theta_i) < 0.001f || !transmission && cos_phi < 0.0f) {
+        return 0.0f;
+    }
+    let a: float = atan(((PI / 2.0f + theta_r) / 2.0f - offset) / ru);
+    let b: float = atan(((-PI / 2.0f + theta_r) / 2.0f - offset) / ru);
+    let h: float = (theta_i + theta_r) / 2.0f - offset;
+    let along: float = ru / (2.0f * (h * h + ru * ru) * (a - b) * cos(theta_i));
+    let phi: float = acos(clamp(cos_phi, -1.0f, 1.0f));
+    let p: float = PI - phi;
+    // reflection: pdf = along * cos(phi / (2 * rv)) / (4 * rv), phi < PI * rv
+    // transmission: pdf = along * rv / (2 * atan(PI / (2 * rv)) * (p^2 + rv^2)), p <= PI / 2
+    if (transmission && p > PI / 2.0f) {
+        return 0.0f;
+    }
+    pdf = along * (transmission ? rv / (2.0f * atan(PI / (2.0f * rv)) * (p * p + rv * rv)) : cos(min(phi / rv, PI) / 2.0f) / (4.0f * rv));
+    return pdf;
+}
+
+// theta_i and phi by the inverse CDFs of hairComponent's densities
+[CudaDeviceExport] public func sampleHairComponent(in_dir: float3, t: float3, n: float3, u: float, v: float, offset: float, transmission: bool, random_init: uint) -> SampleBSDF {
+    let ru: float = clamp(u, 0.001f, 1.0f);
+    let rv: float = clamp(v, 0.001f, 1.0f);
+    let random_1: Random = pcg(random_init);
+    let random_2: Random = pcg(random_1.state);
+    let w: float3 = negate(in_dir);
+    let y: float3 = normalize(w - t * dot(t, w));
+    let x: float3 = cross(y, t);
+    let theta_r: float = asin(clamp(dot(t, w), -1.0f, 1.0f));
+    let a: float = atan(((PI / 2.0f + theta_r) / 2.0f - offset) / ru);
+    let b: float = atan(((-PI / 2.0f + theta_r) / 2.0f - offset) / ru);
+    let theta_i: float = 2.0f * (ru * tan(random_1.value * (a - b) + b) + offset) - theta_r;
+    let phi: float = transmission ? PI + rv * tan(2.0f * atan(PI / (2.0f * rv)) * (random_2.value - 0.5f))
+        : 2.0f * asin(clamp(1.0f - 2.0f * random_2.value, -1.0f, 1.0f)) * rv;
+    let out_dir: float3 = cos(theta_i) * (cos(phi) * y - sin(phi) * x) + sin(theta_i) * t;
+    var pdf: float;
+    let value: float = hairComponent(in_dir, out_dir, t, n, u, v, offset, transmission, pdf);
+    return SampleBSDF(out_dir, float3(select(0.0f, value / pdf, pdf > 0.0f)), random_2.state, transmission, transmission ? 1u : 2u, pdf);
+}
+
 // A relative 1e-4 short of the end
 [CudaDeviceExport] public func shadowLength(shadow: float3) -> float {
     return length(shadow) * (1.0f - 1e-4f);
