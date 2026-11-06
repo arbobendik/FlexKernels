@@ -816,6 +816,43 @@ static const float HAIR_TILTS[4] = {-2.0f, 1.0f, 4.0f, 0.0f};
 }
 #endif
 
+// Parametrizations of a fiber's absorption sigma
+public static const uint HAIR_ABSORPTION = 0u;
+public static const uint HAIR_MELANIN = 1u;
+public static const uint HAIR_COLOR = 2u;
+
+// Chiang et al. 2016, eq. 9: SCALE(x) = 5.969 - 0.215 x + 2.532 x^2 - 10.73 x^3 + 5.574 x^4 + 0.245 x^5
+[CudaDeviceExport] public func hairAlbedoScale(x: float) -> float {
+    return (((((0.245f * x) + 5.574f) * x - 10.73f) * x + 2.532f) * x - 0.215f) * x + 5.969f;
+}
+
+// sigma = (ln(color) / SCALE(radial))^2
+[CudaDeviceExport] public func hairSigmaFromColor(color: float3, radial: float) -> float3 {
+    let sigma: float3 = log(max(color, float3(0.0f))) / hairAlbedoScale(radial);
+    return sigma * sigma;
+}
+
+// HAIR_ABSORPTION: sigma = absorption
+// HAIR_COLOR: sigma = hairSigmaFromColor(color, radial)
+// HAIR_MELANIN: M = melanin * (1 + 2 * (random - 0.5) * random_color), concentration = -ln(1 - M)
+// sigma = concentration * ((1 - redness) * EUMELANIN + redness * PHEOMELANIN) + hairSigmaFromColor(tint, radial)
+[CudaDeviceExport] public func hairSigma(parametrization: uint, color: float3, melanin: float, redness: float, tint: float3, absorption: float3, random_color: float, random: float, radial: float) -> float3 {
+    if (parametrization == HAIR_ABSORPTION) {
+        return absorption;
+    }
+    if (parametrization == HAIR_COLOR) {
+        return hairSigmaFromColor(color, radial);
+    }
+    let concentration: float = -log(max(1.0f - melanin * (1.0f + 2.0f * (random - 0.5f) * clamp(random_color, 0.0f, 1.0f)), 0.0001f));
+    return concentration * (1.0f - redness) * float3(0.506f, 0.841f, 1.653f) + concentration * redness
+        * float3(0.343f, 0.733f, 1.924f) + hairSigmaFromColor(tint, radial);
+}
+
+// Roughness scale, uniform in 1 +- random_roughness
+[CudaDeviceExport] public func hairRoughnessFactor(random_roughness: float, random: float) -> float {
+    return 1.0f + 2.0f * (random - 0.5f) * random_roughness;
+}
+
 // A relative 1e-4 short of the end
 [CudaDeviceExport] public func shadowLength(shadow: float3) -> float {
     return length(shadow) * (1.0f - 1e-4f);
