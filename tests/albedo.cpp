@@ -8,8 +8,17 @@
 // receives in each channel; one of IOR 10, its reflectance doubled past total, at most all of it, and smooth white glass
 // without reflectance, light leaving it past the critical angle, all of it, as the true IOR refracts none. Last,
 // Blender's Translucent BSDF through the diffuse lobe
+#include <initializer_list>
 #include <stdio.h>
 #include "pathtracer.cpp"
+
+// Fresnel's reflectance of a dielectric of IOR eta from outside at cosine c, unpolarized
+static double hairFresnelReference(double c, double eta) {
+    const double s2 = (1 - c * c) / (eta * eta);
+    if (s2 >= 1) return 1;
+    const double t = sqrt(1 - s2), rs = (c - eta * t) / (c + eta * t), rp = (eta * c - t) / (eta * c + t);
+    return (rs * rs + rp * rp) / 2;
+}
 
 int main() {
     const float COSINES[] = {1, 0.5f, 0.2f};
@@ -255,5 +264,144 @@ int main() {
         printf("anisotropic %s density: worst bin off by %.2f of the tolerance\n", m < 2 ? "metal" : "glass", worst_bin);
         failed |= worst_bin > 1;
     }
+    // Chiang's hair: a fiber absorbing nothing scatters all it receives at every h across it. Its BSDF times the cosine,
+    // by midpoint quadrature over the sines of the longitude and the azimuth, integrates to 1, at roughnesses, radial
+    // roughnesses, coats, IORs and the scales' tilt of Blender's range, seen at longitudes 0.3 and 1.2 off the normal
+    // plane; sampling returns 1 likewise within 3 standard errors, each sample at the density and throughput the BSDF
+    // gives it; and the share of samples in 64 bins of equal solid angle is the density integrated over the bin
+    const float FIBERS[][5] = {{0.1f, 0.1f, 0, 1.55f, 0.035f}, {0.3f, 0.3f, 0, 1.55f, 0.035f}, {1, 1, 0, 1.55f, 0},
+        {0.3f, 0.1f, 0, 1.55f, 0.035f}, {0.1f, 1, 0, 1.55f, 0.035f}, {0.3f, 0.3f, 0.5f, 1.55f, 0.035f}, {0.3f, 0.3f, 0, 2, 0.1f}};
+    const float H[] = {-0.9f, -0.3f, 0.2f, 0.7f}, LONGITUDES[] = {0.3f, 1.2f};
+    const Vector<float, 3> AXIS(1, 0, 0);
+    for (const auto &f : FIBERS) for (const float longitude : LONGITUDES) {
+        const Vector<float, 3> in_dir(-sinf(longitude), 0, -cosf(longitude));
+        double worst = 0, sampled = 0, squares = 0, mismatch = 0;
+        for (const float h : H) {
+            const HairFiber fiber = hairFiber(ZERO, f[0], f[1], f[2], f[4], f[3], h);
+            double sum = 0;
+            for (int i = 0; i < 1024; i++) for (int j = 0; j < 1024; j++) {
+                const float x = (i + 0.5f) / 512 - 1, phi = (j + 0.5f) / 1024 * 2 * PI, r = sqrtf(1 - x * x);
+                float pdf;
+                sum += hairBSDF(in_dir, Vector<float, 3>(x, r * cosf(phi), r * sinf(phi)), AXIS, fiber, &pdf).x * (2.0 / 1024) * (2 * PI / 1024);
+            }
+            worst = fmax(worst, fabs(sum - 1));
+            for (unsigned i = 0; i < 1u << 16; i++) {
+                const SampleBSDF s = sampleHair(in_dir, AXIS, fiber, hash(i));
+                float pdf;
+                const Vector<float, 3> value = hairBSDF(in_dir, s.unit_direction, AXIS, fiber, &pdf);
+                sampled += s.throughput.x / (1 << 18), squares += s.throughput.x * s.throughput.x / (1 << 18);
+                mismatch = fmax(mismatch, fmax(fabs(pdf / s.pdf - 1), fabs(value.x / (s.throughput.x * s.pdf) - 1)));
+            }
+        }
+        const double error = 3 * sqrt(fmax(squares - sampled * sampled, 0) / (1 << 18));
+        const bool bad = worst > 2e-4 || fabs(sampled - 1) > fmax(error, 1e-5) || mismatch > 1e-4;
+        printf("hair %g %g coat %g IOR %g tilt %g at longitude %g: integral off 1 by %.2g, sampled %.4f +- %.4f, worst "
+            "mismatch %.2g%s\n", f[0], f[1], f[2], f[3], f[4], longitude, worst, sampled, error, mismatch, bad ? " FAILED" : "");
+        failed |= bad;
+    }
+    for (int k = 0; k < 2; k++) {
+        const HairFiber fiber = hairFiber(Vector<float, 3>(0.2f, 0.4f, 0.8f), 0.3f, 0.3f, k ? 0.5f : 0, 0.035f, 1.55f, 0.4f);
+        const Vector<float, 3> in_dir(-sinf(0.5f), 0, -cosf(0.5f));
+        double share[64] = {}, worst_bin = 0;
+        for (unsigned i = 0; i < 1u << 22; i++) share[bin(sampleHair(in_dir, AXIS, fiber, hash(i)).unit_direction)] += 1.0 / (1 << 22);
+        for (int b = 0; b < 64; b++) {
+            double expect = 0;
+            for (unsigned j = 0; j < 4096; j++) {  // Uniform points of the bin
+                const float z = (b / 8 + (j % 64 + 0.5f) / 64) / 4 - 1, phi = (b % 8 + (j / 64 + 0.5f) / 64) / 8 * 2 * PI - PI;
+                float pdf;
+                hairBSDF(in_dir, Vector<float, 3>(sqrtf(1 - z * z) * cosf(phi), sqrtf(1 - z * z) * sinf(phi), z), AXIS, fiber, &pdf);
+                expect += pdf * PI / 16 / 4096;
+            }
+            worst_bin = fmax(worst_bin, fabs(share[b] - expect) / (0.0005 + sqrt(expect / (1 << 22))));
+        }
+        printf("hair density, coat %g: worst bin off by %.2f of the tolerance\n", k ? 0.5f : 0, worst_bin);
+        failed |= worst_bin > 1;
+    }
+    // Against Chiang's model written out here in doubles from the angles, at 4096 random pairs of directions about a
+    // tangent along x, of a tinted fiber of roughnesses 0.3 and 0.2, coat 0.5, tilt 0.06 and IOR 1.6 at five h: the
+    // longitudinal Mp of d'Eon et al. by its integral, the azimuth's trimmed logistic shifted by 2 p gamma_t - 2 gamma_o
+    // + p pi, the attenuation by Fresnel and Beer's law, the tilt turning theta_o by -2, 1 and 4 times the offset
+    const auto variance = [](double r) { const double b = 0.726 * r + 0.812 * r * r + 3.7 * pow(r, 20); return b * b; };
+    const auto mp = [](double ti, double to, double v) {  // Mp(theta_i, theta_o) by its integral over the azimuth
+        double sum = 0;
+        for (int k = 0; k < 4096; k++) {
+            const double a = (k + 0.5) / 4096 * 2 * M_PI;
+            sum += exp((cos(ti) * cos(to) * cos(a) - sin(ti) * sin(to)) / v);
+        }
+        return sum / 4096 / (2 * v * sinh(1 / v));
+    };
+    const double SIGMA[] = {0.3, 0.6, 1.2}, R = 0.3, RADIAL = 0.2, COAT = 0.5, TILT = 0.06, ETA = 1.6;
+    const double s_ = (0.265 * RADIAL + 1.194 * RADIAL * RADIAL + 5.372 * pow(RADIAL, 22)) * sqrt(M_PI / 8);
+    const double V[] = {variance(fmin(fmax((1 - COAT) * R, 0.001), 1)), variance(R) / 4, 4 * variance(R)};
+    double reference_worst = 0;
+    const float OFFSETS[] = {-0.8f, -0.4f, 0, 0.5f, 0.9f};
+    for (const float h : OFFSETS) {
+        const HairFiber fiber = hairFiber(Vector<float, 3>(SIGMA[0], SIGMA[1], SIGMA[2]), R, RADIAL, COAT, TILT, ETA, h);
+        for (unsigned i = 0; i < 4096; i += 64) {
+            const auto u = [&](unsigned k) { return (hash(i * 4 + k) >> 8) * 0x1p-24; };
+            const double to = (u(0) - 0.5) * 2.8, po = u(1) * 2 * M_PI, ti = (u(2) - 0.5) * 2.8, pi = u(3) * 2 * M_PI;
+            const Vector<float, 3> in_dir(-sin(to), -cos(to) * cos(po), -cos(to) * sin(po)), out_dir(sin(ti), cos(ti) * cos(pi), cos(ti) * sin(pi));
+            float pdf;
+            const Vector<float, 3> got = hairBSDF(in_dir, out_dir, AXIS, fiber, &pdf);
+            const double go = asin(h), st_ = sin(to) / ETA, ct = sqrt(1 - st_ * st_), sgt = h / sqrt(ETA * ETA - sin(to) * sin(to)) * cos(to);
+            const double gt = asin(sgt), fr = hairFresnelReference(cos(to) * cos(go), ETA), phi = pi - po;
+            const double tilts[] = {-2 * TILT, TILT, 4 * TILT};
+            double expect = 0;
+            const double through = exp(-SIGMA[0] * 2 * cos(gt) / ct);
+            double ap[4] = {fr, (1 - fr) * (1 - fr) * through, 0, 0};
+            ap[2] = ap[1] * through * fr, ap[3] = ap[2] * through * fr / (1 - through * fr);
+            for (int p = 0; p < 3; p++) {
+                double d = phi - (2 * p * gt - 2 * go + p * M_PI);
+                d -= 2 * M_PI * floor((d + M_PI) / (2 * M_PI));
+                const double e = exp(-fabs(d) / s_), logistic = e / (s_ * (1 + e) * (1 + e)), trim = 1 - 2 / (1 + exp(M_PI / s_));
+                expect += ap[p] * mp(ti, to - tilts[p], V[p]) * logistic / trim;
+            }
+            expect += ap[3] * mp(ti, to, 4 * variance(R)) / (2 * M_PI);
+            reference_worst = fmax(reference_worst, fabs(got.x - expect) / (expect + 1e-3));
+        }
+    }
+    printf("hair against Chiang written out: worst relative mismatch %.2g\n", reference_worst);
+    failed |= reference_worst > 2e-3;
+    // Where hairOffset puts a ray on the fiber, Chiang's R lobe, of a fiber absorbing all that enters it at roughness 0.05
+    // without tilt, peaks at the ray's mirror image about the fiber's normal there, at normals from -1.2 to 1.2 off the
+    // ray's opposite across the fiber
+    double mirror_worst = 1;
+    for (const float a : {-1.2f, -0.6f, 0.0f, 0.5f, 1.1f}) {
+        const Vector<float, 3> ray(0, 0, -1), normal(0, sinf(a), cosf(a)), image(0, 2 * cosf(a) * sinf(a), -1 + 2 * cosf(a) * cosf(a));
+        const HairFiber opaque = hairFiber(Vector<float, 3>(100, 100, 100), 0.05f, 0.05f, 0, 0, 1.55f, hairOffset(AXIS, normal, ray));
+        float best = -1, cosine = 0;
+        for (int j = 0; j < 8192; j++) {
+            const float phi = (j + 0.5f) / 8192 * 2 * PI;
+            const Vector<float, 3> d(0, cosf(phi), sinf(phi));
+            float pdf;
+            const float f = hairBSDF(ray, d, AXIS, opaque, &pdf).x;
+            if (f > best) best = f, cosine = dot(d, image);
+        }
+        mirror_worst = fmin(mirror_worst, cosine);
+    }
+    printf("hair R lobe at the mirror image: worst cosine %.6f\n", mirror_worst);
+    failed |= mirror_worst < 0.9999;
+    // Blender's parametrizations (1 melanin, 2 colour, as HAIR_* in the source, whose constants Slang inlines): no
+    // melanin and a white tint absorb nothing, eumelanin alone by its coefficients over -log(1 - melanin), and a colour by
+    // Chiang's eq. 9 at the radial roughness, its polynomial written out here (the colour of a fiber assembly, not of
+    // one fiber); a tint adds its colour's absorption to the melanin's; Random Color 0.5 at random 0.75 scales melanin
+    // 0.5 by 1.25, and Random Roughness 0.5 there the roughnesses by 1.25
+    const Vector<float, 3> none = hairSigma(1, ZERO, 0, 0.5f, ONE, ZERO, 0, 0.5f, 0.3f),
+        dark = hairSigma(1, ZERO, 0.5f, 0, ONE, ZERO, 0, 0.5f, 0.3f),
+        colour = hairSigma(2, Vector<float, 3>(0.5f, 0.25f, 0.1f), 0, 0, ONE, ZERO, 0, 0, 0.3f);
+    const double eumelanin = -log(0.5), b = 0.3, scale = 5.969 - 0.215 * b + 2.532 * b * b - 10.73 * pow(b, 3) + 5.574 * pow(b, 4)
+        + 0.245 * pow(b, 5);
+    const double expect[] = {pow(log(0.5) / scale, 2), pow(log(0.25) / scale, 2), pow(log(0.1) / scale, 2)};
+    const Vector<float, 3> tinted = hairSigma(1, ZERO, 0, 0, Vector<float, 3>(0.5f, 0.25f, 0.1f), ZERO, 0, 0.5f, 0.3f),
+        randomized = hairSigma(1, ZERO, 0.5f, 0, ONE, ZERO, 0.5f, 0.75f, 0.3f);
+    const float rough = hairRoughnessFactor(0.5f, 0.75f);
+    printf("hair absorption: tinted %g %g %g, randomized eumelanin %g, roughness factor %g\n", tinted.x, tinted.y, tinted.z,
+        randomized.x / 0.506, rough);
+    failed |= fabs(tinted.x / expect[0] - 1) > 1e-5 || fabs(tinted.z / expect[2] - 1) > 1e-5
+        || fabs(randomized.x / 0.506 + log(1 - 0.625)) > 1e-5 || fabs(rough - 1.25f) > 1e-6;
+    printf("hair absorption: no melanin %g %g %g, eumelanin %g %g %g, colour %g %g %g of %g %g %g\n", none.x, none.y,
+        none.z, dark.x / eumelanin, dark.y / eumelanin, dark.z / eumelanin, colour.x, colour.y, colour.z, expect[0], expect[1], expect[2]);
+    failed |= none.x != 0 || none.y != 0 || none.z != 0 || fabs(dark.x / eumelanin - 0.506) > 1e-5
+        || fabs(dark.z / eumelanin - 1.653) > 1e-5 || fabs(colour.x / expect[0] - 1) > 1e-5 || fabs(colour.z / expect[2] - 1) > 1e-5;
     return failed;
 }
