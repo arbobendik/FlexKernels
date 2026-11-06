@@ -850,6 +850,43 @@ __extern_cpp public struct AnisotropicFrame {
     return material.transmission * (1.0f - material.metallic) * G1(material.roughness * material.roughness, abs(dot(n, dir))) * material.albedo;
 }
 
+// Blender's Principled Hair BSDF: its parametrizations of the fiber's absorption coefficient, in the order of its node's
+public static const uint HAIR_ABSORPTION = 0u;
+public static const uint HAIR_MELANIN = 1u;
+public static const uint HAIR_COLOR = 2u;
+
+// Chiang et al. 2016's scale of the log of a color for the absorption whose fiber reflects it, at azimuthal roughness x
+// (their eq. 9)
+[CudaDeviceExport] public func hairAlbedoScale(x: float) -> float {
+    return (((((0.245f * x) + 5.574f) * x - 10.73f) * x + 2.532f) * x - 0.215f) * x + 5.969f;
+}
+
+// Absorption coefficient of a fiber of azimuthal roughness radial reflecting color
+[CudaDeviceExport] public func hairSigmaFromColor(color: float3, radial: float) -> float3 {
+    let sigma: float3 = log(max(color, float3(0.0f))) / hairAlbedoScale(radial);
+    return sigma * sigma;
+}
+
+// A fiber's absorption coefficient as Blender's node defines it by parametrization: given; reflecting color; or of its
+// melanin, randomized by random_color at random, mapped from Blender's 0..1 by -log(1 - m), its redness the share of
+// pheomelanin (Blender's eumelanin and pheomelanin coefficients), the tint's absorption added
+[CudaDeviceExport] public func hairSigma(parametrization: uint, color: float3, melanin: float, redness: float, tint: float3, absorption: float3, random_color: float, random: float, radial: float) -> float3 {
+    if (parametrization == HAIR_ABSORPTION) {
+        return absorption;
+    }
+    if (parametrization == HAIR_COLOR) {
+        return hairSigmaFromColor(color, radial);
+    }
+    let concentration: float = -log(max(1.0f - melanin * (1.0f + 2.0f * (random - 0.5f) * clamp(random_color, 0.0f, 1.0f)), 0.0001f));
+    return concentration * (1.0f - redness) * float3(0.506f, 0.841f, 1.653f) + concentration * redness
+        * float3(0.343f, 0.733f, 1.924f) + hairSigmaFromColor(tint, radial);
+}
+
+// Factor Blender's Random Roughness scales a fiber's roughnesses by at random
+[CudaDeviceExport] public func hairRoughnessFactor(random_roughness: float, random: float) -> float {
+    return 1.0f + 2.0f * (random - 0.5f) * random_roughness;
+}
+
 // Shadow segments, alike in both consumers: from the start lift places off the shaded point, to the sampled point on
 // an emitter lifted by the emitter's own offset, short of that end by a relative 1e-4, which keeps it off the emitter
 
