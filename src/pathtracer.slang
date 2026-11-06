@@ -853,6 +853,180 @@ public static const uint HAIR_COLOR = 2u;
     return 1.0f + 2.0f * (random - 0.5f) * random_roughness;
 }
 
+// Fiber of Chiang et al. 2016: absorption sigma, longitudinal variance v0 of R and v of TT, scale s of the azimuth's
+// logistic, scale tilt alpha, IOR eta, offset h across the fiber
+__extern_cpp public struct HairFiber {
+    __extern_cpp public float3 sigma;
+    __extern_cpp public float v;
+    __extern_cpp public float v0;
+    __extern_cpp public float s;
+    __extern_cpp public float alpha;
+    __extern_cpp public float eta;
+    __extern_cpp public float h;
+}
+
+// Chiang et al. 2016, eq. 7: v = (0.726 r + 0.812 r^2 + 3.7 r^20)^2
+func hairVariance(r: float) -> float {
+    let r2: float = r * r;
+    let r4: float = r2 * r2;
+    let r20: float = r4 * r4 * r4 * r4 * r4;
+    let b: float = 0.726f * r + 0.812f * r2 + 3.7f * r20;
+    return b * b;
+}
+
+// v = hairVariance(roughness), v0 = hairVariance((1 - coat) * roughness), alpha = -offset
+// Chiang et al. 2016, eq. 8: s = sqrt(PI / 8) * (0.265 r + 1.194 r^2 + 5.372 r^22), r = radial
+[CudaDeviceExport] public func hairFiber(sigma: float3, roughness: float, radial: float, coat: float, offset: float, ior: float, h: float) -> HairFiber {
+    let v: float = clamp(roughness, 0.001f, 1.0f);
+    let s: float = clamp(radial, 0.001f, 1.0f);
+    let s2: float = s * s;
+    let s11: float = s2 * s2 * s2 * s2 * s2 * s;
+    return HairFiber(sigma, hairVariance(v), hairVariance(clamp((1.0f - clamp(coat, 0.0f, 1.0f)) * v, 0.001f, 1.0f)),
+        (0.265f * s + 1.194f * s2 + 5.372f * s11 * s11) * sqrt(PI / 8.0f), -offset, ior, h);
+}
+
+// h = -dot(n, y) = dot(n, t x z) = dot(n x t, z), z = normalize(t x y)
+[CudaDeviceExport] public func hairOffset(t: float3, n: float3, in_dir: float3) -> float {
+    let y: float3 = normalize(cross(t, negate(in_dir)));
+    return dot(cross(n, t), normalize(cross(t, y)));
+}
+
+// a wrapped to [-PI, PI)
+func hairWrap(a: float) -> float {
+    return a + PI - 2.0f * PI * floor((a + PI) / (2.0f * PI)) - PI;
+}
+
+// Logistic of scale s: f(x) = E / (s * (1 + E)^2), E = exp(-|x| / s), F(x) = 1 / (1 + exp(-x / s))
+// Trimmed to [-PI, PI]: f(x) / (1 - 2 * F(-PI))
+func hairLogistic(x: float, s: float) -> float {
+    let e: float = exp(-abs(x) / s);
+    return e / (s * (1.0f + e) * (1.0f + e));
+}
+func hairLogisticCdf(x: float, s: float) -> float {
+    return -x / s > 88.0f ? 0.0f : 1.0f / (1.0f + exp(-x / s));
+}
+func hairTrimmedLogistic(x: float, s: float) -> float {
+    return hairLogistic(x, s) / (1.0f - 2.0f * hairLogisticCdf(-PI, s));
+}
+
+// I0(x) = sum_i (x^2 / 4)^i / (i!)^2 to i = 23
+// x > 12: ln(I0(x)) = x - ln(2 * PI * x) / 2 + ln(1 + y + 4.5 y^2 + 37.5 y^3), y = 1 / (8 x)
+func hairI0(x: float) -> float {
+    let x2: float = x * x;
+    var value: float = 1.0f;
+    var term: float = 1.0f;
+    for (var i: int = 1; i < 24; i++) {
+        term *= x2 / (4.0f * float(i * i));
+        value += term;
+    }
+    return value;
+}
+func hairLogI0(x: float) -> float {
+    let y: float = 1.0f / (8.0f * x);
+    return x > 12.0f ? x - 0.5f * log(2.0f * PI * x) + log(1.0f + y * (1.0f + y * (4.5f + y * 37.5f))) : log(hairI0(x));
+}
+
+// d'Eon et al. 2011: Mp = exp(-b) * I0(a) / (2 * v * sinh(1 / v)), a = cos_i * cos_o / v, b = sin_i * sin_o / v
+// v <= 0.1: 2 * v * sinh(1 / v) = v * exp(1 / v) => Mp = exp(hairLogI0(a) - b - 1 / v + 0.6931 + ln(0.5 / v))
+func hairLongitudinal(sin_i: float, cos_i: float, sin_o: float, cos_o: float, v: float) -> float {
+    let a: float = cos_i * cos_o / v;
+    let b: float = sin_i * sin_o / v;
+    if (v <= 0.1f) {
+        return exp(hairLogI0(a) - b - 1.0f / v + 0.6931f + log(0.5f / v));
+    }
+    return exp(-b) * hairI0(a) / (sinh(1.0f / v) * 2.0f * v);
+}
+
+// Chiang et al. 2016: PHI(p) = 2 p gamma_t - 2 gamma_o + p PI, Np(phi) = trimmed logistic of phi - PHI(p)
+func hairDeltaPhi(p: int, gamma_o: float, gamma_t: float) -> float {
+    return 2.0f * float(p) * gamma_t - 2.0f * gamma_o + float(p) * PI;
+}
+func hairAzimuthal(phi: float, p: int, s: float, gamma_o: float, gamma_t: float) -> float {
+    return hairTrimmedLogistic(hairWrap(phi - hairDeltaPhi(p, gamma_o, gamma_t)), s);
+}
+
+// (sin, |cos|) of theta_o + k * alpha, k = -2, 1, 4 for R, TT, TRT
+func hairTilted(sin_o: float, cos_o: float, alpha: float, p: int) -> float2 {
+    let k: float = p == 0 ? -2.0f : (p == 1 ? 1.0f : 4.0f);
+    let s: float = sin(k * alpha);
+    let c: float = cos(k * alpha);
+    return float2(sin_o * c + cos_o * s, abs(cos_o * c - sin_o * s));
+}
+
+// Per lobe R, TT, TRT, rest: attenuation a, share = greyscale(a) / sum greyscale(a), with v = -in_dir's angles
+struct HairLobes {
+    float3 a[4];
+    float share[4];
+    float sin_o;
+    float cos_o;
+    float phi_o;
+    float gamma_o;
+    float gamma_t;
+    float3 x;
+    float3 y;
+    float3 z;
+}
+func hairLobes(in_dir: float3, t: float3, fiber: HairFiber) -> HairLobes {
+    var lobes: HairLobes;
+    let v: float3 = negate(in_dir);
+    lobes.x = t;
+    lobes.y = normalize(cross(t, v));
+    lobes.z = normalize(cross(t, lobes.y));
+    lobes.sin_o = dot(v, lobes.x);
+    lobes.cos_o = sqrt(max(1.0f - lobes.sin_o * lobes.sin_o, 0.0f));
+    lobes.phi_o = atan2(dot(v, lobes.z), dot(v, lobes.y));
+    let sin_t: float = lobes.sin_o / fiber.eta;
+    let cos_t: float = sqrt(max(1.0f - sin_t * sin_t, 0.0f));
+    lobes.gamma_o = asin(clamp(fiber.h, -1.0f, 1.0f));
+    // sin(gamma_t) = h / ETA, ETA = sqrt(eta^2 - sin_o^2) / cos_o => sin_gamma_t = h * cos_o / sqrt(eta^2 - sin_o^2)
+    let sin_gamma_t: float = fiber.h * lobes.cos_o / sqrt(fiber.eta * fiber.eta - lobes.sin_o * lobes.sin_o);
+    lobes.gamma_t = asin(clamp(sin_gamma_t, -1.0f, 1.0f));
+    // Chiang et al. 2016: T = exp(-sigma * 2 * cos(gamma_t) / cos(theta_t)), f = F(cos(theta_o) * cos(gamma_o))
+    // a = (f, (1 - f)^2 T, (1 - f)^2 T^2 f, a_TRT * T f / (1 - T f))
+    let through: float3 = exp(-fiber.sigma * (2.0f * sqrt(max(1.0f - sin_gamma_t * sin_gamma_t, 0.0f)) / cos_t));
+    let f: float = fresnel(lobes.cos_o * sqrt(max(1.0f - fiber.h * fiber.h, 0.0f)), 1.0f, fiber.eta);
+    lobes.a[0] = float3(f);
+    lobes.a[1] = (1.0f - f) * (1.0f - f) * through;
+    lobes.a[2] = lobes.a[1] * through * f;
+    lobes.a[3] = lobes.a[2] * through * f / max(1.0f - through * f, float3(BIAS));
+    var total: float = 0.0f;
+    for (var p: int = 0; p < 4; p++) {
+        lobes.share[p] = rgb_to_greyscale(lobes.a[p]);
+        total += lobes.share[p];
+    }
+    for (var p: int = 0; p < 4; p++) {
+        lobes.share[p] /= max(total, BIAS);
+    }
+    return lobes;
+}
+
+// v_p = v0, v / 4, 4 v for R, TT, TRT
+// value = sum_p a_p * Mp * Np = BSDF * |cos(theta_i)|, pdf = sum_p share_p * Mp * Np
+func hairEvaluate(lobes: HairLobes, out_dir: float3, fiber: HairFiber, out pdf: float) -> float3 {
+    let sin_i: float = dot(out_dir, lobes.x);
+    let cos_i: float = sqrt(max(1.0f - sin_i * sin_i, 0.0f));
+    let phi: float = atan2(dot(out_dir, lobes.z), dot(out_dir, lobes.y)) - lobes.phi_o;
+    var value: float3 = float3(0.0f);
+    pdf = 0.0f;
+    for (var p: int = 0; p < 3; p++) {
+        let o: float2 = hairTilted(lobes.sin_o, lobes.cos_o, fiber.alpha, p);
+        let scattered: float = hairLongitudinal(sin_i, cos_i, o.x, o.y, p == 0 ? fiber.v0 : (p == 1 ? 0.25f * fiber.v
+            : 4.0f * fiber.v)) * hairAzimuthal(phi, p, fiber.s, lobes.gamma_o, lobes.gamma_t);
+        value += lobes.a[p] * scattered;
+        pdf += lobes.share[p] * scattered;
+    }
+    // Rest: Mp of 4 v about the untilted theta_o, Np = 1 / (2 * PI)
+    let rest: float = hairLongitudinal(sin_i, cos_i, lobes.sin_o, lobes.cos_o, 4.0f * fiber.v) / (2.0f * PI);
+    value += lobes.a[3] * rest;
+    pdf += lobes.share[3] * rest;
+    return value;
+}
+
+// BSDF * |cos(theta_i)| toward out_dir, pdf of sampleHair drawing it
+[CudaDeviceExport] public func hairBSDF(in_dir: float3, out_dir: float3, t: float3, fiber: HairFiber, out pdf: float) -> float3 {
+    return hairEvaluate(hairLobes(in_dir, t, fiber), out_dir, fiber, pdf);
+}
+
 // A relative 1e-4 short of the end
 [CudaDeviceExport] public func shadowLength(shadow: float3) -> float {
     return length(shadow) * (1.0f - 1e-4f);
