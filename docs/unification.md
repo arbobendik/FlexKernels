@@ -44,7 +44,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `samplesLights` | inline in `walk` cu:1094 (`bd5216f`) | `neeDecision` wgsl:1356 | 2, flex-cuda-pt | **Shared** | renderer.cu's surfaces that sample lights, all but smooth mirrors and glass, as emission is weighted against light sampling with the light tree; in place of FlexLight's `neeDecision` between the two, plain Fresnel |
 | `neeBSDF` | `lightBSDF` cu:998 (`2782758`) | `skyBSDF` wgsl:1195 (`be9b457`) | 2, FlexLight | **Shared** | FlexLight's balance heuristic per lobe, over the density of the sample, on the side the consumer's `wrongSide` selects; flex-cuda-pt's power heuristic as an option, in FlexLight's form |
 | `straightThrough` | inline in `sampleLight` cu:960 (`2782758`) | – | 2 | **Shared** | Shadow rays passing straight through equal IORs, as `sampleBSDF`'s refraction lobe carries them on average; flex-cuda-pt's lacked the share of metallic reflection, now `1 - metallic`. FlexLight's shadow rays stop at every surface |
-| `shadowLift`, `shadowLength`, `occluderTransmittance` | `sampleLight` cu:917-931 (1ae631c) | `sampleLightTree` PC:746 (0d8bb26) | 2 | **Shared** | One shadow segment for both consumers at the user's direction: FlexLight's lift of the end by the emitter's offset, turned toward the start, which the consumer adds where it forms the segment; renderer.cu's length, short of the end by a relative 1e-4, in place of FlexLight's skip of the emitter's triangle; and renderer.cu's transmittance of an occluder's layer |
+| `shadowLift`, `shadowLength`, `occluderTransmittance` | `sampleLight` cu:917-931 (1ae631c) | `sampleLightTree` PC:746 (0d8bb26) | 2 | **Shared** | One shadow segment for both consumers at the user's direction: FlexLight's lift of the end by the emitter's offset, turned toward the start, which the consumer adds where it forms the segment; renderer.cu's length, short of the end by a relative 1e-4, in place of FlexLight's skip of the emitter's triangle; and renderer.cu's transmittance of an occluder's layer. FlexLight's shadow rays take the lift and the length; flex-cuda-pt's the length and the transmittance, the lift pending a measurement of its own |
 | `Material` (FlexLight) | – | wgsl:104, `rasterizer-compute.wgsl`:93 | 3 | Local | Laid out by the TypeScript upload and read from bindings: the shared code declares it `__target_intrinsic(wgsl, "Material")`, as FlexLight's own, and `__target_intrinsic(cuda, "BSDFMaterial")`, which flex-cuda-pt's `renderer.h` declares with the same fields, the specular tint and level last, and `walk` fills from its `Surface` |
 | `LOBE_DIFFUSE`, `LOBE_REFRACT` | cu:207 | wgsl:1746 | 1 | Local, inlined | Equal, constants (see `PI`) |
 
@@ -319,15 +319,57 @@ Shift walk<T : ITracer, S : IScene>(T tracer, S scene, Domain dom, Reservoir r, 
 
 ## Next candidates
 
-Ranked by what they would share, with what blocks each:
+Done since this list was ranked: the ReSTIR decision maths (`temporalWeights` to `survivalProbability`, Plan A) and
+the shared shadow segment in both consumers' shadow rays (above). Line numbers below are of the mains the plans were
+drawn on and move with them.
 
-1. The equal constants (`PI`, `BIAS`, `INV_PI`, `LOBE_*`, `RESTIR_*`, `RC_*`, `PATH_*`, `END_NEE`, `END_EMIT`,
-   `STREAM_NEE`, `STREAM_RR`, `STREAM_SELECT`): need a generated header of named constants beside Slang's output.
-2. `faceNormal`, `smoothNormal`: same math; data access via `IScene`.
-3. `wrongSide` and `partner`: the same tests with other parameters, after the scene interface.
-4. `sampleLight` by importance, after FlexLight builds and binds a light BVH.
-5. `walk` and `shift` behind `ITracer` and `IScene`; FlexLight's `lightTrace` then becomes `walk` without ReSTIR.
-6. `shade`: the node program interpreter, after a union-free `Op`, a texture interface and FlexLight's materials as
+1. **Plan B, flex-cuda-pt's geometric and camera helpers** through interfaces the consumers implement, no `Scene` in
+   FlexKernels:
+   ```slang
+   public interface ITriangles { float3 vertex(uint triangle, uint corner); float3 normal(uint triangle, uint corner); }
+   public interface IPairing  { int2 delta(uint t, int x, int y); }          // char2* / int8_t* / FlexLight's texture
+   public func hitPosition<S : ITriangles>(S s, Hit hit) -> float3;
+   public func faceNormal<S : ITriangles>(S s, uint triangle) -> float3;
+   public func smoothNormal<S : ITriangles>(S s, Hit hit) -> float3;
+   public func wrongSide(in: float3, refracted: bool, out: float3, face: float3) -> bool;
+   public func volume(__constref Surface s) -> Medium;
+   public func aperture(Lens lens, inout uint state) -> float2;
+   public func project(__constref Camera camera, float3 position, uint3 size) -> float2;
+   public func pairing(uint3 p, uint frame, uint t) -> PairingDraw;
+   public func partnerOf(uint3 p, PairingDraw draw, int2 delta) -> int2;
+   ```
+   - `Camera`, `Lens`, `Surface` and `Medium` are renderer.h's layouts, `__target_intrinsic` to its names for CUDA as
+     `Reservoir` is, never instantiated for WGSL. The CUDA binding is a `CudaScene : ITriangles` over a
+     `__target_intrinsic(cuda, "Scene")` pointer; Vulkan's a `VkScene : ITriangles, IPairing`.
+   - flex-cuda-pt loses about 70 lines in each of `renderer.cu` and `renderer.slang` (Vulkan gains ~15 for its
+     binding); FlexLight's `partner` becomes `pairing`, a `textureLoad` and `partnerOf`. `lift`, `pixelDomain` and
+     `temporalNeighbor` stay until `traverse` is a hook.
+   - Gates: renders bit-identical on OptiX and Vulkan at the reference scenes, media and layers included; ptxas
+     registers and spills unchanged per raygen; an A/B timing of the temporal pass; FlexLight's tests.
+2. **Plan C, light sampling**, after Plan B:
+   ```slang
+   public interface ILightTree { LightBounds bounds(uint node); bool leaf(uint node); uint second(uint node); uint light(uint node); }
+   public interface ITrail { [mutating] uint take(); }                      // u64 shift on CUDA and Vulkan, vec2<u32> on WGSL
+   public func descend<T : ILightTree>(T tree, float3 p, float3 n, inout float pick, inout float probability) -> uint;
+   public func trailProbability<T : ILightTree, R : ITrail>(T tree, inout R trail, float3 p, float3 n, out uint node) -> float;
+   public func sampleLight<S : ILightScene>(S s, float3 origin, float3 normal, float3 shading, float3 face,
+       __constref Medium sides[2], uint state, out float3 direction, out float density, Ray ray) -> float3;
+   public func lightPdf<S : ILightScene>(S s, float3 origin, float3 normal, float3 start, uint triangle, float3 point) -> float;
+   ```
+   - `ILightScene`'s CUDA binding maps emission shading and `traverse` to renderer.cu's own, declared before the
+     header's include. flex-cuda-pt loses about 70 lines per backend; FlexLight's two descents become `descend` and
+     `trailProbability` over a zero-size tree of its `lightBounds` and `access_light_tree`, keeping its point, sphere and
+     triangle leaves.
+   - Gates: as Plan B, plus an emitters scene and an emission-program scene, and for WGSL, parity cases over a small
+     light tree fixture in `tests/`, which the goldens have none of.
+3. **`walk` and `shift`**, after Plans B and C, behind `IScene` hooks for `shade`, `environment`, `traverse` and
+   `lift`, `Domain` and `Reservoir` by `__constref`, `Selection` by `inout`, `[noinline]` kept for SPIR-V only. About
+   360 lines leave `renderer.cu` and 350 `renderer.slang`; their CUDA becomes generated, so OptiX bit-identity is shown
+   by renders and performance by ptxas and A/B timing before it lands. FlexLight's `walk` joins once both consumers
+   agree on its features.
+4. The equal constants (`PI`, `BIAS`, `INV_PI`, `LOBE_*`, `RESTIR_*`, `RC_*`, `PATH_*`, `END_NEE`, `END_EMIT`,
+   `STREAM_*`): need a generated header of named constants beside Slang's output.
+5. `shade`: the node program interpreter, after a union-free `Op`, a texture interface and FlexLight's materials as
    programs.
 
 ## Decisions made without the user
