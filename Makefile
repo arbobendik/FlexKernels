@@ -21,7 +21,9 @@ all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h \
 # ReSTIR variants
 build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR=1
 build/cuda-restir/pathtracer.cuh: SLANGFLAGS += -DFK_FCPT_WALK=1
-build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_FCPT_WALK=1
+build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_FCPT_WALK=1 -DFK_HAIR=1
+build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh build/cpp/pathtracer.cpp build/cpp-restir/pathtracer.cpp: SLANGFLAGS += -DFK_HAIR=1
+build/cuda/pathtracer.slang-module: MODULEFLAGS = -DFK_HAIR=1
 build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR_PASSES=1
 build/restir-passes/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1
 
