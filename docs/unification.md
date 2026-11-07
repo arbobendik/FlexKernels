@@ -278,10 +278,11 @@ compute shader compiled to SPIR-V, calling what the renderer calls.
 
 ## WebGL2
 
-`src/flexlight/webgl2/shaders/*.glsl` stays as it is. The BSDF could reach it through Slang → SPIR-V → SPIRV-Cross
-(`--es --version 300`): it is pure float and `uint` math with `inout` parameters, all available in GLSL ES 3.00.
-SPIRV-Cross only emits what an entry point reaches, so it needs a dummy fragment entry point whose `main` and outputs
-are dropped, and names survive through `OpName`. Slang's own GLSL target emits desktop GLSL 450, not ES.
+WebGL2 has no compute passes, so it takes the shared functions alone, not ReSTIR. Slang's GLSL target emits every
+exported function through `src/glsl.slang`, an entry point that calls none, and the `Makefile` strips the version and
+layout lines and that entry from `build/glsl/pathtracer.glsl`, which is valid GLSL ES 3.00. FlexLight's
+`common.glsl` declares `Material` before it (`__target_intrinsic(glsl, "Material")`) and `pcg` takes FlexLight's
+generator, as for WGSL. The deployment vendors it beside the WGSL.
 
 ## `walk` behind `ITracer` (sketch, not implemented)
 
