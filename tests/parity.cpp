@@ -100,7 +100,7 @@ __device__ Result evaluate(const Case& c) {
     FixedArray<Vec, 4> throughputs;
     FixedArray<float, 4> pdfs;
     r.bsdf = BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19],
-        dot_0(vec(c.in + 9), -in_dir) * dot_0(vec(c.in + 9), out_dir) <= 0, c.random_state, &throughputs, &pdfs);
+        dot_0(vec(c.in + 9), -in_dir) * dot_0(vec(c.in + 9), out_dir) <= 0, c.random_state, ~0u, &throughputs, &pdfs);
     r.nee = neeDecision(material, dot_0(n, -in_dir), c.in[18], c.in[19]);
     Reservoir a = {}, b = {};
     const float turned[] = {c.in[13], c.in[14], c.in[12]};
@@ -116,7 +116,7 @@ __device__ Result evaluate(const Case& c) {
     r.beer_lambert = beerLambert(c.in[18] + c.in[19], albedo);
     r.point_light = pointLightRadiance(albedo, c.in[18], 1.0f + c.in[16]);
     const bool refracted = (dot3(in_dir, vec(c.in + 9)) <= 0) != (dot3(out_dir, vec(c.in + 9)) > 0);
-    BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, c.random_state, &throughputs, &pdfs);
+    BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, c.random_state, ~0u, &throughputs, &pdfs);
     const float pdf = 0.5f + c.in[17];
     float balance[3] = {}, power[3] = {};
     for (int i = 0; i < 4; i++) {

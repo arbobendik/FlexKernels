@@ -319,8 +319,10 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 // otherwise: the diffuse, but where translucent through the shading normal, the reflection and the sheen
 // as throughput = BSDF_lobe * n_dot_l / PDF_lobe
 // => BSDF * n_dot_l = sum throughput * PDF_lobe
+// mask: the slots evaluated, bit i for slot i
 [CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, material: Material, eta_i: float,
-    eta_o: float, refracted: bool, random_state: uint, out throughputs: float3[4], out pdfs: float[4]) -> float3 {
+    eta_o: float, refracted: bool, random_state: uint, mask: uint,
+    out throughputs: float3[4], out pdfs: float[4]) -> float3 {
     let v: float3 = negate(in_dir);
     let n_dot_v: float = dot(n, v);
     let n_i: float3 = n * sign(n_dot_v);
@@ -338,7 +340,7 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     // sampleBSDF's half vector and its terms for the diffuse lobe, where they reach out_dir
     var sampled_n: float3 = float3(0.0f);
     var sampled_terms: BSDFLobes = {};
-    if ((translucent && through) == refracted) {
+    if ((mask & 0x31u) != 0u && ((translucent && through) == refracted)) {
         sampled_n = sampledHalf(in_dir, n, material, random_state, frame);
         sampled_terms = bsdfLobes(in_dir, negate(in_dir), n_i, sampled_n, material, eta_i, eta_o, frame, sheen_albedo);
         sampled_terms.translucent_share = translucentShare(material);
@@ -346,12 +348,15 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     // out_dir's half vector and its terms, the refractive one across the face, the reflective one for reflection
     // and sheen otherwise
     let ggx_n: float3 = refracted ? refractedHalf(in_dir, out_dir, n, eta_i, eta_o) : reflectedHalf(in_dir, out_dir);
-    var lobe_terms: BSDFLobes = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta_i, eta_o, frame,
-        sheen_albedo);
-    lobe_terms.translucent_share = translucentShare(material);
+    var lobe_terms: BSDFLobes = {};
+    if ((mask & 0xEu) != 0u) {
+        lobe_terms = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta_i, eta_o, frame, sheen_albedo);
+        lobe_terms.translucent_share = translucentShare(material);
+    }
     for (var i: uint = 0u; i < lobes; i++) {
         let lobe: uint = i == 3u ? LOBE_SHEEN_VELVET : i;
-        if ((lobe == LOBE_DIFFUSE && translucent ? through : lobe == LOBE_REFRACT) != refracted) {
+        if ((mask & (1u << i)) == 0u
+            || (lobe == LOBE_DIFFUSE && translucent ? through : lobe == LOBE_REFRACT) != refracted) {
             continue;
         }
         switch (lobe) {

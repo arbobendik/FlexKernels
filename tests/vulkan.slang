@@ -12,7 +12,7 @@ void main(uint3 id: SV_DispatchThreadID) {
     float3 throughputs[4];
     float pdfs[4];
     const float3 connected = BSDF(r.dir, sampled.unit_direction, n, material, 1.0f, 1.5f,
-        dot(n, -r.dir) * dot(n, sampled.unit_direction) <= 0.0f, pcg(hash(r.path)).state, throughputs, pdfs);
+        dot(n, -r.dir) * dot(n, sampled.unit_direction) <= 0.0f, pcg(hash(r.path)).state, ~0u, throughputs, pdfs);
     Selection sel = {};
     offer(sel, withEnd(r, 1u, 2u, connected * smithG1(r.w, fresnel(r.c, 1.0f, 1.5f))),
         safeDivide(r.f, tangentToWorldNormalMap(r.radiance, float3x3(r.dir, r.f, n))));

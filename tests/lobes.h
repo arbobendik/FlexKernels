@@ -47,5 +47,5 @@ static TermsV faceBSDF(TermsV in_dir, TermsV out_dir, TermsV n, TermsV g_n, Mate
     FixedArray<TermsV, 4> throughputs;
     FixedArray<float, 4> pdfs;
     return BSDF(in_dir, out_dir, n, m, eta_i, eta_o, dot_0(g_n, negate_0(in_dir)) * dot_0(g_n, out_dir) <= 0,
-        random_state, &throughputs, &pdfs);
+        random_state, ~0u, &throughputs, &pdfs);
 }
