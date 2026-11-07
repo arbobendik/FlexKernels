@@ -3,9 +3,12 @@
 # changes its generated kernels, one commit with that commit's message, author and dates. Each generates the kernels
 # in a worktree of its commit, replaces the vendored directory with them and builds the consumer as its own CI does, so
 # that a broken kernel never reaches its main; they are pushed together. Run from FlexKernels checked out with full
-# history, as CI and the local rehearsal do. Usage: ci/deploy.sh <consumer-dir> <cuda|wgsl> <vendored-path>
+# history, as CI and the local rehearsal do. Each target is a source of build/ and the directory it is vendored to, the
+# first's VERSION the consumer's and its source how the consumer builds.
+# Usage: ci/deploy.sh <consumer-dir> <cuda|wgsl|glsl>:<vendored-path>...
 set -euo pipefail
-consumer=$1 source=$2 vendored=$3
+consumer=$1
+shift
 tree=$(mktemp -d)
 git worktree add -q --detach "$tree"
 # Slang is fetched once, by version, for all of them
@@ -15,19 +18,26 @@ ln -s "$PWD/.deps" "$tree/.deps"
 git -C "$consumer" config user.name "$(git log -1 --format=%cn)"
 git -C "$consumer" config user.email "$(git log -1 --format=%ce)"
 # Only commits to the sources and the Makefile can change the kernels
-for sha in $(git rev-list --reverse "$(cat "$consumer/$vendored/VERSION")..HEAD" -- src Makefile); do
+for sha in $(git rev-list --reverse "$(cat "$consumer/${1#*:}/VERSION")..HEAD" -- src Makefile); do
     git -C "$tree" checkout -q "$sha"
     make -C "$tree" -s clean all
-    git -C "$consumer" rm -rq "$vendored"
-    mkdir -p "$consumer/$vendored"
-    cp "$tree/build/$source"/* "$consumer/$vendored"
-    echo "$sha" > "$consumer/$vendored/VERSION"
-    git -C "$consumer" add "$vendored"
-    if git -C "$consumer" diff --cached --quiet -- . ":!$vendored/VERSION"; then
+    versions=()
+    for target in "$@"; do
+        # A target the commit does not generate yet, as before the GLSL target, keeps what is vendored
+        [ -d "$tree/build/${target%%:*}" ] || continue
+        vendored=${target#*:}
+        git -C "$consumer" rm -rq --ignore-unmatch "$vendored"
+        mkdir -p "$consumer/$vendored"
+        cp "$tree/build/${target%%:*}"/* "$consumer/$vendored"
+        echo "$sha" > "$consumer/$vendored/VERSION"
+        git -C "$consumer" add "$vendored"
+        versions+=(":!$vendored/VERSION")
+    done
+    if git -C "$consumer" diff --cached --quiet -- . "${versions[@]}"; then
         git -C "$consumer" reset -q --hard
         continue
     fi
-    case $source in
+    case ${1%%:*} in
         cuda) make -C "$consumer" ;;
         wgsl) (cd "$consumer" && bash ./build-script) ;;
     esac

@@ -129,6 +129,7 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
 // Target plumbing: FlexLight's own Material (material.wgsl), laid out by its upload,
 // and flex-cuda-pt's BSDFMaterial (renderer.h) of the same fields; the struct for C++
 __target_intrinsic(wgsl, "Material")
+__target_intrinsic(glsl, "Material")
 __target_intrinsic(cuda, "BSDFMaterial")
 __extern_cpp public struct Material {
     __extern_cpp public float3 albedo;
@@ -181,9 +182,10 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 
 // Target plumbing: declared as in C, as random advances state in place, which func's parameters don't allow
 [CudaDeviceExport] public Random pcg(uint state) {
-    // Target plumbing: FlexLight's generator for WGSL, flex-cuda-pt's for every other target
+    // Target plumbing: FlexLight's generator for WGSL and WebGL2's GLSL, flex-cuda-pt's for every other target
     __target_switch {
     case wgsl:
+    case glsl:
     // PCG random number generator (http://www.pcg-random.org/): the state advanced as hash advances it, and its hash
     // over UINT_MAX, between 0 and 1
     return Random(state * 747796405u + 2891336453u, float(hash(state)) / float(UINT_MAX));

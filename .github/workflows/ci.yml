@@ -42,11 +42,11 @@ jobs:
           - repository: arbobendik/FlexCudaPT
             key: FLEX_CUDA_PT_DEPLOY_KEY
             source: cuda
-            vendored: src/shaders/flexkernels
+            targets: cuda:src/shaders/flexkernels
           - repository: arbobendik/FlexLight
             key: FLEXLIGHT_DEPLOY_KEY
             source: wgsl
-            vendored: src/flexlight/webgpu/shaders/flexkernels
+            targets: wgsl:src/flexlight/webgpu/shaders/flexkernels glsl:src/flexlight/webgl2/shaders/flexkernels
     steps:
       - uses: actions/checkout@v7
         with:
@@ -72,7 +72,7 @@ jobs:
       - name: Install the bundler and compiler, as FlexLight builds
         if: matrix.source == 'wgsl'
         run: npm install -g esbuild typescript
-      - run: ci/deploy.sh consumer ${{ matrix.source }} ${{ matrix.vendored }}
+      - run: ci/deploy.sh consumer ${{ matrix.targets }}
         env:  # flex-cuda-pt's, libcuda itself comes with the GPU driver, which runners lack
           CUDA_PATH: /usr/local/cuda-13.4
           NVCC: /usr/local/cuda-13.4/bin/nvcc

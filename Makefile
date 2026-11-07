@@ -14,7 +14,7 @@ FLEXLIGHT ?= ../FlexLight
 WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
 all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h \
-	build/wgsl/pathtracer.wgsl build/cuda/pathtracer.slang-module
+	build/wgsl/pathtracer.wgsl build/glsl/pathtracer.glsl build/cuda/pathtracer.slang-module
 
 # The prelude is included next to the header instead of from the Slang installation, its Matrix template, which the
 # generated code takes for FlexLight's mat3x3, renamed SlangMatrix across the header so that it leaves the name to the
@@ -39,6 +39,12 @@ build/cuda/slang-cuda-prelude.h: $(SLANGC)
 build/wgsl/pathtracer.wgsl: $(SOURCE) $(SLANGC)
 	mkdir -p build/wgsl
 	$(SLANGC) $(SLANGFLAGS) $< -target wgsl -o $@
+
+# WebGL2's GLSL ES 3.00, without the version and layout lines, which FlexLight's shader leads with, or the entry point
+build/glsl/pathtracer.glsl: src/glsl.slang $(SOURCE) $(SLANGC)
+	mkdir -p build/glsl
+	$(SLANGC) $(SLANGFLAGS) $< -entry main -stage fragment -target glsl -o $@
+	sed -i -e '/^#version/d' -e '/^layout(row_major)/d' -e '/^layout(location = 0)$$/,/^}$$/d' $@
 
 # The module flex-cuda-pt's Vulkan renderer imports, loadable by this Slang version alone, vendored with the CUDA header.
 # It embeds the source's path, as given here, and debug information its absolute one, which it leaves out.
@@ -101,10 +107,12 @@ golden-wgsl: tests/wgsl.mjs tests/golden-cuda.txt $(WGSL_REFERENCE)
 
 # Into sibling checkouts, as CI does into the consumer repos
 deploy-local: all
-	mkdir -p $(FLEX_CUDA_PT)/src/shaders/flexkernels $(FLEXLIGHT)/src/flexlight/webgpu/shaders/flexkernels
+	mkdir -p $(FLEX_CUDA_PT)/src/shaders/flexkernels $(FLEXLIGHT)/src/flexlight/webgpu/shaders/flexkernels \
+		$(FLEXLIGHT)/src/flexlight/webgl2/shaders/flexkernels
 	cp build/cuda/* $(FLEX_CUDA_PT)/src/shaders/flexkernels
 	cp build/wgsl/* $(FLEXLIGHT)/src/flexlight/webgpu/shaders/flexkernels
-	git rev-parse HEAD | tee $(FLEX_CUDA_PT)/src/shaders/flexkernels/VERSION \
+	cp build/glsl/* $(FLEXLIGHT)/src/flexlight/webgl2/shaders/flexkernels
+	git rev-parse HEAD | tee $(FLEX_CUDA_PT)/src/shaders/flexkernels/VERSION $(FLEXLIGHT)/src/flexlight/webgl2/shaders/flexkernels/VERSION \
 		> $(FLEXLIGHT)/src/flexlight/webgpu/shaders/flexkernels/VERSION
 
 clean:
