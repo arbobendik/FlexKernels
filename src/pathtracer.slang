@@ -114,6 +114,7 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
 }
 
 __target_intrinsic(wgsl, "Material")
+__target_intrinsic(glsl, "Material")
 __target_intrinsic(cuda, "BSDFMaterial")
 __extern_cpp public struct Material {
     __extern_cpp public float3 albedo;
@@ -152,6 +153,7 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 [CudaDeviceExport] public Random pcg(uint state) {
     __target_switch {
     case wgsl:
+    case glsl:
     // PCG random number generator
     // Reference: http://www.pcg-random.org/
     return Random(state * 747796405u + 2891336453u, float(hash(state)) / float(UINT_MAX));
