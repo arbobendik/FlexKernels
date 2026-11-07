@@ -21,6 +21,15 @@ void main(uint3 id: SV_DispatchThreadID) {
     const LightBounds bounds = LightBounds(r.dir, r.radiance, n, r.w, r.c);
     float pick = r.jac, probability = 1.0f;
     const uint child = pickChild(bounds, bounds, r.f, n, pick, probability);
+#if FK_RESTIR
+    // The walk's records: a domain at the reservoir's hit and the previous vertex of the reconnection criteria
+    const Domain dom = Domain(r.dir, r.radiance, Hit(r.f.xy, r.rc.x, r.rc.y, END_POINT, r.w));
+    const Vertex v = Vertex(r.w > 0.0f, LOBE_REFRACT, r.c, dot(dom.x0, dom.x1), (r.path >> PATH_INSIDE & 1u) != 0u);
+#endif
     reservoirs[id.x] = finalize(sel, r.c * childShare(bounds, bounds, r.f, n, child) * solidAngle(probability, r.f, n)
-        + importance(bounds, r.f, n) * sine(pick) * powerHeuristic(r.w, r.jac) * float(samplesLights(material)));
+        + importance(bounds, r.f, n) * sine(pick) * powerHeuristic(r.w, r.jac) * float(samplesLights(material))
+#if FK_RESTIR
+        + v.pdf * v.cos * dom.hit.distance * float(v.rough != v.inside)
+#endif
+        );
 }

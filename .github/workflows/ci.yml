@@ -18,7 +18,7 @@ jobs:
       - name: Install the software Vulkan driver Dawn runs the WGSL on
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers spirv-tools
       - run: npm ci
       - run: make lint
       - run: make

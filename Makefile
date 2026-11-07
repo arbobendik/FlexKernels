@@ -14,13 +14,21 @@ FLEXLIGHT ?= ../FlexLight
 WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
 all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h \
-	build/wgsl/pathtracer.wgsl build/glsl/pathtracer.glsl build/cuda/pathtracer.slang-module
+	build/wgsl/pathtracer.wgsl build/glsl/pathtracer.glsl build/cuda/pathtracer.slang-module \
+	build/cuda-restir/pathtracer.cuh build/cuda-restir/slang-cuda-prelude.h build/wgsl-restir/pathtracer.wgsl \
+	build/cuda-restir/pathtracer.slang-module
+
+# The ReSTIR variants, which ReSTIR's consumers take in place of the outputs above: walk.slang's declarations and its
+# hooks bridged to the consumer's own functions, which the outputs above leave out, as they call nothing that is not
+# defined and the module exports no name its importers declare themselves
+build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR=1
+build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1
 
 # The prelude is included next to the header instead of from the Slang installation, its Matrix template, which the
 # generated code takes for FlexLight's mat3x3, renamed SlangMatrix across the header so that it leaves the name to the
 # consumer's
-build/cuda/pathtracer.cuh: $(SOURCE) $(SLANGC)
-	mkdir -p build/cuda
+build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
+	mkdir -p $(@D)
 	$(SLANGC) $(SLANGFLAGS) $< -target cuda -o $@
 	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#define Matrix SlangMatrix\n#include "slang-cuda-prelude.h"|' $@
 	# bsdfLobes inlined, as nvcc inlines it into consumers' code without the translucent share's callers, which grow it
@@ -32,12 +40,12 @@ build/cuda/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	sed -i -E 's/^__device__ (float3  lobeThroughput|float lobeDensity|float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF|float3  sampleMaterialHalfVector)\(/__device__ __forceinline__ \1(/' $@
 	echo '#undef Matrix' >> $@
 
-build/cuda/slang-cuda-prelude.h: $(SLANGC)
-	mkdir -p build/cuda
+build/cuda/slang-cuda-prelude.h build/cuda-restir/slang-cuda-prelude.h: $(SLANGC)
+	mkdir -p $(@D)
 	cp $(SLANG_PATH)/include/slang-cuda-prelude.h $@
 
-build/wgsl/pathtracer.wgsl: $(SOURCE) $(SLANGC)
-	mkdir -p build/wgsl
+build/wgsl/pathtracer.wgsl build/wgsl-restir/pathtracer.wgsl: $(SOURCE) $(SLANGC)
+	mkdir -p $(@D)
 	$(SLANGC) $(SLANGFLAGS) $< -target wgsl -o $@
 
 # WebGL2's GLSL ES 3.00, without the version and layout lines, which FlexLight's shader leads with, or the entry point
@@ -48,9 +56,9 @@ build/glsl/pathtracer.glsl: src/glsl.slang $(SOURCE) $(SLANGC)
 
 # The module flex-cuda-pt's Vulkan renderer imports, loadable by this Slang version alone, vendored with the CUDA header.
 # It embeds the source's path, as given here, and debug information its absolute one, which it leaves out.
-build/cuda/pathtracer.slang-module: $(SOURCE) $(SLANGC)
-	mkdir -p build/cuda
-	$(SLANGC) $< -o $@
+build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module: $(SOURCE) $(SLANGC)
+	mkdir -p $(@D)
+	$(SLANGC) $< $(MODULEFLAGS) -o $@
 
 build/cpp/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp
@@ -98,8 +106,11 @@ test-cuda: build/parity-cuda  # On the GPU
 	node tests/compare.mjs tests/golden-cuda.txt build/cuda.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cuda.txt 58
 
-test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module  # Compile only
+test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module  # Compile and validate only
 	$(SLANGC) -Ibuild/cuda $< -target spirv -o build/vulkan.spv
+	spirv-val --target-env vulkan1.3 build/vulkan.spv
+	$(SLANGC) -Ibuild/cuda-restir -DFK_RESTIR=1 $< -target spirv -o build/vulkan-restir.spv
+	spirv-val --target-env vulkan1.3 build/vulkan-restir.spv
 
 # On the grid of the CUDA goldens
 golden-wgsl: tests/wgsl.mjs tests/golden-cuda.txt $(WGSL_REFERENCE)
