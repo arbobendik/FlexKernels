@@ -1693,3 +1693,56 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
     }
 }
 #endif
+
+#ifdef FK_RESTIR
+groupshared uint duplication_seeds[576];
+
+// Target plumbing: the seed of the sample last frame's reservoir at q holds, zero for none or outside the image, as
+// restir_duplicates reads it into its workgroup's tile
+uint previousSeed<S: IScene>(S scene, int2 q) {
+    var seed: uint = 0u;
+    if (all(q >= int2(0)) && all(q < int2(scene.renderSize()))) {
+        let l0: uint4 = scene.reservoirPrevious(q, 0u);
+        seed = select(0u, l0.x, asfloat(l0.z) > 0.0f);
+    }
+    return seed;
+}
+
+// Fraction of the 17 x 17 neighborhood sharing each pixel's sample (Sec. 5)
+public func restir_duplicates<S: IScene>(scene: S, global_invocation_id: uint3, local_invocation_id: uint3, local_invocation_index: uint) {
+    __target_switch {
+    case cuda:
+        // Target plumbing: flex-cuda-pt's raygens share no memory, each invocation reads its neighborhood's seeds itself
+        let own: uint = previousSeed(scene, int2(global_invocation_id.xy));
+        var count: uint = 0u;
+        for (var y: int = -8; y <= 8; y++) {
+            for (var x: int = -8; x <= 8; x++) {
+                count += select(0u, 1u, previousSeed(scene, int2(global_invocation_id.xy) + int2(x, y)) == own);
+            }
+        }
+        let score: float = select(0.0f, float(count - 1u) / 288.0f, own != 0u);
+        scene.storeDuplication(int2(global_invocation_id.xy), uint4(asuint(score), 0u, 0u, 0u));
+    default:
+        let corner: int2 = int2(global_invocation_id.xy - local_invocation_id.xy) - 8;
+        for (var i: uint = local_invocation_index; i < 576u; i += 64u) {
+            let q: int2 = corner + int2(int(i % 24u), int(i / 24u));
+            var seed: uint = 0u;
+            if (all(q >= int2(0)) && all(q < int2(scene.renderSize()))) {
+                let l0: uint4 = scene.reservoirPrevious(q, 0u);
+                seed = select(0u, l0.x, asfloat(l0.z) > 0.0f);
+            }
+            duplication_seeds[i] = seed;
+        }
+        GroupMemoryBarrierWithGroupSync();
+        let own: uint = duplication_seeds[(local_invocation_id.y + 8u) * 24u + local_invocation_id.x + 8u];
+        var count: uint = 0u;
+        for (var y: uint = 0u; y < 17u; y++) {
+            for (var x: uint = 0u; x < 17u; x++) {
+                count += select(0u, 1u, duplication_seeds[(local_invocation_id.y + y) * 24u + local_invocation_id.x + x] == own);
+            }
+        }
+        let score: float = select(0.0f, float(count - 1u) / 288.0f, own != 0u);
+        scene.storeDuplication(int2(global_invocation_id.xy), uint4(asuint(score), 0u, 0u, 0u));
+    }
+}
+#endif

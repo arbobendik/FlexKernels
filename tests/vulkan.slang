@@ -93,7 +93,7 @@ float walkOver(Domain dom, Reservoir r) {
 }
 
 // The shift queue's rounds over the test scene: counting, queueing and taking the workgroup's jobs
-void queueRound(uint3 id, uint local, uint3 group) {
+void queueRound(uint3 id, uint local, uint3 group, uint3 local3) {
     TestScene scene;
     const uint[3] bins = spatialBins(scene, int2(id.xy));
     countShifts(scene, bins, local);
@@ -108,14 +108,15 @@ void queueRound(uint3 id, uint local, uint3 group) {
     restir_prepass(scene, id, local);
     restir_shift(scene, group, local);
     restir_spatial(scene, id);
+    restir_duplicates(scene, id, local3, local);
 }
 #endif
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void main(uint3 id: SV_DispatchThreadID, uint local: SV_GroupIndex, uint3 group: SV_GroupID) {
+void main(uint3 id: SV_DispatchThreadID, uint local: SV_GroupIndex, uint3 group: SV_GroupID, uint3 local3: SV_GroupThreadID) {
 #ifdef FK_RESTIR
-    queueRound(id, local, group);
+    queueRound(id, local, group, local3);
 #endif
     const Reservoir r = reservoirs[id.x];
     const float3 n = normalize(mix(r.dir, r.radiance, sign(r.w)));
