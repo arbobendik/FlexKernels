@@ -695,3 +695,87 @@ func emissionWeight<S: IScene>(scene: S, vertex: NEEVertex, hit: Hit, light_poin
     return powerHeuristic(vertex.pdf, lightPdf(scene, vertex.origin, vertex.smooth_n, vertex.start, scene.lightSlot(hit), light_point));
 }
 #endif
+
+#if FK_RESTIR
+func environmentMapped<S: IScene>(scene: S) -> bool {
+    return scene.environmentMapSize().x > 1u && scene.environmentMapSize().y > 1u;
+}
+
+// Solid angle density of sampleSky, piecewise constant over the luminance distribution of the environment map
+func environmentPdf<S: IScene>(scene: S, dir: float3) -> float {
+    let size: uint2 = scene.environmentCdfSize() - uint2(1u, 0u);
+    // Same coordinates as env_map_sample
+    let st: float2 = float2(atan2(- dir.z, - dir.x) / (2.0f * PI) + 0.5f, acos(clamp(dir.y, -1.0f, 1.0f)) / PI);
+    let cell: uint2 = min(uint2(st * float2(size)), size - 1u);
+    let p: float = scene.environmentCdf(cell).y * scene.environmentCdf(uint2(size.x, cell.y)).y;
+    return p * float(size.x * size.y) / (2.0f * PI * PI * length(dir.xz));
+}
+
+// First entry of a row or of the marginal column of the environment CDF exceeding u
+func searchCDF<S: IScene>(scene: S, start: uint2, step: uint2, count: uint, u: float) -> uint {
+    var low: uint = 0u;
+    var high: uint = count - 1u;
+    while (low < high) {
+        let middle: uint = (low + high) / 2u;
+        if (scene.environmentCdf(start + step * middle).x > u) {
+            high = middle;
+        } else {
+            low = middle + 1u;
+        }
+    }
+    return low;
+}
+
+// Radiance the path tracer's ray from a vertex along dir receives from the environment map if it hits nothing on the way.
+// Escapes passing transparent texels are left to BSDF sampling.
+func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, is_inside: bool, dir: float3) -> float3 {
+    let inside: bool = is_inside != wrongSide(is_inside, false, dir, surface.geometry_n);
+    let ray: Ray = Ray(origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, inside), dir);
+    return select(scene.env_map_sample(dir), float3(0.0f), scene.shadowTraverseInstanceBVH(ray, POW32, true));
+}
+
+// Next event estimation toward the environment map, drawing a direction by its luminance. lobe_state is the random state of skyBSDF.
+func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_inside: bool, init_random_state: uint, lobe_state: uint) -> SkySample {
+    let size: uint2 = scene.environmentCdfSize() - uint2(1u, 0u);
+    let random_0: Random = pcg(init_random_state);
+    let random_1: Random = pcg(random_0.state);
+    let random_2: Random = pcg(random_1.state);
+    let random_3: Random = pcg(random_2.state);
+    let row: uint = searchCDF(scene, uint2(size.x, 0u), uint2(0u, 1u), size.y, random_0.value);
+    let column: uint = searchCDF(scene, uint2(0u, row), uint2(1u, 0u), size.x, random_1.value);
+    let angles: float2 = (float2(float(column), float(row)) + float2(random_2.value, random_3.value)) / float2(size) * float2(2.0f * PI, PI);
+    let dir: float3 = float3(sin(angles.y) * cos(angles.x), cos(angles.y), sin(angles.y) * sin(angles.x));
+    let pdf: float = environmentPdf(scene, dir);
+    let f: float3 = skyBSDF(ray.unit_direction, dir, surface, eta, is_inside, pdf, lobe_state);
+    // Only trace toward directions that contribute
+    if (!(pdf > 0.0f) || all(f == float3(0.0f))) {
+        return SkySample(dir, float3(0.0f), float3(0.0f), random_3.state);
+    }
+    let radiance: float3 = skyRadiance(scene, ray.origin, surface, is_inside, dir);
+    return SkySample(dir, radiance, f * radiance, random_3.state);
+}
+
+// BSDF times cosine toward an environment sample over its density, each lobe weighted against the BSDF sampled escape by the
+// balance heuristic. Lobes sampling can't produce toward dir are left to rays sampled to the wrong side, sampled again or mirrored.
+func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
+    let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
+    return neeBSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y, refracted, pdf, false, random_state);
+}
+
+// MIS weight of a BSDF sampled escape from a vertex doing next event estimation, pdf is the density of the sampled lobe.
+// Delta lobes and rays sampled to the wrong side of the face (pdf zero) are never drawn by sampleSky.
+func escapeWeight<S: IScene>(scene: S, pdf: float, dir: float3) -> float {
+    if (pdf <= 0.0f || !environmentMapped(scene)) {
+        return 1.0f;
+    }
+    return pdf / (pdf + environmentPdf(scene, dir));
+}
+
+func environment<S: IScene>(scene: S, dir: float3) -> float3 {
+    if (scene.environmentMapSize().x > 1u && scene.environmentMapSize().y > 1u) {
+        return scene.env_map_sample(dir);
+    }
+    // If no environment map is present, use ambient color
+    return scene.ambient();
+}
+#endif
