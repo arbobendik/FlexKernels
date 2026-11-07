@@ -82,6 +82,24 @@ public float inverseSqrt(float x) {
 [ForceInline] public float select(float f, float t, bool cond) { return select(cond, t, f); }
 [ForceInline] public float3 select(float3 f, float3 t, bool cond) { return select(cond, t, f); }
 [ForceInline] public float3 select(float3 f, float3 t, bool3 cond) { return select(cond, t, f); }
+[ForceInline] public bool sheenUsed() {
+    __target_switch {
+    case glsl: __intrinsic_asm "(SHEEN)";
+    default: return true;
+    }
+}
+[ForceInline] public bool anisotropyUsed() {
+    __target_switch {
+    case glsl: __intrinsic_asm "(ANISOTROPY)";
+    default: return true;
+    }
+}
+[ForceInline] public bool translucencyUsed() {
+    __target_switch {
+    case glsl: __intrinsic_asm "(TRANSLUCENT)";
+    default: return true;
+    }
+}
 public float unshared(float x) {
     __target_switch {
     case wgsl: __intrinsic_asm "$0";
@@ -434,7 +452,7 @@ __extern_cpp public struct AnisotropicFrame {
     var sheen_component: float = 0.0f;
     var sheen: float3 = float3(0.0f);
     var view: float3 = float3(0.0f);
-    if (rgb_to_greyscale(material.sheen) > 0.0f) {
+    if (sheenUsed() && rgb_to_greyscale(material.sheen) > 0.0f) {
         let x: float = clamp(sqrt(max(dot(n_i, v), 0.0f)), 0.0f, 1.0f) * float(SHEEN_NODES - 1u);
         let i: uint = min(uint(x), SHEEN_NODES - 2u);
         let least: float = sqrt(SHEEN_LEAST);
@@ -483,7 +501,7 @@ __extern_cpp public struct AnisotropicFrame {
 // translucent_share = greyscale(translucent) / (greyscale(albedo) + greyscale(translucent))
 [CudaDeviceExport] public func translucentShare(material: Material) -> float {
     let translucent: float = rgb_to_greyscale(material.translucent);
-    return select(0.0f, translucent / (rgb_to_greyscale(material.albedo) + translucent), translucent > 0.0f);
+    return select(0.0f, translucent / (rgb_to_greyscale(material.albedo) + translucent), translucencyUsed() && translucent > 0.0f);
 }
 
 // Tangent projected onto the normal plane, rotated by 2 * PI * anisotropic_rotation
@@ -491,7 +509,7 @@ __extern_cpp public struct AnisotropicFrame {
 // alpha_t = alpha / aspect, alpha_b = alpha * aspect, swapped for anisotropy < 0
 [CudaDeviceExport] public func anisotropicFrame(material: Material, n_i: float3) -> AnisotropicFrame {
     let alpha: float = material.roughness * material.roughness;
-    if (material.anisotropy == 0.0f || !(alpha > 0.0f)) {
+    if (!anisotropyUsed() || material.anisotropy == 0.0f || !(alpha > 0.0f)) {
         return AnisotropicFrame(float3(0.0f), float2(0.0f));
     }
     // Any perpendicular where the tangent lies along the normal
@@ -785,7 +803,7 @@ __extern_cpp public struct AnisotropicFrame {
     for (var i: uint = 0u; i < 4u; i++) {
         let lobe: uint = i == 3u ? LOBE_SHEEN_VELVET : i;
         // Translucent diffuse lobe: through the shading normal on the refracted side
-        if (lobe == LOBE_DIFFUSE && rgb_to_greyscale(material.translucent) > 0.0f
+        if (lobe == LOBE_DIFFUSE && translucencyUsed() && rgb_to_greyscale(material.translucent) > 0.0f
             ? (dot(n, dir) * dot(n, negate(in_dir)) < 0.0f) == refracted : (lobe == LOBE_REFRACT) == refracted) {
             let l: SampleBSDF = connectBSDF(in_dir, dir, n, material, eta_i, eta_o, lobe, random_state);
             if (l.pdf > 0.0f) {
