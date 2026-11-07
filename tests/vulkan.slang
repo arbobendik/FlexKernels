@@ -52,7 +52,9 @@ float walkOver(Domain dom, Reservoir r) {
     TestScene scene;
     Selection sel = {};
     const Shift shifted = walk(scene, dom, r, (r.path & 1u) != 0u, r.c, sel);
-    return shifted.f.x * shifted.jac + sel.w_sum;
+    const int2 p = int2(int(r.seed % 64u), int(r.seed / 64u % 48u));
+    const int2 q = temporalNeighbor(scene, p, dom) + partner(scene, p, r.path % 3u);
+    return shifted.f.x * shifted.jac + sel.w_sum + shift(scene, dom, r).jac * float(sameDomain(dom, dom)) + float(q.x * q.y);
 }
 #endif
 

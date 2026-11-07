@@ -1166,3 +1166,60 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     return fail;
 }
 #endif
+
+#ifdef FK_RESTIR
+// Target plumbing: WGSL's select of int2s, in its argument order f, t, cond, by a condition or per component
+[ForceInline] int2 select(int2 f, int2 t, bool cond) { return select(cond, t, f); }
+[ForceInline] int2 select(int2 f, int2 t, bool2 cond) { return select(cond, t, f); }
+
+func project<S: IScene>(scene: S, view: float3x3, camera: float3, position: float3) -> float2 {
+    let clip_space: float3 = mul(position - camera, view);
+    let screen_space: float2 = (clip_space.xy / clip_space.z) * 0.5f + 0.5f;
+    return float2(screen_space.x, 1.0f - screen_space.y) * float2(scene.renderSize());
+}
+
+func previousValid<S: IScene>(scene: S, q: int2) -> bool {
+    return all(q >= int2(0)) && all(q < int2(scene.renderSize())) && asfloat(scene.reservoirPrevious(q, 0u).w) > 0.0f;
+}
+
+// Backprojection of the camera motion, or the dual motion vector of the surface previously seen there (Sec. 6.4)
+public func temporalNeighbor<S: IScene>(scene: S, p: int2, dom: Domain) -> int2 {
+    // Primary hits are rasterized at pixel centers
+    let q: int2 = int2(floor(project(scene, scene.prevViewMatrix(), scene.prevCameraPosition(), dom.x1)));
+    if (!previousValid(scene, q)) {
+        return int2(-1);
+    }
+    let previous: Domain = scene.previousDomain(q);
+    if (previous.hit.instance_index == dom.hit.instance_index && distance(previous.x1, dom.x1) <= dom.hit.distance * 8.0f / float(scene.renderSize().x)) {
+        return q;
+    }
+    let dual: int2 = int2(floor(float2(p + q) + 1.0f - project(scene, scene.viewMatrix(), scene.cameraPosition(), previous.x1)));
+    return select(int2(-1), dual, previousValid(scene, dual));
+}
+
+// Partner of p in reuse texture t, randomly flipped, transposed and offset every frame (Sec. 3.2)
+public func partner<S: IScene>(scene: S, p: int2, t: uint) -> int2 {
+    var sizes: int[3] = { 254, 230, 210 };
+    let size: int = sizes[t];
+    let random: uint = hash(scene.frame() * 3u + t);
+    let flip: int2 = select(int2(1), int2(-1), bool2((random & 1u) != 0u, (random & 2u) != 0u));
+    let transpose: bool = (random & 4u) != 0u;
+    let offset: int2 = int2(int((random >> 8u) & 255u), int((random >> 16u) & 255u));
+    let texel: int2 = ((select(p, p.yx, transpose) * flip + offset) % size + size) % size;
+    let delta: int2 = scene.pairing(texel, t).xy * flip;
+    return p + select(delta, delta.yx, transpose);
+}
+
+public func shift<S: IScene>(scene: S, dom: Domain, r: Reservoir) -> Shift {
+    var sel: Selection = {};
+    if (r.w <= 0.0f) {
+        return Shift(float3(0.0f), 0.0f);
+    }
+    return walk(scene, dom, r, true, 0.0f, sel);
+}
+
+// Shifting into an identical domain is the identity
+public func sameDomain(a: Domain, b: Domain) -> bool {
+    return all(a.x0 == b.x0) && a.hit.instance_index == b.hit.instance_index && a.hit.triangle_index == b.hit.triangle_index && all(a.hit.uv == b.hit.uv);
+}
+#endif
