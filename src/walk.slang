@@ -1,8 +1,45 @@
 implementing pathtracer;
 
+#if FK_RESTIR
+// ReSTIR PT Enhanced (Lin, Kettunen and Wyman 2026)
+
+// How a path ends: next event estimation, emissive surface, point light sphere, environment or environment by next event estimation
+public static const uint END_NEE = 0u;
+public static const uint END_EMIT = 1u;
+public static const uint END_POINT = 2u;
+public static const uint END_ENV = 3u;
+public static const uint END_SKY = 4u;
+
+// Reconnection vertex: none (pure random replay), triangle hit, NEE light vertex or environment direction
+public static const uint RC_NONE = 0u;
+public static const uint RC_SURFACE = 1u;
+public static const uint RC_LIGHT = 2u;
+public static const uint RC_ENV = 3u;
+#endif
+
 // Bit offsets of the packed path description
 public static const uint PATH_END = 0u;
+#if FK_RESTIR
+public static const uint PATH_K = 5u;
+public static const uint PATH_RC = 10u;
+#endif
 public static const uint PATH_TYPE = 12u;
+#if FK_RESTIR
+public static const uint PATH_LOBE_PREV = 15u;
+public static const uint PATH_LOBE = 18u;
+public static const uint PATH_NEE = 21u;
+public static const uint PATH_INSIDE = 22u;
+
+// Random streams besides the per vertex ones
+public static const uint STREAM_NEE = 64u;
+public static const uint STREAM_RR = 128u;
+public static const uint STREAM_SELECT = 193u;
+public static const uint STREAM_SKY = 256u;
+
+// Stream compaction of the temporal and paired spatial shifts (Sec. 6.2.2), sorted into bins of equal reconnection type and replay depth
+public static const uint SHIFT_DEPTHS = 8u;
+public static const uint SHIFT_BINS = 40u;
+#endif
 
 // Single-vertex roughness threshold (Sec. 4.2)
 static const float RESTIR_ROUGHNESS = 0.2;
@@ -53,6 +90,36 @@ __extern_cpp public struct LightBounds {
     __extern_cpp public float phi;
     __extern_cpp public float cos_theta_o;
 };
+
+#if FK_RESTIR
+__target_intrinsic(wgsl, "Hit")
+__target_intrinsic(cuda, "FKHit")
+__extern_cpp public struct Hit {
+    __extern_cpp public float2 uv;
+    __extern_cpp public uint instance_index;
+    __extern_cpp public uint triangle_index;
+    __extern_cpp public uint is_point_light;
+    __extern_cpp public float distance;
+}
+
+__extern_cpp public struct Domain {
+    __extern_cpp public float3 x0;
+    __extern_cpp public float3 x1;
+    __extern_cpp public Hit hit;
+}
+
+// Sampling record of the previous path vertex for the reconnection criteria (Sec. 4)
+__extern_cpp public struct Vertex {
+    __extern_cpp public bool rough;
+    __extern_cpp public uint lobe;
+    __extern_cpp public float pdf;
+    __extern_cpp public float cos;
+    __extern_cpp public bool inside;
+}
+#endif
+
+#ifdef FK_RESTIR
+#endif
 
 [CudaDeviceExport] public func safeDivide(a: float3, b: float3) -> float3 {
     return select(a / b, float3(0.0f), b == float3(0.0f));
