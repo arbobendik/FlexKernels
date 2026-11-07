@@ -115,7 +115,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[33] = hemisphere.state;
     parity_put(&r, 34u, hemisphere.value);
     // The normal map of the triangle of the case's directions, with UVs of positive area
-    r[37] = bitcast<u32>(G1(alpha, abs(dot(n, in_dir))));
+    r[37] = bitcast<u32>(smithG1(alpha, abs(dot(n, in_dir))));
     let uv = albedo.xy;
     parity_put(&r, 38u, tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec3<f32>(v[9], v[10], v[11]), uv,
         vec2<f32>(uv.x + 0.5, uv.y + 0.1 * albedo.z), vec2<f32>(uv.x + 0.2 * albedo.x, uv.y + 0.6), n)));
