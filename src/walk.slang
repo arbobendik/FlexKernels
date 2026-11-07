@@ -1340,3 +1340,117 @@ public func spatialBins<S: IScene>(scene: S, p: int2) -> uint[3] {
     return bins;
 }
 #endif
+
+#ifdef FK_RESTIR
+groupshared Atomic<uint> bin_jobs[SHIFT_BINS];
+groupshared uint bin_offsets[SHIFT_BINS];
+
+// Target plumbing: workgroup memory starts at zero in WGSL alone, Vulkan's is zeroed first, by the bins' invocations
+[ForceInline] void zeroBins(uint local_invocation_index) {
+    __target_switch {
+    case spirv:
+        if (local_invocation_index < SHIFT_BINS) {
+            bin_jobs[local_invocation_index].store(0u);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    default:
+        return;
+    }
+}
+
+// Count the jobs of the workgroup per bin
+public func countShifts<S: IScene>(scene: S, bins: uint[3], local_invocation_index: uint) {
+    __target_switch {
+    case cuda:
+        // Target plumbing: flex-cuda-pt's raygens share no memory, each invocation counts its own jobs
+        for (var t: uint = 0u; t < 3u; t++) {
+            if (bins[t] < SHIFT_BINS) {
+                scene.queueCountAdd(bins[t], 1u);
+            }
+        }
+    default:
+        zeroBins(local_invocation_index);
+        for (var t: uint = 0u; t < 3u; t++) {
+            if (bins[t] < SHIFT_BINS) {
+                bin_jobs[bins[t]].add(1u);
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if (local_invocation_index < SHIFT_BINS) {
+            let jobs: uint = bin_jobs[local_invocation_index].load();
+            if (jobs > 0u) {
+                scene.queueCountAdd(local_invocation_index, jobs);
+            }
+        }
+    }
+}
+
+// Write the jobs of the workgroup bin by bin into the queue and the size of the indirect dispatch running them
+public func queueShifts<S: IScene>(scene: S, p: int2, bins: uint[3], global_invocation_id: uint3, local_invocation_index: uint) {
+    __target_switch {
+    case cuda:
+        // Target plumbing: flex-cuda-pt's raygens share no memory, each invocation places its own jobs after the bins before theirs
+        for (var t: uint = 0u; t < 3u; t++) {
+            if (bins[t] < SHIFT_BINS) {
+                var start: uint = 0u;
+                for (var bin: uint = 0u; bin < bins[t]; bin++) {
+                    start += scene.queueCountLoad(bin);
+                }
+                scene.queueJobStore(start + scene.queueCursorAdd(bins[t], 1u), uint(p.x) | (uint(p.y) << 14u) | (t << 28u));
+            }
+        }
+    default:
+        zeroBins(local_invocation_index);
+        var slots: uint[3] = {};
+        for (var t: uint = 0u; t < 3u; t++) {
+            if (bins[t] < SHIFT_BINS) {
+                slots[t] = bin_jobs[bins[t]].add(1u);
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if (local_invocation_index < SHIFT_BINS) {
+            let jobs: uint = bin_jobs[local_invocation_index].load();
+            if (jobs > 0u) {
+                var start: uint = 0u;
+                for (var bin: uint = 0u; bin < local_invocation_index; bin++) {
+                    start += scene.queueCountLoad(bin);
+                }
+                bin_offsets[local_invocation_index] = start + scene.queueCursorAdd(local_invocation_index, jobs);
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+        for (var t: uint = 0u; t < 3u; t++) {
+            if (bins[t] < SHIFT_BINS) {
+                scene.queueJobStore(bin_offsets[bins[t]] + slots[t], uint(p.x) | (uint(p.y) << 14u) | (t << 28u));
+            }
+        }
+    }
+    if (all(global_invocation_id.xy == uint2(0u))) {
+        var groups: uint = 0u;
+        for (var bin: uint = 0u; bin < SHIFT_BINS; bin++) {
+            groups += (scene.queueCountLoad(bin) + 63u) / 64u;
+        }
+        scene.queueDispatchStore(min(groups, 65535u), (groups + 65534u) / 65535u, 1u);
+    }
+}
+
+// Queued job of an invocation of the indirect shift passes, UINT_MAX for none. Every workgroup works on a single bin.
+public func queuedShift<S: IScene>(scene: S, workgroup_id: uint3, local_invocation_index: uint) -> uint {
+    var group: uint = workgroup_id.y * 65535u + workgroup_id.x;
+    var start: uint = 0u;
+    for (var bin: uint = 0u; bin < SHIFT_BINS; bin++) {
+        let jobs: uint = scene.queuedShifts(3u + bin);
+        let groups: uint = (jobs + 63u) / 64u;
+        if (group < groups) {
+            let index: uint = group * 64u + local_invocation_index;
+            if (index < jobs) {
+                return scene.queuedShifts(3u + 2u * SHIFT_BINS + start + index);
+            }
+            return UINT_MAX;
+        }
+        group -= groups;
+        start += jobs;
+    }
+    return UINT_MAX;
+}
+#endif
