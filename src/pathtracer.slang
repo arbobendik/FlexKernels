@@ -861,6 +861,15 @@ __extern_cpp public struct SheenProfile {
     return exp(distance * log(absorption_coefficient));
 }
 
+[CudaDeviceExport] public func vertexEta(material: Material, n_dot_v: float) -> float2 {
+    let is_entering: bool = n_dot_v < 0.0f;
+    // Incident side is air, outgoing side is material (entering)
+    let eta_i: float = select(1.0f, material.ior, is_entering);
+    // Incident side is material, outgoing side is air (exiting)
+    let eta_o: float = select(material.ior, 1.0f, is_entering);
+    return float2(eta_i, eta_o);
+}
+
 // Decide between next event estimation and emission on the next hit, as the path tracer does
 [CudaDeviceExport] public func neeDecision(material: Material, n_dot_v: float, eta_i: float, eta_o: float) -> bool {
     // Calculate fresnel term
