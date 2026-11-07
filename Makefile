@@ -13,10 +13,17 @@ FLEXLIGHT ?= ../FlexLight
 WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
 all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h \
-	build/wgsl/pathtracer.wgsl build/glsl/pathtracer.glsl build/cuda/pathtracer.slang-module
+	build/wgsl/pathtracer.wgsl build/glsl/pathtracer.glsl build/cuda/pathtracer.slang-module \
+	build/cuda-restir/pathtracer.cuh build/cuda-restir/slang-cuda-prelude.h build/wgsl-restir/pathtracer.wgsl \
+	build/cuda-restir/pathtracer.slang-module
 
-build/cuda/pathtracer.cuh: $(SOURCE) $(SLANGC)
-	mkdir -p build/cuda
+# ReSTIR variants
+build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR=1
+build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1
+
+# Prelude included by name, Matrix renamed SlangMatrix
+build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
+	mkdir -p $(@D)
 	$(SLANGC) $(SLANGFLAGS) $< -target cuda -o $@
 	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#define Matrix SlangMatrix\n#include "slang-cuda-prelude.h"|' $@
 	sed -i 's|^__device__ BSDFLobes bsdfLobes(|__device__ __forceinline__ BSDFLobes bsdfLobes(|' $@
@@ -24,12 +31,12 @@ build/cuda/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	sed -i -E 's/^__device__ (float3  lobeThroughput|float lobeDensity|float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF|float3  sampleMaterialHalfVector)\(/__device__ __forceinline__ \1(/' $@
 	echo '#undef Matrix' >> $@
 
-build/cuda/slang-cuda-prelude.h: $(SLANGC)
-	mkdir -p build/cuda
+build/cuda/slang-cuda-prelude.h build/cuda-restir/slang-cuda-prelude.h: $(SLANGC)
+	mkdir -p $(@D)
 	cp $(SLANG_PATH)/include/slang-cuda-prelude.h $@
 
-build/wgsl/pathtracer.wgsl: $(SOURCE) $(SLANGC)
-	mkdir -p build/wgsl
+build/wgsl/pathtracer.wgsl build/wgsl-restir/pathtracer.wgsl: $(SOURCE) $(SLANGC)
+	mkdir -p $(@D)
 	$(SLANGC) $(SLANGFLAGS) $< -target wgsl -o $@
 
 # GLSL ES 3.00 without the version and layout lines and the entry point
@@ -38,9 +45,9 @@ build/glsl/pathtracer.glsl: src/glsl.slang $(SOURCE) $(SLANGC)
 	$(SLANGC) $(SLANGFLAGS) $< -entry main -stage fragment -target glsl -o $@
 	sed -i -e '/^#version/d' -e '/^layout(row_major)/d' -e '/^layout(location = 0)$$/,/^}$$/d' $@
 
-build/cuda/pathtracer.slang-module: $(SOURCE) $(SLANGC)
-	mkdir -p build/cuda
-	$(SLANGC) $< -o $@
+build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module: $(SOURCE) $(SLANGC)
+	mkdir -p $(@D)
+	$(SLANGC) $< $(MODULEFLAGS) -o $@
 
 build/cpp/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp
@@ -86,8 +93,11 @@ test-cuda: build/parity-cuda
 	node tests/compare.mjs tests/golden-cuda.txt build/cuda.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cuda.txt 58
 
-test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module
+test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module  # Compile and validate only
 	$(SLANGC) -Ibuild/cuda $< -target spirv -o build/vulkan.spv
+	spirv-val --target-env vulkan1.3 build/vulkan.spv
+	$(SLANGC) -Ibuild/cuda-restir -DFK_RESTIR=1 $< -target spirv -o build/vulkan-restir.spv
+	spirv-val --target-env vulkan1.3 build/vulkan-restir.spv
 
 golden-wgsl: tests/wgsl.mjs tests/golden-cuda.txt $(WGSL_REFERENCE)
 	node tests/wgsl.mjs $(WGSL_REFERENCE) --flexlight < tests/golden-cuda.txt > tests/golden-wgsl.txt
