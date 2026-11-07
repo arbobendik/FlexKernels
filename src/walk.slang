@@ -324,3 +324,91 @@ __extern_cpp public struct LightBounds {
     let phi: float = 2.0f * PI * u2;
     return tangentToWorld(float3(sin_theta * cos(phi), 1.0f - one_minus_cos, sin_theta * sin(phi)), normalize(center - p));
 }
+
+#if FK_RESTIR
+public static const float POW32 = 4294967296.0;
+
+__target_intrinsic(wgsl, "Ray")
+__target_intrinsic(cuda, "FKRay")
+__extern_cpp public struct Ray {
+    __extern_cpp public float3 origin;
+    __extern_cpp public float3 unit_direction;
+}
+
+// Ray sphere intersection test.
+func raySphere(center: float3, radius: float, ray: Ray, max_len: float) -> float {
+    let L: float3 = center - ray.origin;
+    let tca: float = dot(L, ray.unit_direction);
+
+    let d2: float = dot(L, L) - tca * tca;
+    if (d2 > radius * radius) {
+        return POW32;
+    }
+
+    let thc: float = sqrt(radius * radius - d2);
+    let t0: float = tca - thc;
+    let t1: float = tca + thc;
+
+    if (t0 > BIAS && t0 < max_len) {
+        return t0;
+    }
+
+    if (t1 > BIAS && t1 < max_len) {
+        return t1;
+    }
+
+    return POW32;
+}
+
+__extern_cpp public struct TreeSample {
+    // Direction to the light point, radiance / PDF and PDF, 0 for point lights of no radius
+    __extern_cpp public float3 dir;
+    __extern_cpp public float3 radiance;
+    __extern_cpp public float density;
+    __extern_cpp public uint random_state;
+}
+
+// Whether the material is a thin surface transmitting diffusely
+func isTranslucent(material: Material) -> bool {
+    return rgb_to_greyscale(material.translucent) > 0.0f;
+}
+
+// Light sampling at the vertex the ray left, for MIS of the emission the ray meets
+__extern_cpp public struct NEEVertex {
+    __extern_cpp public bool none;
+    __extern_cpp public float pdf;
+    __extern_cpp public float3 origin;
+    __extern_cpp public float3 smooth_n;
+    __extern_cpp public float3 start;
+}
+
+__target_intrinsic(wgsl, "Surface")
+__target_intrinsic(cuda, "FKSurface")
+__extern_cpp public struct Surface {
+    __extern_cpp public float3 smooth_n;
+    __extern_cpp public float3 geometry_n;
+    __extern_cpp public float geometry_offset;
+    __extern_cpp public Material material;
+    __extern_cpp public bool skip;
+    __extern_cpp public uint random_state;
+}
+
+// Opaque surfaces face the ray with both normals
+func facingRay(surface: Surface, dir: float3) -> Surface {
+    let facing: float = facingSign(surface.material.transmission, surface.geometry_n, dir);
+    return Surface(surface.smooth_n * facing, surface.geometry_n * facing, surface.geometry_offset, surface.material, surface.skip, surface.random_state);
+}
+
+__extern_cpp public struct SkySample {
+    __extern_cpp public float3 dir;
+    __extern_cpp public float3 radiance;
+    // Radiance times the weighted BSDF of skyBSDF
+    __extern_cpp public float3 color;
+    __extern_cpp public uint random_state;
+}
+
+// Whether the path tracer considers dir to point towards the incorrect side of the surface
+func wrongSide(is_inside: bool, refracted: bool, dir: float3, geometry_n: float3) -> bool {
+    return (is_inside == refracted) != (dot(dir, geometry_n) > 0.0f);
+}
+#endif
