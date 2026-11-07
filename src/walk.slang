@@ -1746,3 +1746,44 @@ public func restir_duplicates<S: IScene>(scene: S, global_invocation_id: uint3, 
     }
 }
 #endif
+
+#ifdef FK_RESTIR
+// The passes over the consumer's scene of the ReSTIR variant outputs, which its compute entry points and raygens call
+// with their builtins, and the walk and shift for its own loops
+[CudaDeviceExport] public func walk_hook(dom: Domain, r: Reservoir, replay: bool, scale: float, inout sel: Selection) -> Shift {
+    HookScene scene;
+    return walk(scene, dom, r, replay, scale, sel);
+}
+[CudaDeviceExport] public func shift_hook(dom: Domain, r: Reservoir) -> Shift { HookScene scene; return shift(scene, dom, r); }
+[CudaDeviceExport] public func restir_initial_hook(global_invocation_id: uint3) { HookScene scene; restir_initial(scene, global_invocation_id); }
+[CudaDeviceExport] public func restir_temporal_hook(global_invocation_id: uint3) { HookScene scene; restir_temporal(scene, global_invocation_id); }
+[CudaDeviceExport] public func restir_temporal_count_hook(global_invocation_id: uint3, local_invocation_index: uint) {
+    HookScene scene;
+    restir_temporal_count(scene, global_invocation_id, local_invocation_index);
+}
+[CudaDeviceExport] public func restir_temporal_prepass_hook(global_invocation_id: uint3, local_invocation_index: uint) {
+    HookScene scene;
+    restir_temporal_prepass(scene, global_invocation_id, local_invocation_index);
+}
+[CudaDeviceExport] public func restir_temporal_shift_hook(workgroup_id: uint3, local_invocation_index: uint) {
+    HookScene scene;
+    restir_temporal_shift(scene, workgroup_id, local_invocation_index);
+}
+[CudaDeviceExport] public func restir_count_hook(global_invocation_id: uint3, local_invocation_index: uint) {
+    HookScene scene;
+    restir_count(scene, global_invocation_id, local_invocation_index);
+}
+[CudaDeviceExport] public func restir_prepass_hook(global_invocation_id: uint3, local_invocation_index: uint) {
+    HookScene scene;
+    restir_prepass(scene, global_invocation_id, local_invocation_index);
+}
+[CudaDeviceExport] public func restir_shift_hook(workgroup_id: uint3, local_invocation_index: uint) {
+    HookScene scene;
+    restir_shift(scene, workgroup_id, local_invocation_index);
+}
+[CudaDeviceExport] public func restir_spatial_hook(global_invocation_id: uint3) { HookScene scene; restir_spatial(scene, global_invocation_id); }
+[CudaDeviceExport] public func restir_duplicates_hook(global_invocation_id: uint3, local_invocation_id: uint3, local_invocation_index: uint) {
+    HookScene scene;
+    restir_duplicates(scene, global_invocation_id, local_invocation_id, local_invocation_index);
+}
+#endif
