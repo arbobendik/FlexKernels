@@ -13,7 +13,7 @@ FLEXLIGHT ?= ../FlexLight
 WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
 all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h \
-	build/wgsl/pathtracer.wgsl build/cuda/pathtracer.slang-module
+	build/wgsl/pathtracer.wgsl build/glsl/pathtracer.glsl build/cuda/pathtracer.slang-module
 
 build/cuda/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	mkdir -p build/cuda
@@ -35,6 +35,12 @@ build/cuda/slang-cuda-prelude.h: $(SLANGC)
 build/wgsl/pathtracer.wgsl: $(SOURCE) $(SLANGC)
 	mkdir -p build/wgsl
 	$(SLANGC) $(SLANGFLAGS) $< -target wgsl -o $@
+
+# GLSL ES 3.00 without the version and layout lines and the entry point
+build/glsl/pathtracer.glsl: src/glsl.slang $(SOURCE) $(SLANGC)
+	mkdir -p build/glsl
+	$(SLANGC) $(SLANGFLAGS) $< -entry main -stage fragment -target glsl -o $@
+	sed -i -e '/^#version/d' -e '/^layout(row_major)/d' -e '/^layout(location = 0)$$/,/^}$$/d' $@
 
 build/cuda/pathtracer.slang-module: $(SOURCE) $(SLANGC)
 	mkdir -p build/cuda
@@ -91,10 +97,12 @@ golden-wgsl: tests/wgsl.mjs tests/golden-cuda.txt $(WGSL_REFERENCE)
 	node tests/wgsl.mjs $(WGSL_REFERENCE) --flexlight < tests/golden-cuda.txt > tests/golden-wgsl.txt
 
 deploy-local: all
-	mkdir -p $(FLEX_CUDA_PT)/src/shaders/flexkernels $(FLEXLIGHT)/src/flexlight/webgpu/shaders/flexkernels
+	mkdir -p $(FLEX_CUDA_PT)/src/shaders/flexkernels $(FLEXLIGHT)/src/flexlight/webgpu/shaders/flexkernels \
+		$(FLEXLIGHT)/src/flexlight/webgl2/shaders/flexkernels
 	cp build/cuda/* $(FLEX_CUDA_PT)/src/shaders/flexkernels
 	cp build/wgsl/* $(FLEXLIGHT)/src/flexlight/webgpu/shaders/flexkernels
-	git rev-parse HEAD | tee $(FLEX_CUDA_PT)/src/shaders/flexkernels/VERSION \
+	cp build/glsl/* $(FLEXLIGHT)/src/flexlight/webgl2/shaders/flexkernels
+	git rev-parse HEAD | tee $(FLEX_CUDA_PT)/src/shaders/flexkernels/VERSION $(FLEXLIGHT)/src/flexlight/webgl2/shaders/flexkernels/VERSION \
 		> $(FLEXLIGHT)/src/flexlight/webgpu/shaders/flexkernels/VERSION
 
 clean:
