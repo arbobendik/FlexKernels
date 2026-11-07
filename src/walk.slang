@@ -489,3 +489,70 @@ public interface IScene {
     public uint maxBounces();
 }
 #endif
+
+#if FK_RESTIR
+// Target plumbing: the scene of the ReSTIR variant outputs, each method FlexLight's own function or the read of its
+// buffer it stands for in its shader, and flex-cuda-pt's function of the name its adapter defines, in place of a call
+public struct HookScene : IScene {
+    __target_intrinsic(wgsl, "traverseInstanceBVH($0, $1, $2)")
+    __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2)")
+    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
+    __target_intrinsic(wgsl, "shadowTraverseInstanceBVH($0, $1, $2)")
+    __target_intrinsic(cuda, "fcptShadowTraverseInstanceBVH($0, $1, $2)")
+    public bool shadowTraverseInstanceBVH(Ray ray, float l, bool two_sided);
+    __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
+    __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
+    public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
+    __target_intrinsic(wgsl, "hitPosition($0)")
+    __target_intrinsic(cuda, "fcptHitPosition($0)")
+    public float3 hitPosition(Hit hit);
+    __target_intrinsic(wgsl, "worldTriangle($0, $1)")
+    __target_intrinsic(cuda, "fcptWorldTriangle($0, $1)")
+    public float3x3 worldTriangle(uint instance_index, uint triangle_index);
+    __target_intrinsic(wgsl, "lightBounds($0)")
+    __target_intrinsic(cuda, "fcptLightBounds($0)")
+    public LightBounds lightBounds(uint n);
+    __target_intrinsic(wgsl, "access_light_tree(4u + 4u * $0)")
+    __target_intrinsic(cuda, "fcptLightNode($0)")
+    public uint4 lightNode(uint n);
+    __target_intrinsic(wgsl, "access_light_tree(3u + 4u * $0).w")
+    __target_intrinsic(cuda, "fcptLightSecond($0)")
+    public uint lightSecond(uint n);
+    __target_intrinsic(wgsl, "lightSlot($0)")
+    __target_intrinsic(cuda, "fcptLightSlot($0)")
+    public uint lightSlot(Hit hit);
+    __target_intrinsic(wgsl, "access_light_tree(access_light_tree(0u).y + $0).xy")
+    __target_intrinsic(cuda, "fcptLightTrail($0)")
+    public uint2 lightTrail(uint j);
+    __target_intrinsic(wgsl, "(access_light_tree(access_light_tree(0u).y + $1).z == $0)")
+    __target_intrinsic(cuda, "fcptSlotLeaf($0, $1)")
+    public bool slotLeaf(uint n, uint j);
+    __target_intrinsic(wgsl, "lights[$0]")
+    __target_intrinsic(cuda, "fcptLight($0)")
+    public Light light(uint index);
+    __target_intrinsic(wgsl, "(instance_uint[$0 * INSTANCE_UINT_SIZE] / TRIANGLE_SIZE)")
+    __target_intrinsic(cuda, "fcptTriangleOffset($0)")
+    public uint triangleOffset(uint instance_index);
+    __target_intrinsic(wgsl, "calculatePointLightContrib($0)")
+    __target_intrinsic(cuda, "fcptCalculatePointLightContrib($0)")
+    public float3 calculatePointLightContrib(uint index);
+    __target_intrinsic(wgsl, "env_map_sample($0)")
+    __target_intrinsic(cuda, "fcptEnvMapSample($0)")
+    public float3 env_map_sample(float3 dir);
+    __target_intrinsic(wgsl, "textureLoad(environment_cdf, $0, 0)")
+    __target_intrinsic(cuda, "fcptEnvironmentCdf($0)")
+    public float4 environmentCdf(uint2 cell);
+    __target_intrinsic(wgsl, "textureDimensions(environment_cdf)")
+    __target_intrinsic(cuda, "fcptEnvironmentCdfSize()")
+    public uint2 environmentCdfSize();
+    __target_intrinsic(wgsl, "uniforms_uint.environment_map_size")
+    __target_intrinsic(cuda, "fcptEnvironmentMapSize()")
+    public uint2 environmentMapSize();
+    __target_intrinsic(wgsl, "uniforms_float.ambient")
+    __target_intrinsic(cuda, "fcptAmbient()")
+    public float3 ambient();
+    __target_intrinsic(wgsl, "uniforms_uint.max_bounces")
+    __target_intrinsic(cuda, "fcptMaxBounces()")
+    public uint maxBounces();
+}
+#endif
