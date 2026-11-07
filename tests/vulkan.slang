@@ -2,6 +2,47 @@ import pathtracer;
 
 RWStructuredBuffer<Reservoir> reservoirs;
 
+#ifdef FK_RESTIR
+struct TestScene : IScene {
+    Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len) {
+        return Hit(ray.origin.xy, ray.unit_direction.x > 0.0f ? 0u : UINT_MAX, uint(consider_point_lights), 0u, max_len * 0.5f);
+    }
+    bool shadowTraverseInstanceBVH(Ray ray, float l, bool two_sided) { return two_sided && l > ray.origin.x; }
+    Surface surfaceAt(Hit hit, float3 origin, uint init_random_state) {
+        return Surface(normalize(origin), float3(0.0f, 0.0f, 1.0f), 1e-4f, Material(origin, float3(hit.uv, 0.0f), 0.5f,
+            0.0f, hit.distance, 1.5f, origin), hit.is_point_light != 0u, init_random_state + 1u);
+    }
+    float3 hitPosition(Hit hit) { return float3(hit.uv, hit.distance); }
+    float3x3 worldTriangle(uint instance_index, uint triangle_index) {
+        return float3x3(float3(float(instance_index)), float3(1.0f, 0.0f, 0.0f), float3(0.0f, float(triangle_index), 1.0f));
+    }
+    LightBounds lightBounds(uint n) { return LightBounds(float3(-1.0f), float3(float(n)), float3(0.0f, 0.0f, 1.0f), 1.0f, 0.5f); }
+    uint4 lightNode(uint n) { return uint4(n == 0u ? 0u : n, n, 0u, 0u); }
+    uint lightSecond(uint n) { return 2u; }
+    uint lightSlot(Hit hit) { return hit.triangle_index; }
+    uint4 lightTrail(uint j) { return uint4(j, 0u, 1u + j % 2u, 0u); }
+    bool slotLeaf(uint n, uint j, uint4 trail_texel) { return n == trail_texel.z; }
+    Light light(uint index) { return Light(float3(float(index)), 0.0f, float3(1.0f), 1.0f, 0.1f); }
+    uint triangleOffset(uint instance_index) { return instance_index; }
+    float3 calculatePointLightContrib(uint index) { return float3(float(index)); }
+    float3 env_map_sample(float3 dir) { return abs(dir); }
+    float4 environmentCdf(uint2 cell) { return float4(float(cell.x + 1u) / 5.0f, 0.25f, 0.0f, 0.0f); }
+    uint2 environmentCdfSize() { return uint2(5u, 4u); }
+    uint2 environmentMapSize() { return uint2(4u, 4u); }
+    float3 ambient() { return float3(0.1f); }
+    uint maxBounces() { return 4u; }
+}
+#endif
+
+#ifdef FK_RESTIR
+float walkOver(Domain dom, Reservoir r) {
+    TestScene scene;
+    Selection sel = {};
+    const Shift shifted = walk(scene, dom, r, (r.path & 1u) != 0u, r.c, sel);
+    return shifted.f.x * shifted.jac + sel.w_sum;
+}
+#endif
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void main(uint3 id: SV_DispatchThreadID) {
@@ -29,6 +70,7 @@ void main(uint3 id: SV_DispatchThreadID) {
         * float(neeDecision(material, dot(n, r.dir), 1.0f, material.ior))
 #ifdef FK_RESTIR
         + v.pdf * v.cos * dom.hit.distance * float(v.rough != v.inside)
+        + walkOver(dom, r)
 #endif
         );
 }
