@@ -1524,3 +1524,56 @@ public func queuedShift<S: IScene>(scene: S, workgroup_id: uint3, local_invocati
     return UINT_MAX;
 }
 #endif
+
+#ifdef FK_RESTIR
+// Initial candidates
+public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
+    let p: int2 = int2(global_invocation_id.xy);
+    var dom: Domain = {};
+    if (!scene.currentDomain(p, dom)) {
+        scene.storeReservoirInitial(p, Reservoir(), dom.hit);
+        return;
+    }
+    let pixel_seed: uint = stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y);
+    var initial: Selection = {};
+    initial.random_state = stream(pixel_seed, STREAM_SELECT);
+    for (var i: uint = 0u; i < scene.samples(); i++) {
+        var r: Reservoir = {};
+        r.seed = stream(pixel_seed, i);
+        walk(scene, dom, r, false, 1.0f / float(scene.samples()), initial);
+    }
+    scene.storeReservoirInitial(p, finalize(initial, 1.0f), dom.hit);
+}
+
+// Temporal reuse with the shifts of the temporal round
+public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
+    let p: int2 = int2(global_invocation_id.xy);
+    var dom: Domain = {};
+    if (!scene.currentDomain(p, dom)) {
+        scene.storeReservoirTemporal(p, Reservoir(), dom.hit);
+        return;
+    }
+    var r: Reservoir = scene.loadReservoirInitial(p);
+    let q: int2 = temporalNeighbor(scene, p, dom);
+    if (q.x >= 0) {
+        let temporal: Reservoir = scene.loadReservoirPrevious(q);
+        // Optionally lower the confidence cap where the previous frame duplicated samples (Sec. 5), this biases the estimate
+        let duplicated: float = select(0.0f, asfloat(scene.duplication(q).x), scene.restirDecorrelation() == 1u);
+        let c_t: float = min(temporal.c, confidenceCap(duplicated));
+        let to_current: float4 = asfloat(scene.temporalShift(p, 0u));
+        var to_previous: float4 = float4(r.f, 1.0f);
+        if (!sameDomain(scene.previousDomain(q), dom)) {
+            to_previous = asfloat(scene.temporalShift(p, 1u));
+        }
+        let p_c: float = rgb_to_greyscale(r.f);
+        let p_t: float = rgb_to_greyscale(temporal.f);
+        var sel: Selection = {};
+        sel.random_state = stream(stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y), STREAM_SELECT + 1u);
+        let weights: float2 = temporalWeights(r.c, p_c, c_t, p_t, rgb_to_greyscale(to_previous.xyz), rgb_to_greyscale(to_current.xyz));
+        offerShifted(sel, r, Shift(r.f, 1.0f), weights.x);
+        offerShifted(sel, temporal, Shift(to_current.xyz, to_current.w), weights.y);
+        r = finalize(sel, r.c + c_t);
+    }
+    scene.storeReservoirTemporal(p, r, dom.hit);
+}
+#endif

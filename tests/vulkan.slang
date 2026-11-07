@@ -99,6 +99,8 @@ void queueRound(uint3 id, uint local, uint3 group) {
     countShifts(scene, bins, local);
     queueShifts(scene, int2(id.xy), bins, id, local);
     queue[3u + id.x] = queuedShift(scene, group, local);
+    restir_initial(scene, id);
+    restir_temporal(scene, id);
 }
 #endif
 
