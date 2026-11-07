@@ -454,6 +454,18 @@ public interface IScene {
     public int4 pairing(int2 texel, uint t);
     public uint4 reservoirPrevious(int2 q, uint layer);
     public Domain previousDomain(int2 q);
+    public uint restirNeighbours();
+    public Reservoir loadReservoirPrevious(int2 q);
+    public Reservoir loadReservoirInitial(int2 p);
+    public Reservoir loadReservoirTemporal(int2 p);
+    public bool storedDomainInitial(int2 p, out Domain dom);
+    public bool storedDomainTemporal(int2 p, out Domain dom);
+    public uint queueCountAdd(uint bin, uint jobs);
+    public uint queueCountLoad(uint bin);
+    public uint queueCursorAdd(uint bin, uint jobs);
+    public void queueJobStore(uint index, uint job);
+    public void queueDispatchStore(uint x, uint y, uint z);
+    public uint queuedShifts(uint index);
 }
 #endif
 
@@ -546,6 +558,42 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "previousDomain($0)")
     __target_intrinsic(cuda, "fcptPreviousDomain($0)")
     public Domain previousDomain(int2 q);
+    __target_intrinsic(wgsl, "uniforms_uint.restir_neighbours")
+    __target_intrinsic(cuda, "fcptRestirNeighbours()")
+    public uint restirNeighbours();
+    __target_intrinsic(wgsl, "loadReservoir(reservoir_prev, $0)")
+    __target_intrinsic(cuda, "fcptLoadReservoirPrevious($0)")
+    public Reservoir loadReservoirPrevious(int2 q);
+    __target_intrinsic(wgsl, "loadReservoir(reservoir_initial, $0)")
+    __target_intrinsic(cuda, "fcptLoadReservoirInitial($0)")
+    public Reservoir loadReservoirInitial(int2 p);
+    __target_intrinsic(wgsl, "loadReservoir(reservoir_temp, $0)")
+    __target_intrinsic(cuda, "fcptLoadReservoirTemporal($0)")
+    public Reservoir loadReservoirTemporal(int2 p);
+    __target_intrinsic(wgsl, "storedDomain(reservoir_initial, $0, &$1)")
+    __target_intrinsic(cuda, "fcptStoredDomainInitial($0, $1)")
+    public bool storedDomainInitial(int2 p, out Domain dom);
+    __target_intrinsic(wgsl, "storedDomain(reservoir_temp, $0, &$1)")
+    __target_intrinsic(cuda, "fcptStoredDomainInitial($0, $1)")
+    public bool storedDomainTemporal(int2 p, out Domain dom);
+    __target_intrinsic(wgsl, "atomicAdd(&shift_queue.counts[$0], $1)")
+    __target_intrinsic(cuda, "fcptQueueCountAdd($0, $1)")
+    public uint queueCountAdd(uint bin, uint jobs);
+    __target_intrinsic(wgsl, "atomicLoad(&shift_queue.counts[$0])")
+    __target_intrinsic(cuda, "fcptQueueCountLoad($0)")
+    public uint queueCountLoad(uint bin);
+    __target_intrinsic(wgsl, "atomicAdd(&shift_queue.cursors[$0], $1)")
+    __target_intrinsic(cuda, "fcptQueueCursorAdd($0, $1)")
+    public uint queueCursorAdd(uint bin, uint jobs);
+    __target_intrinsic(wgsl, "shift_queue.jobs[$0] = $1")
+    __target_intrinsic(cuda, "fcptQueueJobStore($0, $1)")
+    public void queueJobStore(uint index, uint job);
+    __target_intrinsic(wgsl, "shift_queue.dispatch = array<u32, 3>($0, $1, $2)")
+    __target_intrinsic(cuda, "fcptQueueDispatchStore($0, $1, $2)")
+    public void queueDispatchStore(uint x, uint y, uint z);
+    __target_intrinsic(wgsl, "queued_shifts[$0]")
+    __target_intrinsic(cuda, "fcptQueuedShifts($0)")
+    public uint queuedShifts(uint index);
 }
 #endif
 
