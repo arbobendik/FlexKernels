@@ -1274,3 +1274,69 @@ public func sameDomain(a: Domain, b: Domain) -> bool {
     return all(a.x0 == b.x0) && a.hit.instance_index == b.hit.instance_index && a.hit.triangle_index == b.hit.triangle_index && all(a.hit.uv == b.hit.uv);
 }
 #endif
+
+#ifdef FK_RESTIR
+__extern_cpp public struct ShiftJob {
+    __extern_cpp public Domain dom;
+    __extern_cpp public Reservoir r;
+}
+
+// Temporal round job t of p: the previous frame's sample into the current domain (t = 0) or the current sample into the
+// previous domain (t = 1). False if the shift is zero or the identity, which temporal reuse handles itself.
+public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJob) -> bool {
+    var dom: Domain = {};
+    if (t > 1u || !scene.storedDomainInitial(p, dom)) {
+        return false;
+    }
+    let q: int2 = temporalNeighbor(scene, p, dom);
+    if (q.x < 0) {
+        return false;
+    }
+    if (t == 0u) {
+        job = ShiftJob(dom, scene.loadReservoirPrevious(q));
+    } else {
+        job = ShiftJob(scene.previousDomain(q), scene.loadReservoirInitial(p));
+    }
+    return job.r.w > 0.0f && (t == 0u || !sameDomain(job.dom, dom));
+}
+
+// Spatial round job t of p: its sample into the domain of partner t
+public func spatialJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJob) -> bool {
+    if (t > 2u || any(p >= int2(scene.renderSize()))) {
+        return false;
+    }
+    job.r = scene.loadReservoirTemporal(p);
+    return job.r.w > 0.0f && scene.storedDomainTemporal(partner(scene, p, t), job.dom);
+}
+
+// Compaction bin of shifting r: reconnection type, with environment next event estimation apart from light sampling, and replay depth
+public func shiftBin(r: Reservoir) -> uint {
+    let rc: uint = extractBits(r.path, PATH_RC, 2u);
+    let kind: uint = select(rc, 4u, rc == RC_LIGHT && extractBits(r.path, PATH_TYPE, 3u) == END_SKY);
+    let depth: uint = select(extractBits(r.path, PATH_K, 5u), extractBits(r.path, PATH_END, 5u) + 1u, rc == RC_NONE);
+    return kind * SHIFT_DEPTHS + clamp(depth, 1u, SHIFT_DEPTHS) - 1u;
+}
+
+// Bins of the jobs of p, SHIFT_BINS for shifts without work
+public func temporalBins<S: IScene>(scene: S, p: int2) -> uint[3] {
+    var bins: uint[3] = { SHIFT_BINS, SHIFT_BINS, SHIFT_BINS };
+    for (var t: uint = 0u; t < 2u; t++) {
+        var job: ShiftJob = {};
+        if (temporalJob(scene, p, t, job)) {
+            bins[t] = shiftBin(job.r);
+        }
+    }
+    return bins;
+}
+
+public func spatialBins<S: IScene>(scene: S, p: int2) -> uint[3] {
+    var bins: uint[3] = { SHIFT_BINS, SHIFT_BINS, SHIFT_BINS };
+    for (var t: uint = 0u; t < scene.restirNeighbours(); t++) {
+        var job: ShiftJob = {};
+        if (spatialJob(scene, p, t, job)) {
+            bins[t] = shiftBin(job.r);
+        }
+    }
+    return bins;
+}
+#endif
