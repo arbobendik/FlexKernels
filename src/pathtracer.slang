@@ -9,7 +9,6 @@ public static const float PI = 3.141592653589793;
 public static const float MAX_SAFE_INTEGER_FOR_F32 = 8388607.0;
 public static const uint UINT_MAX = 4294967295u;
 public static const float BIAS = 0.0000152587890625;
-// const BIAS: f32 = 0.0000009536743164;
 public static const float INV_PI = 0.3183098861837907;
 // SHEEN_ALBEDO's nodes per side, and the least sheen roughness, below which it is taken as that
 public static const uint SHEEN_NODES = 24u;
@@ -71,7 +70,7 @@ public static const float SHEEN_ALBEDO[576] = {
 };
 
 // Target plumbing: the WGSL builtins the shared code calls, lowered to what each consumer calls in their place: CUDA's
-// intrinsics in flex-cuda-pt, for C++ the formulas of their host shims in tests/shim, which made the CUDA goldens;
+// intrinsics in flex-cuda-pt, for C++ the formulas of the host shims that made the CUDA goldens;
 // WGSL takes its own builtin back, as the name is taken here
 public float3 normalize(float3 a) {
     __target_switch {
@@ -127,7 +126,7 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     }
 }
 
-// Target plumbing: FlexLight's own Material (pathtracer-compute.wgsl, rasterizer-compute.wgsl), laid out by its upload,
+// Target plumbing: FlexLight's own Material (material.wgsl), laid out by its upload,
 // and flex-cuda-pt's BSDFMaterial (renderer.h) of the same fields; the struct for C++
 __target_intrinsic(wgsl, "Material")
 __target_intrinsic(cuda, "BSDFMaterial")
@@ -185,14 +184,9 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     // Target plumbing: FlexLight's generator for WGSL, flex-cuda-pt's for every other target
     __target_switch {
     case wgsl:
-    // PCG random number generator
-    // Reference: http://www.pcg-random.org/
-    var new_state: uint = state * 747796405u + 2891336453u;
-    let word: uint = ((new_state >> ((new_state >> 28u) + 4u)) ^ new_state) * 277803737u;
-    let result: uint = (word >> 22u) ^ word;
-    // Return random f32 between 0 and 1
-    let random: float = float(result) / float(UINT_MAX);
-    return Random(new_state, random);
+    // PCG random number generator (http://www.pcg-random.org/): the state advanced as hash advances it, and its hash
+    // over UINT_MAX, between 0 and 1
+    return Random(state * 747796405u + 2891336453u, float(hash(state)) / float(UINT_MAX));
     default:
         const float value = random(state);
         return Random(state, value);
@@ -234,11 +228,6 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     // float, which the peak's denominator falls under below roughness 1e-5, so that D stays finite
     let denom: float = (1.0f - n_dot_h) * (1.0f + n_dot_h) + numerator * n_dot_h * n_dot_h;
     return numerator / max(PI * denom * denom, LEAST_NORMAL);
-}
-
-// Masking of a direction, the exact Smith one of GGX that the visible normal density the BSDF samples assumes
-[CudaDeviceExport] public func G1(alpha: float, n_dot_x: float) -> float {
-    return smithG1(alpha, n_dot_x);
 }
 
 // Exact Smith masking of GGX, the visible normal density sampleGGXVNDF draws from; one for a smooth surface, which
@@ -634,7 +623,7 @@ __extern_cpp public struct AnisotropicFrame {
     if (lobe == LOBE_REFRACT) {
         let m_n_i_dot_l: float = - dot(n_i, l);
         // Microfacet term
-        var G1_l: float = G1(alpha, max(m_n_i_dot_l, 0.0f));
+        var G1_l: float = smithG1(alpha, max(m_n_i_dot_l, 0.0f));
         // An anisotropic material's masking toward l in its frame; target plumbing: negate(x) for - x, see negate
         if (lobes.alphas.x > 0.0f) {
             G1_l = anisotropicG1(anisotropicLocal(l, lobes.tangent, negate(n_i)), lobes.alphas);
@@ -652,7 +641,7 @@ __extern_cpp public struct AnisotropicFrame {
     }
     let n_i_dot_l: float = dot(n_i, l);
     // Torrance-Sparrow
-    var G1_l: float = G1(alpha, max(n_i_dot_l, 0.0f));
+    var G1_l: float = smithG1(alpha, max(n_i_dot_l, 0.0f));
     // An anisotropic material's masking toward l in its frame
     if (lobes.alphas.x > 0.0f) {
         G1_l = anisotropicG1(anisotropicLocal(l, lobes.tangent, n_i), lobes.alphas);
@@ -847,7 +836,7 @@ __extern_cpp public struct AnisotropicFrame {
         return material.transmission * (1.0f - material.metallic) * anisotropicG1(anisotropicLocal(dir, frame.tangent,
             negate(n_i)), frame.alphas) * material.albedo;
     }
-    return material.transmission * (1.0f - material.metallic) * G1(material.roughness * material.roughness, abs(dot(n, dir))) * material.albedo;
+    return material.transmission * (1.0f - material.metallic) * smithG1(material.roughness * material.roughness, abs(dot(n, dir))) * material.albedo;
 }
 
 // Shadow segments, alike in both consumers: from the start lift places off the shaded point, to the sampled point on

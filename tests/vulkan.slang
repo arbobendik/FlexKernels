@@ -14,7 +14,7 @@ void main(uint3 id: SV_DispatchThreadID) {
     const SampleBSDF connected = connectBSDF(r.dir, sampled.unit_direction, n, material, 1.0f, 1.5f, sampled.lobe,
         pcg(hash(r.path)).state);
     Selection sel = {};
-    offer(sel, withEnd(r, 1u, 2u, connected.throughput * G1(r.w, fresnel(r.c, 1.0f, 1.5f))),
+    offer(sel, withEnd(r, 1u, 2u, connected.throughput * smithG1(r.w, fresnel(r.c, 1.0f, 1.5f))),
         safeDivide(r.f, tangentToWorldNormalMap(r.radiance, float3x3(r.dir, r.f, n))));
     offerShifted(sel, r, Shift(r.f, rgb_to_greyscale(r.radiance)), r.c);
     // A step down the light tree, as light sampling and its density take one

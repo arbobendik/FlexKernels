@@ -37,7 +37,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | Name | CUDA | WGSL | Class | Status | Reason |
 |---|---|---|---|---|---|
 | `trowbridgeReitz`, `smithG1`, `fresnel` | cu:94, 61, 104 | wgsl:691, 703, 708 | 1 | **Shared** | Identical; then D without the cancellation and floor that cut its peak off below roughness 0.22, an allowed change to both goldens |
-| `G1` | cu:100 | wgsl:697 | 2, FlexLight | **Shared** | FlexLight's Schlick `k = alpha / 2`; flex-cuda-pt had the exact Smith masking, which the shared one returns, as the VNDF density `sampleBSDF` draws from assumes: an allowed change to the WGSL golden |
+| `G1` | cu:100 | wgsl:697 | 2, FlexLight | **Shared** as `smithG1` | FlexLight's Schlick `k = alpha / 2`; flex-cuda-pt had the exact Smith masking, which the shared code calls in its place, as the VNDF density `sampleBSDF` draws from assumes: an allowed change to the WGSL golden |
 | `sampleGGXVNDF`, `sampleCosWeightedHemisphere`, `tangentToWorld`, `worldToTangent` | cu:131, 153, 162, 172 | wgsl:726, 748, 757, 767 | 1 | **Shared** | Identical |
 | `normalMapTBN`, `tangentToWorldNormalMap` | cu:184, 203 | wgsl:779, 801 | 2, FlexLight | **Shared** | FlexLight's `mat3x3<f32>` and handedness, which flips the tangent where flex-cuda-pt turned the bitangent; Slang writes the columns as `float3x3(t, b, n)` and `tbn * v` as `mul(v, tbn)`, which WGSL gets back as written. CUDA takes the prelude's `Matrix<float, 3, 3>`, named `SlangMatrix` across the header, for its own `Matrix` |
 | `BSDF`, `SampleBSDF`, `BSDFLobes`, `sampleHalfVector`, `bsdfLobes`, `lobeThroughput`, `lobeDensity`, `sampleBSDF`, `connectBSDF` | cu:438, 210, 221, 235, 246, 278, 325, 360, 411 | wgsl:807-1032 | 2, FlexLight | **Shared** | FlexLight's plain Fresnel, its diffuse and refraction then dimmed by what the dielectric reflects, refraction of the share not metallic, and clamped density on its `Material`, whose albedo tints every surface interaction, the diffuse, metallic reflection and refraction, its absorption left to `beerLambert`; the dielectric's Fresnel then by Blender's Specular IOR Level and Tint, its reflectance at normal incidence scaled and tinted, white at grazing; flex-cuda-pt's Smith masking goes |
@@ -160,9 +160,9 @@ the case sampled from its incoming direction, from inside at its larger radii.
 `pointLightRadiance` is checked separately on every case in C++, CUDA and WGSL: integrating its radiance over a
 diffuse sphere must recover `4 * PI * intensity * color`, without changing the reference golden columns.
 
-- `tests/golden-cuda.txt`: `make golden REFERENCE=<flex-cuda-pt 02d0bf1>/src/shaders` host-compiles the unmodified
-  `renderer.cu` against `tests/shim`, its D without cancellation or BIAS, and reproduces it byte for byte: the functions
-  both consumers had alike.
+- `tests/golden-cuda.txt`: flex-cuda-pt `02d0bf1`'s unmodified `renderer.cu`, host-compiled against stand-ins of CUDA by
+  `tests/reference.cpp`, which the history keeps, its D without cancellation or BIAS: the functions both consumers had
+  alike.
 - `tests/golden-wgsl.txt`: `make golden-wgsl WGSL_REFERENCE=<FlexLight 754e9a0>/.../pathtracer-compute.wgsl`
   appends the kernel of `tests/wgsl.mjs` with `--flexlight` to the reference shader and runs it through Dawn, here in
   `ubuntu:24.04` with lavapipe as CI runs it: every column. For the generated code the kernel prepends FlexLight's
