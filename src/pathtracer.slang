@@ -70,7 +70,7 @@ public static const float SHEEN_ALBEDO[576] = {
 };
 
 // Target plumbing: the WGSL builtins the shared code calls, lowered to what each consumer calls in their place: CUDA's
-// intrinsics in flex-cuda-pt, for C++ the formulas of their host shims in tests/shim, which made the CUDA goldens;
+// intrinsics in flex-cuda-pt, for C++ the formulas of the host shims that made the CUDA goldens;
 // WGSL takes its own builtin back, as the name is taken here
 public float3 normalize(float3 a) {
     __target_switch {
