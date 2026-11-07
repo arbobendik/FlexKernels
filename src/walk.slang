@@ -137,6 +137,16 @@ __extern_cpp public struct Surface {
     __extern_cpp public uint random_state;
 }
 
+__target_intrinsic(wgsl, "Light")
+__target_intrinsic(cuda, "FKLight")
+__extern_cpp public struct Light {
+    __extern_cpp public float3 position;
+    __extern_cpp public float is_area_light;
+    __extern_cpp public float3 color;
+    __extern_cpp public float intensity;
+    __extern_cpp public float variance;
+}
+
 __extern_cpp public struct TreeSample {
     // Direction to the light point, radiance / PDF and PDF, 0 for point lights of no radius
     __extern_cpp public float3 dir;
@@ -363,5 +373,30 @@ func facingRay(surface: Surface, dir: float3) -> Surface {
 // Whether the path tracer considers dir to point towards the incorrect side of the surface
 func wrongSide(is_inside: bool, refracted: bool, dir: float3, geometry_n: float3) -> bool {
     return (is_inside == refracted) != (dot(dir, geometry_n) > 0.0f);
+}
+#endif
+
+#if FK_RESTIR
+public interface IScene {
+    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
+    public bool shadowTraverseInstanceBVH(Ray ray, float l, bool two_sided);
+    public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
+    public float3 hitPosition(Hit hit);
+    public float3x3 worldTriangle(uint instance_index, uint triangle_index);
+    public LightBounds lightBounds(uint n);
+    public uint4 lightNode(uint n);
+    public uint lightSecond(uint n);
+    public uint lightSlot(Hit hit);
+    public uint2 lightTrail(uint j);
+    public bool slotLeaf(uint n, uint j);
+    public Light light(uint index);
+    public uint triangleOffset(uint instance_index);
+    public float3 calculatePointLightContrib(uint index);
+    public float3 env_map_sample(float3 dir);
+    public float4 environmentCdf(uint2 cell);
+    public uint2 environmentCdfSize();
+    public uint2 environmentMapSize();
+    public float3 ambient();
+    public uint maxBounces();
 }
 #endif
