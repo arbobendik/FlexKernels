@@ -1,6 +1,6 @@
 implementing pathtracer;
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 // ReSTIR PT Enhanced (Lin, Kettunen and Wyman 2026)
 
 // How a path ends: next event estimation, emissive surface, point light sphere, environment or environment by next event estimation
@@ -19,12 +19,12 @@ public static const uint RC_ENV = 3u;
 
 // Bit offsets of the packed path description
 public static const uint PATH_END = 0u;
-#if FK_RESTIR
+#ifdef FK_RESTIR
 public static const uint PATH_K = 5u;
 public static const uint PATH_RC = 10u;
 #endif
 public static const uint PATH_TYPE = 12u;
-#if FK_RESTIR
+#ifdef FK_RESTIR
 public static const uint PATH_LOBE_PREV = 15u;
 public static const uint PATH_LOBE = 18u;
 public static const uint PATH_NEE = 21u;
@@ -68,7 +68,7 @@ __extern_cpp public struct Selection {
     __extern_cpp public uint random_state;
 }
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 // Stream compaction of the temporal and paired spatial shifts (Sec. 6.2.2), sorted into bins of equal reconnection type and replay depth
 public static const uint SHIFT_DEPTHS = 8u;
 public static const uint SHIFT_BINS = 40u;
@@ -330,7 +330,7 @@ __extern_cpp public struct LightBounds {
     return tangentToWorld(float3(sin_theta * cos(phi), 1.0f - one_minus_cos, sin_theta * sin(phi)), normalize(center - p));
 }
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 public static const float POW32 = 4294967296.0;
 
 __target_intrinsic(wgsl, "Ray")
@@ -418,7 +418,7 @@ func wrongSide(is_inside: bool, refracted: bool, dir: float3, geometry_n: float3
 }
 #endif
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 __target_intrinsic(wgsl, "Light")
 __target_intrinsic(cuda, "FKLight")
 __extern_cpp public struct Light {
@@ -453,7 +453,7 @@ public interface IScene {
 }
 #endif
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 public struct HookScene : IScene {
     __target_intrinsic(wgsl, "traverseInstanceBVH($0, $1, $2)")
     __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2)")
@@ -518,7 +518,7 @@ public struct HookScene : IScene {
 }
 #endif
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 [ForceInline] uint select(uint f, uint t, bool cond) { return select(cond, t, f); }
 
 func occluded<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_offset: float, light_dir: float3) -> bool {
@@ -655,7 +655,7 @@ func emissionWeight<S: IScene>(scene: S, vertex: NEEVertex, hit: Hit, light_poin
 }
 #endif
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 func environmentMapped<S: IScene>(scene: S) -> bool {
     return scene.environmentMapSize().x > 1u && scene.environmentMapSize().y > 1u;
 }
