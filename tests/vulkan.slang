@@ -107,6 +107,7 @@ void queueRound(uint3 id, uint local, uint3 group) {
     restir_count(scene, id, local);
     restir_prepass(scene, id, local);
     restir_shift(scene, group, local);
+    restir_spatial(scene, id);
 }
 #endif
 

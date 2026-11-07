@@ -1633,3 +1633,63 @@ public func restir_shift<S: IScene>(scene: S, workgroup_id: uint3, local_invocat
     }
 }
 #endif
+
+#ifdef FK_RESTIR
+// Paired spatial reuse with pairwise MIS (Sec. 3) and shading with vector-valued weights (Sec. 6.3)
+public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
+    let p: int2 = int2(global_invocation_id.xy);
+    var dom: Domain = {};
+    if (!scene.currentDomain(p, dom)) {
+        scene.storeReservoirPrevious(p, Reservoir(), dom.hit);
+        let screen_space: float2 = float2(global_invocation_id.xy) / float2(scene.renderSize().xy) * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
+        // If there is no triangle render ambient color
+        scene.storeColor(p, 0u, float4(environment(scene, normalize(mul(float3(screen_space, 1.0f), scene.invViewMatrix()))), 1.0f));
+        if (scene.isTemporal() == 1u) {
+            scene.storeColor(p, 1u, float4(0.0f));
+        }
+        return;
+    }
+    let r: Reservoir = scene.loadReservoirTemporal(p);
+    var count: float = 0.0f;
+    var c_sum: float = r.c;
+    for (var t: uint = 0u; t < scene.restirNeighbours(); t++) {
+        let q: int2 = partner(scene, p, t);
+        var neighbor: Domain = {};
+        if (scene.currentDomain(q, neighbor)) {
+            count += 1.0f;
+            c_sum += asfloat(scene.reservoirTemporal(q, 0u).w);
+        }
+    }
+    // Confidence of the current pixel is split evenly across the pairs
+    let c_pair: float = r.c / max(count, 1.0f);
+    let p_c: float = rgb_to_greyscale(r.f);
+    var canonical_mis: float = select(0.0f, 1.0f, count == 0.0f);
+    var sel: Selection = {};
+    sel.random_state = stream(stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y), STREAM_SELECT + 2u);
+    for (var t: uint = 0u; t < scene.restirNeighbours(); t++) {
+        let q: int2 = partner(scene, p, t);
+        var neighbor_dom: Domain = {};
+        if (scene.currentDomain(q, neighbor_dom)) {
+            let neighbor: Reservoir = scene.loadReservoirTemporal(q);
+            let to_here: float4 = asfloat(scene.shiftData(q, t));
+            let to_there: float4 = asfloat(scene.shiftData(p, t));
+            let share: float = pairShare(neighbor.c, c_pair, c_sum);
+            if (p_c > 0.0f) {
+                canonical_mis += canonicalWeight(share, c_pair, p_c, neighbor.c, rgb_to_greyscale(to_there.xyz));
+            }
+            offerShifted(sel, neighbor, Shift(to_here.xyz, to_here.w), neighborWeight(share, neighbor.c, rgb_to_greyscale(neighbor.f), c_pair, rgb_to_greyscale(to_here.xyz)));
+        }
+    }
+    offerShifted(sel, r, Shift(r.f, 1.0f), canonical_mis);
+    scene.storeReservoirPrevious(p, finalize(sel, c_sum), dom.hit);
+    scene.storePreviousLayer(p, 5u, uint4(asuint(dom.hit.uv), 0u, 0u));
+    let primary: Surface = scene.surfaceAt(dom.hit, dom.x1, sel.random_state);
+    let emission: float3 = select(primary.material.emissive * max(sign(dot(normalize(dom.x0 - dom.x1), primary.smooth_n)), 0.0f), float3(0.0f), primary.skip);
+    // Clamp color to 16 bit float
+    let final_color: float3 = clamp(sel.color + emission, float3(0.0f), float3(65519.0f));
+    scene.storeColor(p, 0u, float4(final_color, 1.0f));
+    if (scene.isTemporal() == 1u) {
+        scene.storeColor(p, 1u, float4(dom.x1, float(dom.hit.instance_index)));
+    }
+}
+#endif
