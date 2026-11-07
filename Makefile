@@ -62,7 +62,7 @@ $(ACTIONLINT):
 	curl -sSfL https://github.com/rhysd/actionlint/releases/download/v$(ACTIONLINT_VERSION)/actionlint_$(ACTIONLINT_VERSION)_linux_amd64.tar.gz \
 		| tar -xz -C .deps actionlint
 
-.PHONY: all lint test test-cpu test-wgsl test-cuda test-vulkan golden golden-wgsl deploy-local clean
+.PHONY: all lint test test-cpu test-wgsl test-cuda test-vulkan golden-wgsl deploy-local clean
 lint: $(ACTIONLINT)
 	$(ACTIONLINT)
 
@@ -85,11 +85,6 @@ test-cuda: build/parity-cuda
 
 test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module
 	$(SLANGC) -Ibuild/cuda $< -target spirv -o build/vulkan.spv
-
-golden: tests/reference.cpp tests/shim/*.h $(REFERENCE)/renderer.cu $(REFERENCE)/renderer.h
-	mkdir -p build
-	$(CXX) -std=c++20 -O2 -Itests/shim -I$(REFERENCE) $< -o build/reference
-	build/reference > tests/golden-cuda.txt
 
 golden-wgsl: tests/wgsl.mjs tests/golden-cuda.txt $(WGSL_REFERENCE)
 	node tests/wgsl.mjs $(WGSL_REFERENCE) --flexlight < tests/golden-cuda.txt > tests/golden-wgsl.txt
