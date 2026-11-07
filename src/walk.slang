@@ -387,8 +387,8 @@ public interface IScene {
     public uint4 lightNode(uint n);
     public uint lightSecond(uint n);
     public uint lightSlot(Hit hit);
-    public uint2 lightTrail(uint j);
-    public bool slotLeaf(uint n, uint j);
+    public uint4 lightTrail(uint j);
+    public bool slotLeaf(uint n, uint j, uint4 trail_texel);
     public Light light(uint index);
     public uint triangleOffset(uint instance_index);
     public float3 calculatePointLightContrib(uint index);
@@ -430,12 +430,12 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "lightSlot($0)")
     __target_intrinsic(cuda, "fcptLightSlot($0)")
     public uint lightSlot(Hit hit);
-    __target_intrinsic(wgsl, "access_light_tree(access_light_tree(0u).y + $0).xy")
+    __target_intrinsic(wgsl, "access_light_tree(access_light_tree(0u).y + $0)")
     __target_intrinsic(cuda, "fcptLightTrail($0)")
-    public uint2 lightTrail(uint j);
-    __target_intrinsic(wgsl, "(access_light_tree(access_light_tree(0u).y + $1).z == $0)")
+    public uint4 lightTrail(uint j);
+    __target_intrinsic(wgsl, "($2.z == $0)")
     __target_intrinsic(cuda, "fcptSlotLeaf($0, $1)")
-    public bool slotLeaf(uint n, uint j);
+    public bool slotLeaf(uint n, uint j, uint4 trail_texel);
     __target_intrinsic(wgsl, "lights[$0]")
     __target_intrinsic(cuda, "fcptLight($0)")
     public Light light(uint index);
@@ -463,5 +463,150 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "uniforms_uint.max_bounces")
     __target_intrinsic(cuda, "fcptMaxBounces()")
     public uint maxBounces();
+}
+#endif
+
+#if FK_RESTIR
+[ForceInline] uint select(uint f, uint t, bool cond) { return select(cond, t, f); }
+
+func occluded<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_offset: float, light_dir: float3) -> bool {
+    let unit_light_dir: float3 = normalize(light_dir);
+    // Compute quick exit criterion to potentially skip expensive shadow test
+    if (dot(smooth_n, unit_light_dir) < 0.0f) {
+        return true;
+    }
+    // Apply geometry offset
+    let offset_target: float3 = origin + geometry_offset * smooth_n;
+    let light_ray: Ray = Ray(offset_target, unit_light_dir);
+    return scene.shadowTraverseInstanceBVH(light_ray, shadowLength(light_dir), true);
+}
+
+// Light sampling: a light picked by the light tree, P(light) the product of child shares down to it
+// Triangle: uniform point, PDF = solidAngle(P(light))
+// Sphere: uniform in its cone, PDF = P(light) * sphereDensity
+// radiance = L * T / PDF; sided: light all around, origin lifted to the light's side of the face
+func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_n: float3, geometry_offset: float, sided: bool, init_random_state: uint) -> TreeSample {
+    let random_pick: Random = pcg(init_random_state);
+    let random_side: Random = pcg(random_pick.state);
+    let random_along: Random = pcg(random_side.state);
+    var sample: TreeSample = TreeSample(float3(0.0f), float3(0.0f), 0.0f, random_along.state);
+    let normal: float3 = select(smooth_n, float3(0.0f), sided);
+    var lift_n: float3 = smooth_n;
+    var start: float3 = origin + geometry_offset * lift_n;
+    // From the root down to either child by its share of importance
+    var pick: float = random_pick.value;
+    var probability: float = 1.0f;
+    var n: uint = 0u;
+    while (scene.lightNode(n).x == 0u) {
+        let second: uint = scene.lightSecond(n);
+        let child: uint = pickChild(scene.lightBounds(n + 1u), scene.lightBounds(second), origin, normal, pick, probability);
+        if (child > 1u) {
+            return sample;
+        }
+        n = select(n + 1u, second, child == 1u);
+    }
+    if (n == 0u && !(importance(scene.lightBounds(0u), origin, normal) > 0.0f)) {
+        return sample;
+    }
+    let leaf: uint4 = scene.lightNode(n);
+    // Vector from start to the end of the shadow ray
+    var shadow: float3;
+    if (leaf.x == 2u) {
+        let light: Light = scene.light(leaf.y);
+        if (sided) {
+            lift_n = smooth_n * sign(dot(geometry_n, light.position - origin));
+            start = origin + geometry_offset * lift_n;
+        }
+        if (light.variance == 0.0f) {
+            // Delta light at the center: radiance / PDF = I / (d^2 * P(light))
+            shadow = light.position - start;
+            sample.dir = normalize(light.position - start);
+            sample.radiance = light.color * light.intensity / (dot(light.position - start, light.position - start) * probability);
+        } else {
+            sample.dir = sampleSphere(light.position, light.variance, start, random_side.value, random_along.value);
+            sample.density = probability * sphereDensity(light.position, light.variance, start);
+            sample.radiance = pointLightRadiance(light.color, light.intensity, light.variance) / sample.density;
+            shadow = sample.dir * raySphere(light.position, light.variance, Ray(start, sample.dir), POW32);
+        }
+    } else {
+        let triangle_index: uint = scene.triangleOffset(leaf.y) + leaf.z;
+        let t: float3x3 = scene.worldTriangle(leaf.y, triangle_index);
+        // Uniform point on the triangle: (1 - sqrt(u), sqrt(u) * (1 - v), sqrt(u) * v)
+        let side: float = sqrt(random_side.value);
+        let uv: float2 = float2(side * (1.0f - random_along.value), side * random_along.value);
+        let point: float3 = mul(float3(1.0f - side, uv), t);
+        if (sided) {
+            lift_n = smooth_n * sign(dot(geometry_n, point - origin));
+            start = origin + geometry_offset * lift_n;
+        } else if (!(dot(smooth_n, point - origin) > 0.0f)) {
+            return sample;
+        }
+        let surface: Surface = scene.surfaceAt(Hit(uv, leaf.y, triangle_index, 0u, 0.0f), point, random_along.state);
+        sample.random_state = surface.random_state;
+        sample.dir = normalize(point - start);
+        sample.density = solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), point - start);
+        sample.radiance = select(surface.material.emissive * max(sign(dot(- sample.dir, surface.smooth_n)), 0.0f), float3(0.0f), surface.skip) / sample.density;
+        shadow = point + shadowLift(surface.smooth_n, surface.geometry_offset, start, point) - start;
+    }
+    if (occluded(scene, origin, lift_n, geometry_offset, shadow)) {
+        sample.radiance = float3(0.0f);
+    }
+    return sample;
+}
+
+// PDF = solidAngle(P(light)) or P(light) * sphereDensity, P(light) the product of child shares down the trail
+// of slot j; with no smooth_n, all around
+func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, start: float3, j: uint, light_point: float3) -> float {
+    let trail_texel: uint4 = scene.lightTrail(j);
+    var trail: uint2 = trail_texel.xy;
+    var probability: float = 1.0f;
+    var n: uint = 0u;
+    while (scene.lightNode(n).x == 0u) {
+        let second: uint = scene.lightSecond(n);
+        probability *= childShare(scene.lightBounds(n + 1u), scene.lightBounds(second), origin, smooth_n, trail.x & 1u);
+        n = select(n + 1u, second, (trail.x & 1u) == 1u);
+        trail = uint2((trail.x >> 1u) | (trail.y << 31u), trail.y >> 1u);
+    }
+    if (!scene.slotLeaf(n, j, trail_texel) || !(importance(scene.lightBounds(n), origin, smooth_n) > 0.0f) || (dot(smooth_n, smooth_n) > 0.0f && !(dot(smooth_n, light_point - origin) > 0.0f))) {
+        return 0.0f;
+    }
+    let leaf: uint4 = scene.lightNode(n);
+    if (leaf.x == 2u) {
+        let light: Light = scene.light(leaf.y);
+        return probability * sphereDensity(light.position, light.variance, start);
+    }
+    let t: float3x3 = scene.worldTriangle(leaf.y, scene.triangleOffset(leaf.y) + leaf.z);
+    return solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), light_point - start);
+}
+
+// radiance = L / PDF_light
+// Per lobe: w_power = PDF_light^2 / (PDF_light^2 + PDF_lobe^2)
+// => throughput * PDF_lobe / PDF_light * w_power = throughput * PDF_lobe / (PDF_light * (1 + (PDF_lobe / PDF_light)^2))
+// Delta lights or no competing BSDF sample: w_power = 1
+func lightBSDF(in_dir: float3, light: TreeSample, smooth_n: float3, geometry_n: float3, material: Material, eta_i: float, eta_o: float, competing: bool, random_state: uint) -> float3 {
+    let refracted: bool = dot(geometry_n, - in_dir) * dot(geometry_n, light.dir) <= 0.0f;
+    var throughputs: float3[4];
+    var pdfs: float[4];
+    let f: float3 = BSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, random_state, throughputs,
+        pdfs);
+    if (!competing || light.density == 0.0f) {
+        return f * light.radiance;
+    }
+    var weighted: float3 = float3(0.0f);
+    for (var i: uint = 0u; i < 4u; i++) {
+        if (pdfs[i] > 0.0f) {
+            let ratio: float = pdfs[i] / light.density;
+            weighted += throughputs[i] * pdfs[i] / (light.density * (1.0f + ratio * ratio));
+        }
+    }
+    return weighted * light.radiance * light.density;
+}
+
+// Power heuristic of BSDF sampling at the vertex the ray left against light sampling of the point met
+func emissionWeight<S: IScene>(scene: S, vertex: NEEVertex, hit: Hit, light_point: float3) -> float {
+    if (vertex.none) {
+        return 1.0f;
+    }
+    return powerHeuristic(vertex.pdf, lightPdf(scene, vertex.origin, vertex.smooth_n, vertex.start, scene.lightSlot(hit), light_point));
 }
 #endif
