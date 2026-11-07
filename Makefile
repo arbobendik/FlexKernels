@@ -5,7 +5,7 @@ SLANGC ?= $(SLANG_PATH)/bin/slangc
 SLANGFLAGS = -line-directive-mode none -g2
 ACTIONLINT_VERSION ?= 1.7.7
 ACTIONLINT ?= .deps/actionlint
-SOURCE = src/pathtracer.slang
+SOURCE = src/pathtracer.slang src/walk.slang
 NVCC ?= nvcc
 FLEX_CUDA_PT ?= ../flex-cuda-pt
 # Golden sources, the code the shared one replaces
