@@ -101,6 +101,12 @@ void queueRound(uint3 id, uint local, uint3 group) {
     queue[3u + id.x] = queuedShift(scene, group, local);
     restir_initial(scene, id);
     restir_temporal(scene, id);
+    restir_temporal_count(scene, id, local);
+    restir_temporal_prepass(scene, id, local);
+    restir_temporal_shift(scene, group, local);
+    restir_count(scene, id, local);
+    restir_prepass(scene, id, local);
+    restir_shift(scene, group, local);
 }
 #endif
 

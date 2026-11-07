@@ -1577,3 +1577,59 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
     scene.storeReservoirTemporal(p, r, dom.hit);
 }
 #endif
+
+#ifdef FK_RESTIR
+// The temporal round of the shift queue
+public func restir_temporal_count<S: IScene>(scene: S, global_invocation_id: uint3, local_invocation_index: uint) {
+    countShifts(scene, temporalBins(scene, int2(global_invocation_id.xy)), local_invocation_index);
+}
+
+public func restir_temporal_prepass<S: IScene>(scene: S, global_invocation_id: uint3, local_invocation_index: uint) {
+    let p: int2 = int2(global_invocation_id.xy);
+    let bins: uint[3] = temporalBins(scene, p);
+    for (var t: uint = 0u; t < 2u; t++) {
+        if (bins[t] == SHIFT_BINS) {
+            scene.storeTemporalShift(p, t, uint4(0u));
+        }
+    }
+    queueShifts(scene, p, bins, global_invocation_id, local_invocation_index);
+}
+
+public func restir_temporal_shift<S: IScene>(scene: S, workgroup_id: uint3, local_invocation_index: uint) {
+    let job: uint = queuedShift(scene, workgroup_id, local_invocation_index);
+    if (job != UINT_MAX) {
+        let p: int2 = int2(uint2(job, job >> 14u) & uint2(16383u));
+        var shift_job: ShiftJob = {};
+        temporalJob(scene, p, job >> 28u, shift_job);
+        let shifted: Shift = shift(scene, shift_job.dom, shift_job.r);
+        scene.storeTemporalShift(p, job >> 28u, uint4(asuint(shifted.f), asuint(shifted.jac)));
+    }
+}
+
+// The spatial round of the shift queue, every pixel's sample to its partners of all reuse textures
+public func restir_count<S: IScene>(scene: S, global_invocation_id: uint3, local_invocation_index: uint) {
+    countShifts(scene, spatialBins(scene, int2(global_invocation_id.xy)), local_invocation_index);
+}
+
+public func restir_prepass<S: IScene>(scene: S, global_invocation_id: uint3, local_invocation_index: uint) {
+    let p: int2 = int2(global_invocation_id.xy);
+    let bins: uint[3] = spatialBins(scene, p);
+    for (var t: uint = 0u; t < 3u; t++) {
+        if (bins[t] == SHIFT_BINS) {
+            scene.storeShiftData(p, t, uint4(0u));
+        }
+    }
+    queueShifts(scene, p, bins, global_invocation_id, local_invocation_index);
+}
+
+public func restir_shift<S: IScene>(scene: S, workgroup_id: uint3, local_invocation_index: uint) {
+    let job: uint = queuedShift(scene, workgroup_id, local_invocation_index);
+    if (job != UINT_MAX) {
+        let p: int2 = int2(uint2(job, job >> 14u) & uint2(16383u));
+        var shift_job: ShiftJob = {};
+        spatialJob(scene, p, job >> 28u, shift_job);
+        let shifted: Shift = shift(scene, shift_job.dom, shift_job.r);
+        scene.storeShiftData(p, job >> 28u, uint4(asuint(shifted.f), asuint(shifted.jac)));
+    }
+}
+#endif
