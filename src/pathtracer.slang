@@ -126,7 +126,7 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     }
 }
 
-// Target plumbing: FlexLight's own Material (pathtracer-compute.wgsl, rasterizer-compute.wgsl), laid out by its upload,
+// Target plumbing: FlexLight's own Material (material.wgsl), laid out by its upload,
 // and flex-cuda-pt's BSDFMaterial (renderer.h) of the same fields; the struct for C++
 __target_intrinsic(wgsl, "Material")
 __target_intrinsic(cuda, "BSDFMaterial")
