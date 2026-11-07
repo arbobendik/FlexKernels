@@ -466,7 +466,9 @@ __extern_cpp public struct Light {
 // prototype triangle of instance i, lightTrail(j) the texel of the trail of slot j (x, y its bits) and
 // slotLeaf(n, j, trail_texel) whether node n is its leaf,
 // environmentCdf(cell) and environmentCdfSize() the environment map's luminance distribution, environmentMapSize() and
-// ambient() its size and the color without one, maxBounces() the bounces of a path
+// ambient() its size and the color without one, maxBounces() the bounces of a path; renderSize(), frame(), the views
+// and camera positions of this frame and the last, pairing(texel, t) reuse texture t, reservoirPrevious(q, layer) a
+// layer of last frame's reservoir at q, and previousDomain(q) the primary hit q had, the consumer's own
 public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
     public bool shadowTraverseInstanceBVH(Ray ray, float l, bool two_sided);
@@ -488,6 +490,15 @@ public interface IScene {
     public uint2 environmentMapSize();
     public float3 ambient();
     public uint maxBounces();
+    public uint2 renderSize();
+    public uint frame();
+    public float3x3 viewMatrix();
+    public float3 cameraPosition();
+    public float3x3 prevViewMatrix();
+    public float3 prevCameraPosition();
+    public int4 pairing(int2 texel, uint t);
+    public uint4 reservoirPrevious(int2 q, uint layer);
+    public Domain previousDomain(int2 q);
 }
 #endif
 
@@ -555,6 +566,33 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "uniforms_uint.max_bounces")
     __target_intrinsic(cuda, "fcptMaxBounces()")
     public uint maxBounces();
+    __target_intrinsic(wgsl, "uniforms_uint.render_size")
+    __target_intrinsic(cuda, "fcptRenderSize()")
+    public uint2 renderSize();
+    __target_intrinsic(wgsl, "uniforms_uint.frame")
+    __target_intrinsic(cuda, "fcptFrame()")
+    public uint frame();
+    __target_intrinsic(wgsl, "uniforms_float.view_matrix")
+    __target_intrinsic(cuda, "fcptViewMatrix()")
+    public float3x3 viewMatrix();
+    __target_intrinsic(wgsl, "uniforms_float.camera_position")
+    __target_intrinsic(cuda, "fcptCameraPosition()")
+    public float3 cameraPosition();
+    __target_intrinsic(wgsl, "uniforms_float.prev_view_matrix")
+    __target_intrinsic(cuda, "fcptPrevViewMatrix()")
+    public float3x3 prevViewMatrix();
+    __target_intrinsic(wgsl, "uniforms_float.prev_camera_position")
+    __target_intrinsic(cuda, "fcptPrevCameraPosition()")
+    public float3 prevCameraPosition();
+    __target_intrinsic(wgsl, "textureLoad(pairing, $0, $1, 0)")
+    __target_intrinsic(cuda, "fcptPairing($0, $1)")
+    public int4 pairing(int2 texel, uint t);
+    __target_intrinsic(wgsl, "textureLoad(reservoir_prev, $0, $1, 0)")
+    __target_intrinsic(cuda, "fcptReservoirPrevious($0, $1)")
+    public uint4 reservoirPrevious(int2 q, uint layer);
+    __target_intrinsic(wgsl, "previousDomain($0)")
+    __target_intrinsic(cuda, "fcptPreviousDomain($0)")
+    public Domain previousDomain(int2 q);
 }
 #endif
 

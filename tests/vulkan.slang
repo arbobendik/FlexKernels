@@ -35,6 +35,15 @@ struct TestScene : IScene {
     uint2 environmentMapSize() { return uint2(4u, 4u); }
     float3 ambient() { return float3(0.1f); }
     uint maxBounces() { return 4u; }
+    uint2 renderSize() { return uint2(64u, 48u); }
+    uint frame() { return 7u; }
+    float3x3 viewMatrix() { return float3x3(float3(1.0f, 0.0f, 0.0f), float3(0.0f, 1.0f, 0.0f), float3(0.0f, 0.0f, 1.0f)); }
+    float3 cameraPosition() { return float3(0.0f, 0.0f, -2.0f); }
+    float3x3 prevViewMatrix() { return viewMatrix(); }
+    float3 prevCameraPosition() { return float3(0.1f, 0.0f, -2.0f); }
+    int4 pairing(int2 texel, uint t) { return int4(texel.yx - int2(int(t)), 0, 0); }
+    uint4 reservoirPrevious(int2 q, uint layer) { return uint4(uint(q.x), layer, 0u, asuint(float(q.y))); }
+    Domain previousDomain(int2 q) { return Domain(float3(0.0f), float3(float2(q), 1.0f), Hit(float2(0.5f), uint(q.x), uint(q.y), 0u, 1.0f)); }
 }
 #endif
 
