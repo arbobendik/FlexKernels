@@ -471,7 +471,9 @@ __extern_cpp public struct Light {
 // layer of last frame's reservoir at q, and previousDomain(q) the primary hit q had, the consumer's own;
 // restirNeighbours() the spatial partners, the reservoirs of last frame, of this frame's initial and temporal round and
 // the primary hits stored with the latter two, and the shift queue, FlexLight's ShiftQueue: its bins' job counts and
-// cursors, its jobs, the size of the indirect dispatch running them, and queuedShifts(i) the same buffer read only
+// cursors, its jobs, the size of the indirect dispatch running them, and queuedShifts(i) the same buffer read only;
+// currentDomain(p, dom) the primary hit of p this frame, the consumer's own, the passes' uniforms, the stores of the
+// reservoirs of each round, of last frame's uv and of the shifts and duplication map, and the color written
 public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
     public bool shadowTraverseInstanceBVH(Ray ray, float l, bool two_sided);
@@ -514,6 +516,23 @@ public interface IScene {
     public void queueJobStore(uint index, uint job);
     public void queueDispatchStore(uint x, uint y, uint z);
     public uint queuedShifts(uint index);
+    public bool currentDomain(int2 p, out Domain dom);
+    public uint samples();
+    public uint restirDecorrelation();
+    public uint isTemporal();
+    public float3x3 invViewMatrix();
+    public void storeReservoirInitial(int2 p, Reservoir r, Hit x1);
+    public void storeReservoirTemporal(int2 p, Reservoir r, Hit x1);
+    public void storeReservoirPrevious(int2 p, Reservoir r, Hit x1);
+    public void storePreviousLayer(int2 p, uint layer, uint4 value);
+    public uint4 duplication(int2 q);
+    public void storeDuplication(int2 p, uint4 value);
+    public uint4 temporalShift(int2 p, uint layer);
+    public void storeTemporalShift(int2 p, uint layer, uint4 value);
+    public uint4 shiftData(int2 p, uint layer);
+    public void storeShiftData(int2 p, uint layer, uint4 value);
+    public uint4 reservoirTemporal(int2 q, uint layer);
+    public void storeColor(int2 p, uint layer, float4 color);
 }
 #endif
 
@@ -644,6 +663,57 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "queued_shifts[$0]")
     __target_intrinsic(cuda, "fcptQueuedShifts($0)")
     public uint queuedShifts(uint index);
+    __target_intrinsic(wgsl, "currentDomain($0, &$1)")
+    __target_intrinsic(cuda, "fcptCurrentDomain($0, $1)")
+    public bool currentDomain(int2 p, out Domain dom);
+    __target_intrinsic(wgsl, "uniforms_uint.samples")
+    __target_intrinsic(cuda, "fcptSamples()")
+    public uint samples();
+    __target_intrinsic(wgsl, "uniforms_uint.restir_decorrelation")
+    __target_intrinsic(cuda, "fcptRestirDecorrelation()")
+    public uint restirDecorrelation();
+    __target_intrinsic(wgsl, "uniforms_uint.is_temporal")
+    __target_intrinsic(cuda, "fcptIsTemporal()")
+    public uint isTemporal();
+    __target_intrinsic(wgsl, "uniforms_float.inv_view_matrix")
+    __target_intrinsic(cuda, "fcptInvViewMatrix()")
+    public float3x3 invViewMatrix();
+    __target_intrinsic(wgsl, "storeReservoir(reservoir_initial_out, $0, $1, $2)")
+    __target_intrinsic(cuda, "fcptStoreReservoirInitial($0, $1, $2)")
+    public void storeReservoirInitial(int2 p, Reservoir r, Hit x1);
+    __target_intrinsic(wgsl, "storeReservoir(reservoir_temp_out, $0, $1, $2)")
+    __target_intrinsic(cuda, "fcptStoreReservoirTemporal($0, $1, $2)")
+    public void storeReservoirTemporal(int2 p, Reservoir r, Hit x1);
+    __target_intrinsic(wgsl, "storeReservoir(reservoir_prev_out, $0, $1, $2)")
+    __target_intrinsic(cuda, "fcptStoreReservoirPrevious($0, $1, $2)")
+    public void storeReservoirPrevious(int2 p, Reservoir r, Hit x1);
+    __target_intrinsic(wgsl, "textureStore(reservoir_prev_out, $0, $1, $2)")
+    __target_intrinsic(cuda, "fcptStorePreviousLayer($0, $1, $2)")
+    public void storePreviousLayer(int2 p, uint layer, uint4 value);
+    __target_intrinsic(wgsl, "textureLoad(duplication, $0, 0, 0)")
+    __target_intrinsic(cuda, "fcptDuplication($0)")
+    public uint4 duplication(int2 q);
+    __target_intrinsic(wgsl, "textureStore(duplication_out, $0, 0, $1)")
+    __target_intrinsic(cuda, "fcptStoreDuplication($0, $1)")
+    public void storeDuplication(int2 p, uint4 value);
+    __target_intrinsic(wgsl, "textureLoad(temporal_shifts, $0, $1, 0)")
+    __target_intrinsic(cuda, "fcptTemporalShift($0, $1)")
+    public uint4 temporalShift(int2 p, uint layer);
+    __target_intrinsic(wgsl, "textureStore(temporal_shifts_out, $0, $1, $2)")
+    __target_intrinsic(cuda, "fcptStoreTemporalShift($0, $1, $2)")
+    public void storeTemporalShift(int2 p, uint layer, uint4 value);
+    __target_intrinsic(wgsl, "textureLoad(shift_data, $0, $1, 0)")
+    __target_intrinsic(cuda, "fcptShiftData($0, $1)")
+    public uint4 shiftData(int2 p, uint layer);
+    __target_intrinsic(wgsl, "textureStore(shift_data_out, $0, $1, $2)")
+    __target_intrinsic(cuda, "fcptStoreShiftData($0, $1, $2)")
+    public void storeShiftData(int2 p, uint layer, uint4 value);
+    __target_intrinsic(wgsl, "textureLoad(reservoir_temp, $0, $1, 0)")
+    __target_intrinsic(cuda, "fcptReservoirTemporal($0, $1)")
+    public uint4 reservoirTemporal(int2 q, uint layer);
+    __target_intrinsic(wgsl, "textureStore(compute_out, $0, $1, $2)")
+    __target_intrinsic(cuda, "fcptStoreColor($0, $1, $2)")
+    public void storeColor(int2 p, uint layer, float4 color);
 }
 #endif
 

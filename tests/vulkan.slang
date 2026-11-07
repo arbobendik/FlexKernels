@@ -59,6 +59,23 @@ struct TestScene : IScene {
     void queueJobStore(uint index, uint job) { queue[80u + index] = job; }
     void queueDispatchStore(uint x, uint y, uint z) { queue[0] = x + y + z; }
     uint queuedShifts(uint index) { return queue[index]; }
+    bool currentDomain(int2 p, out Domain dom) { dom = previousDomain(p + 1); return p.y > 1; }
+    uint samples() { return 2u; }
+    uint restirDecorrelation() { return 1u; }
+    uint isTemporal() { return 1u; }
+    float3x3 invViewMatrix() { return viewMatrix(); }
+    void storeReservoirInitial(int2 p, Reservoir r, Hit x1) { reservoirs[uint(p.x)] = r; queue[2] = x1.triangle_index; }
+    void storeReservoirTemporal(int2 p, Reservoir r, Hit x1) { reservoirs[uint(p.y)] = r; queue[1] = x1.instance_index; }
+    void storeReservoirPrevious(int2 p, Reservoir r, Hit x1) { reservoirs[uint(p.x + p.y)] = r; queue[0] = x1.instance_index; }
+    void storePreviousLayer(int2 p, uint layer, uint4 value) { queue[uint(p.x) + layer] = value.x + value.y; }
+    uint4 duplication(int2 q) { return uint4(queue[uint(q.x)]); }
+    void storeDuplication(int2 p, uint4 value) { queue[uint(p.y)] = value.x; }
+    uint4 temporalShift(int2 p, uint layer) { return uint4(queue[uint(p.x) + layer]); }
+    void storeTemporalShift(int2 p, uint layer, uint4 value) { queue[uint(p.y) + layer] = value.w; }
+    uint4 shiftData(int2 p, uint layer) { return uint4(queue[uint(p.y) + layer]); }
+    void storeShiftData(int2 p, uint layer, uint4 value) { queue[uint(p.x) + layer] = value.z; }
+    uint4 reservoirTemporal(int2 q, uint layer) { return uint4(queue[uint(q.x) + layer]); }
+    void storeColor(int2 p, uint layer, float4 color) { queue[uint(p.x) + layer] = asuint(color.x + color.w); }
 }
 #endif
 
