@@ -1,6 +1,6 @@
 implementing pathtracer;
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 // ReSTIR PT Enhanced (Lin, Kettunen and Wyman 2026)
 
 // How a path ends: next event estimation, emissive surface, point light sphere, environment or environment by next event estimation
@@ -19,12 +19,12 @@ public static const uint RC_ENV = 3u;
 
 // Bit offsets of the packed path description
 public static const uint PATH_END = 0u;
-#if FK_RESTIR
+#ifdef FK_RESTIR
 public static const uint PATH_K = 5u;
 public static const uint PATH_RC = 10u;
 #endif
 public static const uint PATH_TYPE = 12u;
-#if FK_RESTIR
+#ifdef FK_RESTIR
 public static const uint PATH_LOBE_PREV = 15u;
 public static const uint PATH_LOBE = 18u;
 public static const uint PATH_NEE = 21u;
@@ -93,7 +93,7 @@ __extern_cpp public struct LightBounds {
     __extern_cpp public float cos_theta_o;
 };
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 __target_intrinsic(wgsl, "Ray")
 __target_intrinsic(cuda, "FKRay")
 __extern_cpp public struct Ray {
@@ -333,7 +333,7 @@ float interpolate(float a, float b, float t) {
     return tangentToWorld(float3(sin_theta * cos(phi), 1.0f - one_minus_cos, sin_theta * sin(phi)), normalize(center - p));
 }
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 // Ray sphere intersection test.
 func raySphere(center: float3, radius: float, ray: Ray, max_len: float) -> float {
     let L: float3 = center - ray.origin;
@@ -376,7 +376,7 @@ func wrongSide(is_inside: bool, refracted: bool, dir: float3, geometry_n: float3
 }
 #endif
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
     public bool shadowTraverseInstanceBVH(Ray ray, float l, bool two_sided);
@@ -401,7 +401,7 @@ public interface IScene {
 }
 #endif
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 public struct HookScene : IScene {
     __target_intrinsic(wgsl, "traverseInstanceBVH($0, $1, $2)")
     __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2)")
@@ -466,7 +466,7 @@ public struct HookScene : IScene {
 }
 #endif
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 [ForceInline] uint select(uint f, uint t, bool cond) { return select(cond, t, f); }
 
 func occluded<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_offset: float, light_dir: float3) -> bool {
@@ -610,7 +610,7 @@ func emissionWeight<S: IScene>(scene: S, vertex: NEEVertex, hit: Hit, light_poin
 }
 #endif
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 func environmentMapped<S: IScene>(scene: S) -> bool {
     return scene.environmentMapSize().x > 1u && scene.environmentMapSize().y > 1u;
 }
