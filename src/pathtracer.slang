@@ -14,6 +14,7 @@ public static const uint LOBE_REFLECT = 2u;
 public static const uint LOBE_SHEEN_VELVET = 4u;
 
 __target_intrinsic(wgsl, "Material")
+__target_intrinsic(glsl, "Material")
 __target_intrinsic(cuda, "BSDFMaterial")
 __extern_cpp public struct Material {
     __extern_cpp public float3 albedo;
@@ -179,6 +180,7 @@ __extern_cpp public struct Random {
 [CudaDeviceExport] public Random pcg(uint state) {
     __target_switch {
     case wgsl:
+    case glsl:
     // PCG random number generator
     // Reference: http://www.pcg-random.org/
     return Random(state * 747796405u + 2891336453u, float(hash(state)) / float(UINT_MAX));
