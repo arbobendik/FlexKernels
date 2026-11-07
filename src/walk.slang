@@ -580,7 +580,7 @@ func occluded<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_of
 // Light sampling, as flex-cuda-pt's sampleLight: a light the light BVH picks by its importance to origin, a uniform point
 // on it or a direction in the cone of its sphere, seen from origin lifted by geometry_offset in front of smooth_n. Sided,
 // for translucent surfaces, light all around, origin lifted to the side of the face geometry_n the light lies on
-func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_n: float3, geometry_offset: float, sided: bool, init_random_state: uint) -> TreeSample {
+public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_n: float3, geometry_offset: float, sided: bool, init_random_state: uint) -> TreeSample {
     let random_pick: Random = pcg(init_random_state);
     let random_side: Random = pcg(random_pick.state);
     let random_along: Random = pcg(random_side.state);
@@ -651,7 +651,7 @@ func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float3, geom
 
 // Density in solid angle of light sampling from origin, lifted to start, picking point on the light of trail slot j, down
 // its trail (pbrt-v4's BVHLightSampler::PMF), as flex-cuda-pt's lightPdf; with no smooth_n, sided, all around
-func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, start: float3, j: uint, light_point: float3) -> float {
+public func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, start: float3, j: uint, light_point: float3) -> float {
     let trail_texel: uint4 = scene.lightTrail(j);
     var trail: uint2 = trail_texel.xy;
     var probability: float = 1.0f;
@@ -793,7 +793,7 @@ uint extractBits(uint e, uint offset, uint count) {
 // vertex (Sec. 6.1), Russian roulette only modifies their source density (Sec. 6.2.4). Replaying, the hybrid shift maps r into
 // dom (Sec. 2.3): random replay up to x_k-1 and reconnection to x_k. It returns the shifted integrand times the Jacobian
 // determinant of Eq. 2, zero if the path is not in the image of the shift.
-func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, scale: float, inout sel: Selection) -> Shift {
+public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, scale: float, inout sel: Selection) -> Shift {
     let fail: Shift = Shift(float3(0.0f), 0.0f);
     let end: uint = extractBits(r.path, PATH_END, 5u);
     let k: uint = extractBits(r.path, PATH_K, 5u);

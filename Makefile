@@ -108,9 +108,9 @@ test-cuda: build/parity-cuda  # On the GPU
 	node tests/compare.mjs tests/golden-wgsl.txt build/cuda.txt 58
 
 test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module  # Compile and validate only
-	$(SLANGC) -Ibuild/cuda $< -target spirv -o build/vulkan.spv
+	$(SLANGC) -Ibuild/cuda -warnings-as-errors 30081 $< -target spirv -o build/vulkan.spv
 	spirv-val --target-env vulkan1.3 build/vulkan.spv
-	$(SLANGC) -Ibuild/cuda-restir -DFK_RESTIR=1 $< -target spirv -o build/vulkan-restir.spv
+	$(SLANGC) -Ibuild/cuda-restir -DFK_RESTIR=1 -warnings-as-errors 30081 $< -target spirv -o build/vulkan-restir.spv
 	spirv-val --target-env vulkan1.3 build/vulkan-restir.spv
 
 # On the grid of the CUDA goldens
