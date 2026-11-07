@@ -160,9 +160,9 @@ the case sampled from its incoming direction, from inside at its larger radii.
 `pointLightRadiance` is checked separately on every case in C++, CUDA and WGSL: integrating its radiance over a
 diffuse sphere must recover `4 * PI * intensity * color`, without changing the reference golden columns.
 
-- `tests/golden-cuda.txt`: `make golden REFERENCE=<flex-cuda-pt 02d0bf1>/src/shaders` host-compiles the unmodified
-  `renderer.cu` against `tests/shim`, its D without cancellation or BIAS, and reproduces it byte for byte: the functions
-  both consumers had alike.
+- `tests/golden-cuda.txt`: flex-cuda-pt `02d0bf1`'s unmodified `renderer.cu`, host-compiled against stand-ins of CUDA by
+  `tests/reference.cpp`, which the history keeps, its D without cancellation or BIAS: the functions both consumers had
+  alike.
 - `tests/golden-wgsl.txt`: `make golden-wgsl WGSL_REFERENCE=<FlexLight 754e9a0>/.../pathtracer-compute.wgsl`
   appends the kernel of `tests/wgsl.mjs` with `--flexlight` to the reference shader and runs it through Dawn, here in
   `ubuntu:24.04` with lavapipe as CI runs it: every column. For the generated code the kernel prepends FlexLight's
