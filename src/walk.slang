@@ -2,7 +2,7 @@
 // survival of its paths, and the light tree of light sampling, beside the BSDFs of pathtracer.slang
 implementing pathtracer;
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 // ReSTIR PT Enhanced (Lin, Kettunen and Wyman 2026) on top of the path tracer above.
 // Paths live in primary sample space, vertex b draws its random numbers from stream(seed, b).
 
@@ -22,12 +22,12 @@ public static const uint RC_ENV = 3u;
 
 // Bit offsets of the packed path description
 public static const uint PATH_END = 0u;
-#if FK_RESTIR
+#ifdef FK_RESTIR
 public static const uint PATH_K = 5u;
 public static const uint PATH_RC = 10u;
 #endif
 public static const uint PATH_TYPE = 12u;
-#if FK_RESTIR
+#ifdef FK_RESTIR
 public static const uint PATH_LOBE_PREV = 15u;
 public static const uint PATH_LOBE = 17u;
 public static const uint PATH_NEE = 19u;
@@ -74,7 +74,7 @@ __extern_cpp public struct Selection {
     __extern_cpp public uint random_state;
 }
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 // Stream compaction of the temporal and paired spatial shifts (Sec. 6.2.2), sorted into bins of equal reconnection type and replay depth
 public static const uint SHIFT_DEPTHS = 8u;
 public static const uint SHIFT_BINS = 40u;
@@ -348,7 +348,7 @@ __extern_cpp public struct LightBounds {
     return tangentToWorld(float3(sin_theta * cos(phi), 1.0f - one_minus_cos, sin_theta * sin(phi)), normalize(center - p));
 }
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 public static const float POW32 = 4294967296.0;
 
 // Target plumbing: FlexLight's own Ray, by which its scene's hooks trace, flex-cuda-pt's FKRay, as Hit
@@ -446,7 +446,7 @@ func wrongSide(is_inside: bool, refracted: bool, dir: float3, geometry_n: float3
 }
 #endif
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 // Target plumbing: FlexLight's own Light, flex-cuda-pt's FKLight, as Hit
 __target_intrinsic(wgsl, "Light")
 __target_intrinsic(cuda, "FKLight")
@@ -491,7 +491,7 @@ public interface IScene {
 }
 #endif
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 // Target plumbing: the scene of the ReSTIR variant outputs, each method FlexLight's own function or the read of its
 // buffer it stands for in its shader, and flex-cuda-pt's function of the name its adapter defines, in place of a call
 public struct HookScene : IScene {
@@ -558,7 +558,7 @@ public struct HookScene : IScene {
 }
 #endif
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 // Target plumbing: WGSL's select of uints, in its argument order f, t, cond, as pathtracer.slang's of floats, which
 // uints would otherwise reach through float
 [ForceInline] uint select(uint f, uint t, bool cond) { return select(cond, t, f); }
@@ -696,7 +696,7 @@ func emissionWeight<S: IScene>(scene: S, vertex: NEEVertex, hit: Hit, light_poin
 }
 #endif
 
-#if FK_RESTIR
+#ifdef FK_RESTIR
 func environmentMapped<S: IScene>(scene: S) -> bool {
     return scene.environmentMapSize().x > 1u && scene.environmentMapSize().y > 1u;
 }

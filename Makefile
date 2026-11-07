@@ -2,7 +2,8 @@ SLANG_VERSION ?= 2026.19
 SLANG_PATH ?= .deps/slang-$(SLANG_VERSION)
 SLANGC ?= $(SLANG_PATH)/bin/slangc
 # Debug information keeps the statements of the source, which Slang folds into expressions otherwise
-SLANGFLAGS = -line-directive-mode none -g2
+# Implicit conversions that change a value's type, such as uints reaching float overloads, fail the build
+SLANGFLAGS = -line-directive-mode none -g2 -warnings-as-errors 30081
 ACTIONLINT_VERSION ?= 1.7.7
 ACTIONLINT ?= .deps/actionlint
 SOURCE = src/pathtracer.slang src/walk.slang
@@ -58,7 +59,7 @@ build/glsl/pathtracer.glsl: src/glsl.slang $(SOURCE) $(SLANGC)
 # It embeds the source's path, as given here, and debug information its absolute one, which it leaves out.
 build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module: $(SOURCE) $(SLANGC)
 	mkdir -p $(@D)
-	$(SLANGC) $< $(MODULEFLAGS) -o $@
+	$(SLANGC) $< -warnings-as-errors 30081 $(MODULEFLAGS) -o $@
 
 build/cpp/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp
