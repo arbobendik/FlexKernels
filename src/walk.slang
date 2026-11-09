@@ -37,7 +37,13 @@ public static const uint PATH_INSIDE = 20u;
 public static const uint STREAM_NEE = 64u;
 public static const uint STREAM_RR = 128u;
 public static const uint STREAM_SELECT = 193u;
+public static const uint STREAM_COVERAGE = 256u;
+// Sky samples apart from flex-cuda-pt's coverage, which draws from 256 as its walk did, so both keep their noise
+#ifdef FK_FCPT_WALK
+public static const uint STREAM_SKY = 448u;
+#else
 public static const uint STREAM_SKY = 256u;
+#endif
 #endif
 
 // Target plumbing: flex-cuda-pt's own Reservoir (renderer.h), by which its host sizes its buffers, the struct for every
@@ -449,12 +455,55 @@ __extern_cpp public struct Surface {
     __extern_cpp public Material material;
     __extern_cpp public bool skip;
     __extern_cpp public uint random_state;
+#ifdef FK_FCPT_WALK
+    // flex-cuda-pt's alpha: the share of rays the surface stops, the rest passing straight through
+    __extern_cpp public float coverage = 1.0f;
+#endif
+}
+
+// Whether surfaces may be partly covered, flex-cuda-pt's alone, compiled out of FlexLight's walk
+[ForceInline] public bool coverageUsed() {
+    __target_switch {
+    case wgsl: case glsl: return false;
+    default: return true;
+    }
+}
+[ForceInline] func coverageOf(surface: Surface) -> float {
+#ifdef FK_FCPT_WALK
+    return surface.coverage;
+#else
+    return 1.0f;
+#endif
+}
+
+// Where coverage's draw u leaves a surface uncovered: straight through it at index of refraction 1, its emission and
+// absorption kept, as flex-cuda-pt's walk
+func uncovered(surface: Surface, u: float) -> Surface {
+    if (!coverageUsed() || u < coverageOf(surface)) {
+        return surface;
+    }
+    var material: Material = {};
+    material.albedo = float3(1.0f);
+    material.emissive = surface.material.emissive;
+    material.transmission = 1.0f;
+    material.ior = 1.0f;
+    material.absorption = surface.material.absorption;
+    var through: Surface = surface;
+    through.material = material;
+    return through;
 }
 
 // Surfaces transmitting nothing face the ray along dir with both normals, as in flex-cuda-pt's walk and Cycles
 func facingRay(surface: Surface, dir: float3) -> Surface {
     let facing: float = facingSign(surface.material.transmission, surface.geometry_n, dir);
+#ifdef FK_FCPT_WALK
+    var faced: Surface = surface;
+    faced.smooth_n = surface.smooth_n * facing;
+    faced.geometry_n = surface.geometry_n * facing;
+    return faced;
+#else
     return Surface(surface.smooth_n * facing, surface.geometry_n * facing, surface.geometry_offset, surface.material, surface.skip, surface.random_state);
+#endif
 }
 
 __extern_cpp public struct SkySample {
@@ -1032,6 +1081,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         var geometry_density: float = 0.0f;
         if (!point_light_lighting) {
             surface = scene.surfaceAt(hit, ray.origin, stream(r.seed, b));
+            if (coverageUsed()) {
+                surface = uncovered(surface, pcg(stream(r.seed, b + STREAM_COVERAGE)).value);
+            }
             front_n = surface.smooth_n;
             surface = facingRay(surface, ray.unit_direction);
             if (is_inside) {
