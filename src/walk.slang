@@ -141,6 +141,27 @@ func arrivalLobe(b: uint, prev_lobe: uint) -> uint {
     return select(LOBE_NONE, prev_lobe, b > 0u);
 }
 
+// Media behind and in front of a hit's face
+__extern_cpp public struct MediumSides {
+    __extern_cpp public Medium behind;
+    __extern_cpp public Medium front;
+    __extern_cpp public uint2 fillings;
+}
+func mediumSides(surface: Surface, medium: Medium, filling: uint, dir: float3) -> MediumSides {
+    var sides: MediumSides = MediumSides(medium, medium, uint2(filling));
+#ifdef FK_FCPT_WALK
+    if (surface.encloses) {
+        sides.behind = surface.volume;
+        sides.fillings.x = surface.fills;
+        if (dot(dir, surface.geometry_n) > 0.0f) {
+            sides.front = {};
+            sides.fillings.y = UINT_MAX;
+        }
+    }
+#endif
+    return sides;
+}
+
 // Inside a layer passed on to when arriving behind its face
 func arrivesBehind(dir: float3, n: float3) -> bool {
     return dot(dir, n) > 0.0f;
@@ -439,6 +460,13 @@ __extern_cpp public struct NEEVertex {
     __extern_cpp public float3 start;
 }
 
+// Homogeneous medium: scattering, extinction, Henyey-Greenstein g
+__target_intrinsic(cuda, "FKMedium")
+__extern_cpp public struct Medium {
+    __extern_cpp public float3 scatter = float3(0.0f);
+    __extern_cpp public float3 extinction = float3(0.0f);
+}
+
 __target_intrinsic(wgsl, "Surface")
 __target_intrinsic(cuda, "FKSurface")
 __extern_cpp public struct Surface {
@@ -451,6 +479,10 @@ __extern_cpp public struct Surface {
 #ifdef FK_FCPT_WALK
     // Share of rays the surface stops, the rest pass straight through
     __extern_cpp public float coverage = 1.0f;
+    // Volume behind the face: its medium and a varying one's material key, else UINT_MAX
+    __extern_cpp public bool encloses = false;
+    __extern_cpp public Medium volume;
+    __extern_cpp public uint fills = UINT_MAX;
 #endif
 }
 
@@ -1044,6 +1076,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     var layer: uint = 0u;
     var passed: bool = false;
     var passes: bool = false;
+    // Medium the ray travels in, a varying one's material key or UINT_MAX, and whether facing the ray turned the face
+    var scatter_in: float3 = float3(0.0f);
+    var extinction_in: float3 = float3(0.0f);
+    var filling: uint = UINT_MAX;
+    var face_n: float3 = float3(0.0f);
     if (fullWalk()) {
         spread = coneOf(dom).y;
         width = coneOf(dom).x + spread * length(dom.x1 - dom.x0);
@@ -1085,6 +1122,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 surface = uncovered(surface, pcg(stream(r.seed, b + STREAM_COVERAGE)).value);
             }
             front_n = surface.smooth_n;
+            if (fullWalk()) {
+                face_n = surface.geometry_n;
+            }
             surface = facingRay(surface, ray.unit_direction);
             if (fullWalk() && passed) {
                 is_inside = arrivesBehind(ray.unit_direction, surface.geometry_n);
@@ -1348,6 +1388,16 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (refracted && !through) {
                 is_inside = !is_inside;
             }
+            if (fullWalk() && !passes) {
+                // Into the medium on the side the ray leaves by
+                var faced: Surface = surface;
+                faced.geometry_n = face_n;
+                let sides: MediumSides = mediumSides(faced, Medium(scatter_in, extinction_in), filling, ray.unit_direction);
+                let front: bool = (dot(dir, surface.geometry_n) > 0.0f) == (dot(surface.geometry_n, face_n) > 0.0f);
+                scatter_in = select(sides.behind.scatter, sides.front.scatter, front);
+                extinction_in = select(sides.behind.extinction, sides.front.extinction, front);
+                filling = select(sides.fillings.x, sides.fillings.y, front);
+            }
             ray.unit_direction = dir;
             if (!passes) {
                 ray.origin += surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, is_inside != through);
@@ -1426,6 +1476,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         }
         // Project ray origin to hit point
         ray.origin += hit.distance * ray.unit_direction;
+        if (fullWalk()) {
+            throughput *= exp(- extinction_in * hit.distance);
+        }
         if (fullWalk()) {
             width += spread * hit.distance;
         }
