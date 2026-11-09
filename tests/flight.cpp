@@ -3,9 +3,12 @@
 // scatters, weighted by s, reads s (1 - exp(-e d)) / e, each per channel within four standard errors, as it samples
 // distances at density sigma exp(-sigma t) and flightWeight divides it out (renderer.cu 66d4e7e, lines 1574-1583,
 // 1643); and isotropic directions are uniform over the sphere, their z mean 0 and z^2 mean 1/3 within four standard
-// errors. Printed: each reading against its closed form
+// errors. Light is sampled at a scattering vertex generating, or replaying at the stop in a homogeneous medium, never
+// for a shift in a varying one (renderer.cu 1593). Printed: each reading against its closed form, and the cases that
+// differ from flex-cuda-pt's rule
 #include <stdio.h>
 #include <math.h>
+#include <initializer_list>
 #include "pathtracer.cpp"
 
 int main() {
@@ -42,5 +45,13 @@ int main() {
     failed += !iso;
     printf("isotropic: z mean %.5f +- %.5f, z^2 mean %.5f +- %.5f of 0.33333%s\n", mz, sz, mz2, sz2,
         iso ? "" : "  FAILED");
+    int rule = 0;
+    for (const bool replay : {false, true})
+        for (const bool varying : {false, true})
+            for (uint32_t b = 0; b < 4; b++)
+                rule += scatterSampled_0(replay, b, 2, varying) != (!replay || (b == 2 && !varying));
+    failed += rule != 0;
+    printf("scattering vertices sampling light: %d of 16 cases differ from flex-cuda-pt's%s\n", rule,
+        rule ? "  FAILED" : "");
     return failed;
 }
