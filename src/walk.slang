@@ -38,6 +38,8 @@ public static const uint STREAM_NEE = 64u;
 public static const uint STREAM_RR = 128u;
 public static const uint STREAM_SELECT = 193u;
 public static const uint STREAM_COVERAGE = 256u;
+// flex-cuda-pt's free flights through media, as its walk draws them
+public static const uint STREAM_MEDIUM = 320u;
 // Sky samples apart from flex-cuda-pt's coverage, which draws from 256 as its walk did, so both keep their noise
 #ifdef FK_FCPT_WALK
 public static const uint STREAM_SKY = 448u;
@@ -220,6 +222,28 @@ func shadowContext(surface: Surface, turned: bool, side_n: float3, extinction: f
     return context;
 }
 #endif
+
+// Free flight through a homogeneous medium of mean scattering coefficient sigma: the distance to the next scattering
+// its draw u samples, at density sigma exp(-sigma t)
+func freeFlight(u: float, sigma: float) -> float {
+    return - log(1.0f - u) / sigma;
+}
+// The throughput's factor over a distance through a homogeneous medium whose scattering free flight samples by its mean
+// sigma: what the medium lets through over what free flight left unscattered, times its scattering over sigma where it
+// scatters there, as flex-cuda-pt's walk
+func flightWeight(scatter: float3, extinction: float3, sigma: float, distance: float, scatters: bool) -> float3 {
+    let passed: float3 = exp((float3(sigma) - extinction) * distance);
+    return select(passed, scatter * passed / sigma, scatters);
+}
+// A direction the isotropic phase function samples, at density 1 / (4 pi)
+func isotropic(random_state: uint) -> float3 {
+    let u: Random = pcg(random_state);
+    let v: Random = pcg(u.state);
+    let z: float = 1.0f - 2.0f * u.value;
+    let r: float = sqrt(max(1.0f - z * z, 0.0f));
+    let angle: float = 2.0f * PI * v.value;
+    return float3(r * cos(angle), r * sin(angle), z);
+}
 
 // Whether materials may have layers, which a ray meets in turn at one hit, flex-cuda-pt's walk's alone
 [ForceInline] public bool layersUsed() {
@@ -1230,6 +1254,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     // Medium the ray travels in, its extinction (its scattering comes with free flight), the key of its material if
     // varying, else UINT_MAX, and whether facing the ray turned the hit's face: by plain values, as FlexLight's WGSL
     // would carry a struct
+    var scatter_in: float3 = float3(0.0f);
     var extinction_in: float3 = float3(0.0f);
     var filling: uint = UINT_MAX;
     var turned: bool = false;
@@ -1535,8 +1560,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 // Into the medium on the side it leaves by, of the face as the mesh turns it
                 var faced: Surface = surface;
                 faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
-                let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction_in), filling, ray.unit_direction);
+                let sides: MediumSides = mediumSides(faced, Medium(scatter_in, extinction_in), filling, ray.unit_direction);
                 let front: bool = leavesInFront(faced.geometry_n, dir, surface.geometry_n, surface.geometry_n);
+                scatter_in = select(sides.behind.scatter, sides.front.scatter, front);
                 extinction_in = select(sides.behind.extinction, sides.front.extinction, front);
                 filling = select(sides.fillings.x, sides.fillings.y, front);
             }
@@ -1590,6 +1616,44 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         if (replay && b == stop && rc == RC_ENV && hit.instance_index != UINT_MAX) {
             return fail;
         }
+        if (mediaUsed()) {
+            // Before the hit, the medium scatters the ray at distances its mean scattering coefficient samples, at
+            // vertices leaving by the isotropic phase function, which ReSTIR neither reconnects at nor across
+            let sigma: float = (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f;
+            if (replay && b == stop && rc == RC_SURFACE && sigma > 0.0f) {
+                return fail;
+            }
+            prev.rough = prev.rough && !(sigma > 0.0f);
+            while (hit.instance_index != UINT_MAX) {
+                let along: float = freeFlight(pcg(stream(r.seed, b + STREAM_MEDIUM)).value, sigma);
+                if (!(along < hit.distance)) {
+                    break;
+                }
+                b++;
+                ray.origin += along * ray.unit_direction;
+                throughput *= flightWeight(scatter_in, extinction_in, sigma, along, true);
+                if (coneUsed()) {
+                    width += spread * along;
+                    spread += PI;
+                }
+                // Light sampling at scattering vertices comes with medium-vertex next event estimation (K19)
+                if (replay && b == stop) {
+                    return fail;
+                }
+                if (!replay) {
+                    let survival_probability: float = survivalProbability(throughput, density);
+                    if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
+                        return fail;
+                    }
+                    density *= survival_probability;
+                }
+                // Emission met after scattering counts whole while no light is sampled there
+                nee_vertex.none = true;
+                ray.unit_direction = isotropic(stream(r.seed, b));
+                prev = Vertex(false, LOBE_DIFFUSE, 0.25f * INV_PI, 1.0f, is_inside);
+                hit = scene.traverseInstanceBVH(ray, true, POW32);
+            }
+        }
         if (hit.instance_index == UINT_MAX) {
             // BSDF sampled escapes share the environment with its next event estimation
             let weight: float = escapeWeight(scene, select(0.0f, prev.pdf, !nee_vertex.none), ray.unit_direction);
@@ -1619,8 +1683,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         // Project ray origin to hit point
         ray.origin += hit.distance * ray.unit_direction;
         if (mediaUsed()) {
-            // What the medium lets through to the hit
-            throughput *= exp(- extinction_in * hit.distance);
+            // What the medium lets through to the hit, unscattered
+            throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
         }
         if (coneUsed()) {
             width += spread * hit.distance;
