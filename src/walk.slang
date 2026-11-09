@@ -81,6 +81,17 @@ __extern_cpp public struct Selection {
     __extern_cpp public float w_sum;
     __extern_cpp public float3 color;
     __extern_cpp public uint random_state;
+#ifdef FK_FCPT_WALK
+    // What flex-cuda-pt's varying media emit along the path, which its pixel adds as its first hit's emission, not
+    // resampled
+    __extern_cpp public float3 glow = float3(0.0f);
+#endif
+}
+// Adds to a selection's glow, flex-cuda-pt's alone
+[ForceInline] func addGlow(inout sel: Selection, glow: float3) {
+#ifdef FK_FCPT_WALK
+    sel.glow += glow;
+#endif
 }
 // Target plumbing: a selection of zeros, its reservoir flex-cuda-pt's value-initialized, as emptyReservoir's
 [ForceInline] public Selection emptySelection() {
@@ -240,6 +251,11 @@ func flightWeight(scatter: float3, extinction: float3, sigma: float, distance: f
 // sampled there by its nee_vertex, of the phase function's density 1 / (4 pi)
 func scatteredVertex(is_inside: bool) -> Vertex {
     return Vertex(false, LOBE_DIFFUSE, 0.0f, 1.0f, is_inside);
+}
+// Whether light is sampled at a scattering vertex b: generating, or replaying at the stop in a homogeneous medium; light
+// sampled in a varying medium shifts to no other pixel, as its ratio tracked shadow would differ, as flex-cuda-pt's walk
+func scatterSampled(replay: bool, b: uint, stop: uint, varying: bool) -> bool {
+    return !replay || (b == stop && !varying);
 }
 // A direction the isotropic phase function samples, at density 1 / (4 pi)
 func isotropic(random_state: uint) -> float3 {
@@ -724,6 +740,8 @@ public interface IScene {
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
     public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe);
     public uint layers(Hit hit);
+    public float majorant(uint filling);
+    public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe);
     public float3 hitPosition(Hit hit);
     public float3x3 worldTriangle(uint instance_index, uint triangle_index);
     public LightBounds lightBounds(uint n);
@@ -813,6 +831,16 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "1u")
     __target_intrinsic(cuda, "fcptLayers($0)")
     public uint layers(Hit hit);
+    // Of the varying medium whose material key is filling, flex-cuda-pt's alone: its majorant, and the distance along
+    // the ray to its next real scattering by spectral tracking under it (past distance for none), the weight of the
+    // tentative collisions passed and the emission gathered on the way accumulating, and its coefficients taken where
+    // it scatters
+    __target_intrinsic(wgsl, "0.0f")
+    __target_intrinsic(cuda, "fcptMajorant($0)")
+    public float majorant(uint filling);
+    __target_intrinsic(wgsl, "0.0f")
+    __target_intrinsic(cuda, "fcptTrackMedium($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
+    public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe);
     __target_intrinsic(wgsl, "hitPosition($0)")
     __target_intrinsic(cuda, "fcptHitPosition($0)")
     public float3 hitPosition(Hit hit);
@@ -1261,6 +1289,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     // varying, else UINT_MAX, and whether facing the ray turned the hit's face: by plain values, as FlexLight's WGSL
     // would carry a struct
     var scatter_in: float3 = float3(0.0f);
+    // A varying medium's tracking weight and emission gathered up to the hit
+    var weight: float3 = float3(1.0f);
+    var glowed: float3 = float3(0.0f);
     var extinction_in: float3 = float3(0.0f);
     var filling: uint = UINT_MAX;
     var turned: bool = false;
@@ -1623,21 +1654,36 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             return fail;
         }
         if (mediaUsed()) {
-            // Before the hit, the medium scatters the ray at distances its mean scattering coefficient samples, at
-            // vertices leaving by the isotropic phase function, which ReSTIR neither reconnects at nor across
-            let sigma: float = (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f;
+            // Before the hit, the medium scatters the ray at distances its mean scattering coefficient samples, or a
+            // varying one's tracking under its majorant does, at vertices leaving by the isotropic phase function,
+            // which ReSTIR neither reconnects at nor across
+            let varying: bool = filling != UINT_MAX;
+            let sigma: float = select((scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, scene.majorant(filling), varying);
             if (replay && b == stop && rc == RC_SURFACE && sigma > 0.0f) {
                 return fail;
             }
             prev.rough = prev.rough && !(sigma > 0.0f);
+            var tracking: uint = stream(r.seed, b + STREAM_MEDIUM);
+            // A varying medium's tentative collisions passed and what it emits along the ray to the next
+            weight = float3(1.0f);
+            glowed = float3(0.0f);
             while (hit.instance_index != UINT_MAX) {
-                let along: float = freeFlight(pcg(stream(r.seed, b + STREAM_MEDIUM)).value, sigma);
+                var along: float = freeFlight(pcg(stream(r.seed, b + STREAM_MEDIUM)).value, sigma);
+                if (varying) {
+                    along = scene.trackMedium(filling, ray.origin, ray.unit_direction, hit.distance, tracking, weight, glowed, scatter_in, extinction_in, b, prev.lobe);
+                }
                 if (!(along < hit.distance)) {
                     break;
                 }
+                if (varying && !replay) {
+                    addGlow(sel, throughput * glowed / density);
+                }
+                glowed = float3(0.0f);
                 b++;
                 ray.origin += along * ray.unit_direction;
-                throughput *= flightWeight(scatter_in, extinction_in, sigma, along, true);
+                throughput *= select(flightWeight(scatter_in, extinction_in, sigma, along, true), weight, varying);
+                tracking = stream(r.seed, b + STREAM_MEDIUM);
+                weight = float3(1.0f);
                 if (coneUsed()) {
                     width += spread * along;
                     spread += PI;
@@ -1649,7 +1695,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b, prev.lobe)
 #endif
                     );
-                let f: float3 = throughput * light.radiance * (0.25f * INV_PI * powerHeuristic(light.density, select(0.0f, 0.25f * INV_PI, b < scene.maxBounces())));
+                let sampled: bool = scatterSampled(replay, b, stop, varying);
+                let f: float3 = select(float3(0.0f), throughput * light.radiance * (0.25f * INV_PI * powerHeuristic(light.density, select(0.0f, 0.25f * INV_PI, b < scene.maxBounces()))), sampled);
                 if (replay && b == stop) {
                     if (rc == RC_LIGHT && rgb_to_greyscale(f) > 0.0f) {
                         return Shift(f, 1.0f);
@@ -1706,8 +1753,15 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         // Project ray origin to hit point
         ray.origin += hit.distance * ray.unit_direction;
         if (mediaUsed()) {
-            // What the medium lets through to the hit, unscattered
-            throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
+            // What the medium lets through to the hit, unscattered, and what a varying one emits on the way
+            if (filling != UINT_MAX) {
+                if (!replay) {
+                    addGlow(sel, throughput * glowed / density);
+                }
+                throughput *= weight;
+            } else {
+                throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
+            }
         }
         if (coneUsed()) {
             width += spread * hit.distance;
