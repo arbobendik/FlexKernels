@@ -2,7 +2,8 @@
 // the volume a face bounds behind it, and none in front for a ray leaving that volume; the ray leaves into the side
 // its direction takes by side_n, as renderer.cu's walk reads them (66d4e7e, lines 1299-1305 and 1532-1533) by the
 // faced normal. Over faces bounding a volume or not, met from either side, faced either way, leaving by the face's
-// side or past a tilted shading normal: the medium and filling left into against flex-cuda-pt's. Printed: the cases
+// side or past a tilted shading normal: the medium and filling left into against flex-cuda-pt's; and the face as the
+// mesh turns it rebuilt from the faced one and a bit. Printed: the cases
 #include <stdio.h>
 #include <initializer_list>
 #include "pathtracer.cpp"
@@ -40,6 +41,19 @@ int main() {
                         cases++, differ += left.scatter.x != fcpt[i].scatter.x
                             || left.extinction.z != fcpt[i].extinction.z || filling != fill[i];
                     }
-    printf("media: %d of %d sides left into differ from flex-cuda-pt's%s\n", differ, cases, differ ? "  FAILED" : "");
-    return differ != 0;
+    // The face as the mesh turns it, from the faced surface and whether facing turned it, as the walk keeps it
+    int turns = 0;
+    for (const float transmission : {0.0f, 1.0f})
+        for (int k = 0; k < 16; k++) {
+            const float a = 0.4f * k;
+            Surface s = {up, up, 1e-4f, {ONE, ZERO, 1, 0, transmission, 1.5f, ZERO, ONE, 1}, false, 0, 1, false,
+                {ZERO, ZERO}, NONE};
+            const V in(cosf(a), 0, sinf(a));
+            const bool turned = facingSign(s.material.transmission, s.geometry_n, in) < 0;
+            const V g = facingRay_0(&s, in).geometry_n, back = turned ? V(-g.x, -g.y, -g.z) : g;
+            turns += back.z != up.z;
+        }
+    printf("media: %d of %d sides left into differ from flex-cuda-pt's, %d of 32 faces rebuilt wrong%s\n", differ,
+        cases, turns, differ || turns ? "  FAILED" : "");
+    return differ != 0 || turns != 0;
 }
