@@ -87,6 +87,8 @@ __extern_cpp public struct Selection {
     // What flex-cuda-pt's varying media emit along the path, which its pixel adds as its first hit's emission, not
     // resampled
     __extern_cpp public float3 glow = float3(0.0f);
+    // Whether contributions are only summed, as flex-cuda-pt's walk does with ReSTIR off, its consumer's choice
+    __extern_cpp public bool sums = false;
 #endif
 }
 // Adds to a selection's glow, flex-cuda-pt's alone
@@ -323,6 +325,14 @@ __extern_cpp public struct Vertex {
     if (!(w > 0.0f && w < 3.0e38f)) {
         return;
     }
+#ifdef FK_FCPT_WALK
+    // With ReSTIR off, a path's contributions are only summed, as flex-cuda-pt's resample (renderer.cu 1206-1211); the
+    // field alone exists in its variant, so its code goes with it
+    if (sel.sums) {
+        sel.color += weight;
+        return;
+    }
+#endif
     sel.w_sum += w;
     sel.color += weight;
     let random_value: Random = pcg(sel.random_state);
