@@ -92,6 +92,10 @@ __extern_cpp public struct Selection {
     __extern_cpp public float w_sum;
     __extern_cpp public float3 color;
     __extern_cpp public uint random_state;
+#ifdef FK_FCPT_WALK
+    // Emission of varying media along the path, added unresampled
+    __extern_cpp public float3 glow = float3(0.0f);
+#endif
 }
 
 // Bounds, normal cone (w, cos_theta_o) and power phi of a node's emitters
@@ -231,6 +235,11 @@ __extern_cpp public struct ShiftJob {
 }
 #endif
 
+[ForceInline] func addGlow(inout sel: Selection, glow: float3) {
+#ifdef FK_FCPT_WALK
+    sel.glow += glow;
+#endif
+}
 [ForceInline] public Selection emptySelection() {
     __target_switch {
     case cuda: __intrinsic_asm "Selection{}";
@@ -598,6 +607,8 @@ public interface IScene {
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
     public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe);
     public uint layers(Hit hit);
+    public float majorant(uint filling);
+    public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe);
     public float3 hitPosition(Hit hit);
     public float3x3 worldTriangle(uint instance_index, uint triangle_index);
     public LightBounds lightBounds(uint n);
@@ -679,6 +690,12 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "1u")
     __target_intrinsic(cuda, "fcptLayers($0)")
     public uint layers(Hit hit);
+    __target_intrinsic(wgsl, "0.0f")
+    __target_intrinsic(cuda, "fcptMajorant($0)")
+    public float majorant(uint filling);
+    __target_intrinsic(wgsl, "0.0f")
+    __target_intrinsic(cuda, "fcptTrackMedium($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
+    public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe);
     __target_intrinsic(wgsl, "hitPosition($0)")
     __target_intrinsic(cuda, "fcptHitPosition($0)")
     public float3 hitPosition(Hit hit);
@@ -1146,6 +1163,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     var passes: bool = false;
     // Medium the ray travels in, a varying one's material key or UINT_MAX, and whether facing the ray turned the face
     var scatter_in: float3 = float3(0.0f);
+    // Varying medium's tracking weight and emission up to the hit
+    var weight: float3 = float3(1.0f);
+    var glowed: float3 = float3(0.0f);
     var extinction_in: float3 = float3(0.0f);
     var filling: uint = UINT_MAX;
     var turned: bool = false;
@@ -1564,22 +1584,37 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             return fail;
         }
         if (mediaUsed()) {
-            let sigma: float = (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f;
+            // Free flight by the mean scattering coefficient, or tracking under a varying medium's majorant
+            let varying: bool = filling != UINT_MAX;
+            let sigma: float = select((scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, scene.majorant(filling), varying);
             if (replay && b == stop && rc == RC_SURFACE && sigma > 0.0f) {
                 return fail;
             }
             prev.rough = prev.rough && !(sigma > 0.0f);
+            var tracking: uint = stream(r.seed, b + STREAM_MEDIUM);
+            // Tracking weight and emission up to the next collision
+            weight = float3(1.0f);
+            glowed = float3(0.0f);
             while (hit.instance_index != UINT_MAX) {
                 // PDF(t) = sigma * exp(-sigma * t)
                 // CDF(t) = 1 - exp(-sigma * t) = u
                 // => t = -ln(1 - u) / sigma
-                let along: float = - log(1.0f - pcg(stream(r.seed, b + STREAM_MEDIUM)).value) / sigma;
+                var along: float = - log(1.0f - pcg(stream(r.seed, b + STREAM_MEDIUM)).value) / sigma;
+                if (varying) {
+                    along = scene.trackMedium(filling, ray.origin, ray.unit_direction, hit.distance, tracking, weight, glowed, scatter_in, extinction_in, b, prev.lobe);
+                }
                 if (!(along < hit.distance)) {
                     break;
                 }
+                if (varying && !replay) {
+                    addGlow(sel, throughput * glowed / density);
+                }
+                glowed = float3(0.0f);
                 b++;
                 ray.origin += along * ray.unit_direction;
-                throughput *= flightWeight(scatter_in, extinction_in, sigma, along, true);
+                throughput *= select(flightWeight(scatter_in, extinction_in, sigma, along, true), weight, varying);
+                tracking = stream(r.seed, b + STREAM_MEDIUM);
+                weight = float3(1.0f);
                 if (coneUsed()) {
                     width += spread * along;
                     spread += PI;
@@ -1589,7 +1624,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b, prev.lobe)
 #endif
                     );
-                let f: float3 = throughput * light.radiance * (0.25f * INV_PI * powerHeuristic(light.density, select(0.0f, 0.25f * INV_PI, b < scene.maxBounces())));
+                // Light sampled at a scattering vertex generating, or replaying at the stop in a homogeneous medium
+                let sampled: bool = !replay || (b == stop && !varying);
+                let f: float3 = select(float3(0.0f), throughput * light.radiance * (0.25f * INV_PI * powerHeuristic(light.density, select(0.0f, 0.25f * INV_PI, b < scene.maxBounces()))), sampled);
                 if (replay && b == stop) {
                     if (rc == RC_LIGHT && rgb_to_greyscale(f) > 0.0f) {
                         return Shift(f, 1.0f);
@@ -1647,7 +1684,15 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         // Project ray origin to hit point
         ray.origin += hit.distance * ray.unit_direction;
         if (mediaUsed()) {
-            throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
+            // Medium transmittance to the hit, and a varying medium's emission
+            if (filling != UINT_MAX) {
+                if (!replay) {
+                    addGlow(sel, throughput * glowed / density);
+                }
+                throughput *= weight;
+            } else {
+                throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
+            }
         }
         if (coneUsed()) {
             width += spread * hit.distance;
