@@ -235,6 +235,12 @@ func flightWeight(scatter: float3, extinction: float3, sigma: float, distance: f
     let passed: float3 = exp((float3(sigma) - extinction) * distance);
     return select(passed, scatter * passed / sigma, scatters);
 }
+// The vertex a ray scattered at, for what follows it: never reconnected at, and no density against the sky, which no
+// scattering vertex samples, so that an escape after it takes the whole sky; emission met next weighs against the light
+// sampled there by its nee_vertex, of the phase function's density 1 / (4 pi)
+func scatteredVertex(is_inside: bool) -> Vertex {
+    return Vertex(false, LOBE_DIFFUSE, 0.0f, 1.0f, is_inside);
+}
 // A direction the isotropic phase function samples, at density 1 / (4 pi)
 func isotropic(random_state: uint) -> float3 {
     let u: Random = pcg(random_state);
@@ -1636,21 +1642,38 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     width += spread * along;
                     spread += PI;
                 }
-                // Light sampling at scattering vertices comes with medium-vertex next event estimation (K19)
+                // Light sampled there, without a surface: from the vertex itself, all around, through the medium on both
+                // its sides, against the isotropic phase function by the power heuristic, as flex-cuda-pt's walk
+                let light: TreeSample = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
+#ifdef FK_FCPT_WALK
+                    , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b, prev.lobe)
+#endif
+                    );
+                let f: float3 = throughput * light.radiance * (0.25f * INV_PI * powerHeuristic(light.density, select(0.0f, 0.25f * INV_PI, b < scene.maxBounces())));
                 if (replay && b == stop) {
+                    if (rc == RC_LIGHT && rgb_to_greyscale(f) > 0.0f) {
+                        return Shift(f, 1.0f);
+                    }
                     return fail;
                 }
                 if (!replay) {
+                    var candidate: Reservoir = chain;
+                    if (extractBits(chain.path, PATH_RC, 2u) == RC_SURFACE) {
+                        candidate.radiance = safeDivide(f, chain_throughput);
+                    } else {
+                        candidate.path = insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_LIGHT, PATH_RC, 2u);
+                    }
+                    offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
                     let survival_probability: float = survivalProbability(throughput, density);
                     if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
                         return fail;
                     }
                     density *= survival_probability;
                 }
-                // Emission met after scattering counts whole while no light is sampled there
-                nee_vertex.none = true;
+                // Emission met next is weighed against the light sampled here
+                nee_vertex = NEEVertex(false, 0.25f * INV_PI, ray.origin, float3(0.0f), ray.origin);
                 ray.unit_direction = isotropic(stream(r.seed, b));
-                prev = Vertex(false, LOBE_DIFFUSE, 0.25f * INV_PI, 1.0f, is_inside);
+                prev = scatteredVertex(is_inside);
                 hit = scene.traverseInstanceBVH(ray, true, POW32);
             }
         }
