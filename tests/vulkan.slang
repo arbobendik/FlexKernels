@@ -15,6 +15,9 @@ struct TestScene : IScene {
         return Hit(ray.origin.xy, ray.unit_direction.x > 0.0f ? 0u : UINT_MAX, uint(consider_point_lights), 0u, max_len * 0.5f);
     }
     float3 shadowTransmittance(Ray ray, float l) { return float3(l > ray.origin.x ? 0.0f : 1.0f, 1.0f, 0.5f); }
+    float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe) {
+        return shadowTransmittance(ray, l) * exp(- extinction * l) * float(filling + random_state + depth + lobe);
+    }
     Surface surfaceAt(Hit hit, float3 origin, uint init_random_state) {
         return Surface(normalize(origin), float3(0.0f, 0.0f, 1.0f), 1e-4f, Material(origin, float3(hit.uv, 0.0f), 0.5f,
             0.0f, hit.distance, 1.5f, origin), hit.is_point_light != 0u, init_random_state + 1u);
