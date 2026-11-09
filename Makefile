@@ -90,6 +90,9 @@ build/cpp-restir/pathtracer.cpp: $(SOURCE) $(SLANGC)
 build/terminator-cpu: tests/terminator.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
+build/cones-cpu: tests/cones.cpp build/cpp-restir/pathtracer.cpp
+	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+
 build/coverage-cpu: tests/coverage.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir \
 		-DGENERATED='"build/cpp-restir/pathtracer.cpp"' $< -o $@
@@ -110,11 +113,12 @@ lint: $(ACTIONLINT)
 test: test-cpu test-wgsl test-vulkan
 
 # What only FlexLight had against its goldens, but what draws random numbers
-test-cpu: build/parity-cpu build/albedo-cpu build/terminator-cpu build/coverage-cpu
+test-cpu: build/parity-cpu build/albedo-cpu build/terminator-cpu build/coverage-cpu build/cones-cpu
 	$< < tests/golden-cuda.txt > build/cpu.txt
 	build/albedo-cpu
 	build/terminator-cpu
 	build/coverage-cpu
+	build/cones-cpu
 	node tests/compare.mjs tests/golden-cuda.txt build/cpu.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cpu.txt 58
 
