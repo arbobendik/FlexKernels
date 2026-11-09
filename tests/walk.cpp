@@ -2,7 +2,7 @@
 // light in its light tree, under an environment map of 1 everywhere that light sampling draws (4 x 2 cells, uniform
 // CDF). Furnaces of derived values, each within four standard errors (or 1e-4 where every path reads alike), its
 // standard error below 0.01 so that no estimate blowing up passes on its spread:
-// - a white Lambertian sphere returns all it receives: 1;
+// - a white Lambertian sphere returns all it receives: 1, with ReSTIR off too, where its selection only sums;
 // - so does one covered at 0.3 (alpha coverage passes the rest through), while a black one covered at 0.3 lets
 //   the sky through where both its faces leave the ray uncovered: 0.7^2;
 // - a coat over glass, both smooth dielectrics, returns all: 1;
@@ -102,6 +102,7 @@ float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t*, V*, V*,
 }
 
 // Mean and standard error of what paths from the camera bring back, toward the sphere aim, within angle of it
+static bool summing = false;
 static void furnace(const char* name, V camera, V aim, float angle, double truth, int& failed, float absorbs = 0) {
     const int N = 1 << 17;
     double sum = 0, sum2 = 0, through = 0;
@@ -119,6 +120,7 @@ static void furnace(const char* name, V camera, V aim, float angle, double truth
         path.seed = hash(3 * i + 2);
         Selection sel = {};
         sel.random_state = hash(3 * i + 3);
+        sel.sums = summing;
         walk_hook(dom, path, false, 1, &sel);
         const double y = sel.color.x;
         through += exp(-absorbs * hit.distance);
@@ -137,6 +139,9 @@ int main() {
     const Medium none = {ZERO, ZERO}, fog = {scaled(ONE, 2), scaled(ONE, 2)};
     scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
     furnace("white sphere", camera, center, 0.3f, 1, failed);
+    summing = true;
+    furnace("white sphere, ReSTIR off", camera, center, 0.3f, 1, failed);
+    summing = false;
     scene[0].coverage = 0.3f;
     furnace("white sphere covered at 0.3", camera, center, 0.3f, 1, failed);
     scene[0].layer[0] = lambert(0, 0);
