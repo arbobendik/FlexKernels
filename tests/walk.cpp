@@ -118,6 +118,9 @@ int main() {
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, false, none}, {center, 0.5f, false, {lambert(1, 0)}, 1, 1, false,
         none}};
     furnace("white sphere in a shell", camera, center, 0.15f, 1, failed);
+    scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}, {V(0, 0, 3.2f), 2, false, {dielectric(1)}, 1, 1,
+        false, none}};
+    furnace("white sphere beside a shell", V(2.2f, 0, 0.6f), V(0, 0, 0.6f), 0.1f, 1, failed);
     scene = {{center, 1, true, {lambert(0.5f, 1)}, 1, 1, false, none}};
     furnace("inside walls of albedo 0.5", center, V(0, 0, 1), 3.14159265f, 1, failed);
     return failed;
