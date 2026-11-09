@@ -69,6 +69,14 @@ build/parity-cpu: tests/parity.cpp build/cpp/pathtracer.cpp
 build/albedo-cpu: tests/albedo.cpp build/cpp/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -Ibuild/cpp $< -o $@
 
+build/cpp-restir/pathtracer.cpp: $(SOURCE) $(SLANGC)
+	mkdir -p build/cpp-restir
+	$(SLANGC) $(SLANGFLAGS) -DFK_RESTIR=1 -DFK_FCPT_WALK=1 $< -target cpp -o $@
+
+build/coverage-cpu: tests/coverage.cpp build/cpp-restir/pathtracer.cpp
+	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir \
+		-DGENERATED='"build/cpp-restir/pathtracer.cpp"' $< -o $@
+
 build/parity-cuda: tests/parity.cpp build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h $(REFERENCE)/renderer.h
 	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda -I$(REFERENCE) $< -o $@
 
@@ -83,9 +91,10 @@ lint: $(ACTIONLINT)
 
 test: test-cpu test-wgsl test-vulkan
 
-test-cpu: build/parity-cpu build/albedo-cpu
+test-cpu: build/parity-cpu build/albedo-cpu build/coverage-cpu
 	$< < tests/golden-cuda.txt > build/cpu.txt
 	build/albedo-cpu
+	build/coverage-cpu
 	node tests/compare.mjs tests/golden-cuda.txt build/cpu.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cpu.txt 58
 
