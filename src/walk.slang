@@ -41,7 +41,8 @@ public static const uint STREAM_SKY = 256u;
 #endif
 
 // Target plumbing: flex-cuda-pt's own Reservoir (renderer.h), by which its host sizes its buffers, the struct for every
-// other target; the shared code only copies rc, a Hit there, and never constructs a Reservoir
+// other target; the walk and shift make one only by emptyReservoir and reach rc, a Hit there, only by reservoirHit and
+// withReservoirHit
 __target_intrinsic(cuda, "Reservoir")
 __extern_cpp public struct Reservoir {
     __extern_cpp public uint seed;
@@ -73,6 +74,13 @@ __extern_cpp public struct Selection {
     __extern_cpp public float3 color;
     __extern_cpp public uint random_state;
 }
+// Target plumbing: a selection of zeros, its reservoir flex-cuda-pt's value-initialized, as emptyReservoir's
+[ForceInline] public Selection emptySelection() {
+    __target_switch {
+    case cuda: __intrinsic_asm "Selection{}";
+    default: return {};
+    }
+}
 
 #ifdef FK_RESTIR
 // Stream compaction of the temporal and paired spatial shifts (Sec. 6.2.2), sorted into bins of equal reconnection type and replay depth
@@ -89,6 +97,28 @@ __extern_cpp public struct Hit {
     __extern_cpp public uint triangle_index;
     __extern_cpp public uint is_point_light;
     __extern_cpp public float distance;
+}
+
+// Target plumbing: the triangle hit stored in a reservoir's rc, a uint4 (instance, triangle, uv), or flex-cuda-pt's
+// Hit, which its adapter reads, and writes through pointers to both; and a reservoir of zeros, flex-cuda-pt's
+// value-initialized
+[ForceInline] public Hit reservoirHit(Reservoir r) {
+    __target_switch {
+    case cuda: __intrinsic_asm "fcptReservoirHit($0)";
+    default: return Hit(asfloat(r.rc.zw), r.rc.x, r.rc.y, 0u, 0.0f);
+    }
+}
+[ForceInline] public Reservoir emptyReservoir() {
+    __target_switch {
+    case cuda: __intrinsic_asm "Reservoir{}";
+    default: return {};
+    }
+}
+[ForceInline] public void withReservoirHit(inout Reservoir r, __constref Hit hit) {
+    __target_switch {
+    case cuda: __intrinsic_asm "fcptWithReservoirHit($0, $1)";
+    default: r.rc = uint4(hit.instance_index, hit.triangle_index, asuint(hit.uv));
+    }
 }
 
 __extern_cpp public struct Domain {
@@ -964,7 +994,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     }
     // Replaying stops sampling at x_k-1 for reconnections and at the path end otherwise
     let stop: uint = select(k - 1u, end + select(0u, 1u, end_type == END_ENV), rc == RC_NONE);
-    let rc_hit: Hit = Hit(asfloat(r.rc.zw), r.rc.x, r.rc.y, 0u, 0.0f);
+    let rc_hit: Hit = reservoirHit(r);
     var ray: Ray = Ray(dom.x1, normalize(dom.x1 - dom.x0));
     var hit: Hit = dom.hit;
     var throughput: float3 = float3(1.0f);
@@ -977,7 +1007,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     var reconnection: float3 = {};
     var prev: Vertex = {};
     // Template for generated paths reconnecting at the first vertex meeting both footprint criteria
-    var chain: Reservoir = {};
+    var chain: Reservoir = emptyReservoir();
     chain.seed = r.seed;
     var chain_throughput: float3 = float3(0.0f);
     for (var b: uint = 0u; ; b++) {
@@ -1028,7 +1058,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         var here: Reservoir = chain;
         here.path = insertBits(insertBits(insertBits(insertBits(0u, b, PATH_K, 5u), RC_SURFACE, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 2u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
         here.jac = prev.pdf * geometry_density;
-        here.rc = uint4(hit.instance_index, hit.triangle_index, asuint(hit.uv));
+        withReservoirHit(here, hit);
         let arrived: bool = replay && rc == RC_SURFACE && b == k;
         if (arrived) {
             // The stored path takes over at the reconnection vertex
@@ -1332,7 +1362,7 @@ public func partner<S: IScene>(scene: S, p: int2, t: uint) -> int2 {
 }
 
 public func shift<S: IScene>(scene: S, dom: Domain, r: Reservoir) -> Shift {
-    var sel: Selection = {};
+    var sel: Selection = emptySelection();
     if (r.w <= 0.0f) {
         return Shift(float3(0.0f), 0.0f);
     }
