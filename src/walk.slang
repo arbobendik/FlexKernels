@@ -161,6 +161,41 @@ func arrivalLobe(b: uint, prev_lobe: uint) -> uint {
     return select(LOBE_NONE, prev_lobe, b > 0u);
 }
 
+// Whether rays travel through media, flex-cuda-pt's walk's alone
+[ForceInline] public bool mediaUsed() {
+    __target_switch {
+    case wgsl: case glsl: return false;
+    default: return true;
+    }
+}
+
+// The media on either side of a hit's face f, as flex-cuda-pt's walk keeps them: those the ray travels in, but a volume
+// the face bounds behind it, and none in front of it for a ray leaving the volume along f
+__extern_cpp public struct MediumSides {
+    __extern_cpp public Medium behind;
+    __extern_cpp public Medium front;
+    __extern_cpp public uint2 fillings;
+    __extern_cpp public float3 face;
+}
+func mediumSides(surface: Surface, medium: Medium, filling: uint, dir: float3) -> MediumSides {
+    var sides: MediumSides = MediumSides(medium, medium, uint2(filling), surface.geometry_n);
+#ifdef FK_FCPT_WALK
+    if (surface.encloses) {
+        sides.behind = surface.volume;
+        sides.fillings.x = surface.fills;
+        if (dot(dir, surface.geometry_n) > 0.0f) {
+            sides.front = {};
+            sides.fillings.y = UINT_MAX;
+        }
+    }
+#endif
+    return sides;
+}
+// Whether a ray leaving along dir, by the side of side_n that the faced normal g turns, goes in front of the face
+func leavesInFront(face: float3, dir: float3, side_n: float3, g: float3) -> bool {
+    return (dot(dir, side_n) > 0.0f) == (dot(g, face) > 0.0f);
+}
+
 // Whether materials may have layers, which a ray meets in turn at one hit, flex-cuda-pt's walk's alone
 [ForceInline] public bool layersUsed() {
     __target_switch {
@@ -506,6 +541,14 @@ __extern_cpp public struct NEEVertex {
     __extern_cpp public float3 start;
 }
 
+// flex-cuda-pt's homogeneous medium: its scattering and extinction coefficients, none by default; flex-cuda-pt's
+// FKMedium, as Hit
+__target_intrinsic(cuda, "FKMedium")
+__extern_cpp public struct Medium {
+    __extern_cpp public float3 scatter = float3(0.0f);
+    __extern_cpp public float3 extinction = float3(0.0f);
+}
+
 // Target plumbing: FlexLight's own Surface, which its scene's surfaceAt returns, flex-cuda-pt's FKSurface, as Hit
 __target_intrinsic(wgsl, "Surface")
 __target_intrinsic(cuda, "FKSurface")
@@ -519,6 +562,11 @@ __extern_cpp public struct Surface {
 #ifdef FK_FCPT_WALK
     // flex-cuda-pt's alpha: the share of rays the surface stops, the rest passing straight through
     __extern_cpp public float coverage = 1.0f;
+    // flex-cuda-pt's volumes: whether the face bounds one, its medium behind the face, and the key of the material of a
+    // varying one, else UINT_MAX
+    __extern_cpp public bool encloses = false;
+    __extern_cpp public Medium volume;
+    __extern_cpp public uint fills = UINT_MAX;
 #endif
 }
 
@@ -1130,6 +1178,12 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     var layer: uint = 0u;
     var passed: bool = false;
     var passes: bool = false;
+    // Medium the ray travels in, the key of its material if varying, else UINT_MAX, and the hit's face as its mesh
+    // turns it: by plain values, as FlexLight's WGSL would carry a struct
+    var scatter_in: float3 = float3(0.0f);
+    var extinction_in: float3 = float3(0.0f);
+    var filling: uint = UINT_MAX;
+    var face_n: float3 = float3(0.0f);
     if (coneUsed()) {
         spread = coneOf(dom).y;
         width = coneOf(dom).x + spread * length(dom.x1 - dom.x0);
@@ -1168,6 +1222,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 surface = uncovered(surface, pcg(stream(r.seed, b + STREAM_COVERAGE)).value);
             }
             front_n = surface.smooth_n;
+            if (mediaUsed()) {
+                face_n = surface.geometry_n;
+            }
             surface = facingRay(surface, ray.unit_direction);
             if (layersUsed() && passed) {
                 is_inside = arrivesBehind(ray.unit_direction, surface.geometry_n);
@@ -1413,6 +1470,16 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (refracted && !through) {
                 is_inside = !is_inside;
             }
+            if (mediaUsed() && !(layersUsed() && passes)) {
+                // Into the medium on the side it leaves by
+                var faced: Surface = surface;
+                faced.geometry_n = face_n;
+                let sides: MediumSides = mediumSides(faced, Medium(scatter_in, extinction_in), filling, ray.unit_direction);
+                let front: bool = leavesInFront(face_n, dir, side_n, surface.geometry_n);
+                scatter_in = select(sides.behind.scatter, sides.front.scatter, front);
+                extinction_in = select(sides.behind.extinction, sides.front.extinction, front);
+                filling = select(sides.fillings.x, sides.fillings.y, front);
+            }
             ray.unit_direction = dir;
             if (!(layersUsed() && passes)) {
                 ray.origin += surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, is_inside != through);
@@ -1491,6 +1558,10 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         }
         // Project ray origin to hit point
         ray.origin += hit.distance * ray.unit_direction;
+        if (mediaUsed()) {
+            // What the medium lets through to the hit
+            throughput *= exp(- extinction_in * hit.distance);
+        }
         if (coneUsed()) {
             width += spread * hit.distance;
         }
