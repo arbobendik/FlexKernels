@@ -86,6 +86,13 @@ Vector<float, 4> HookScene_environmentCdf_0(Vector<uint32_t, 2> cell) {
     return cell.x == 4 ? Vector<float, 4>((cell.y + 1) / 2.0f, 0.5f, 0, 0)
         : Vector<float, 4>((cell.x + 1) / 4.0f, 0.25f, 0, 0);
 }
+// The camera's medium: boundless fog where a furnace sets it, else none
+static Medium camera_fog = {ZERO, ZERO};
+Medium HookScene_cameraMedium_0(uint32_t* filling) {
+    *filling = 0xFFFFFFFFu;
+    return camera_fog;
+}
+V HookScene_passMedium_0(uint32_t, V, V, float, uint32_t*, V*) { return ONE; }
 // Varying media: none here
 float HookScene_majorant_0(uint32_t) { return 0; }
 float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t*, V*, V*, V*, V*, uint32_t, uint32_t) {
