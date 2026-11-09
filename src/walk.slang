@@ -506,7 +506,7 @@ __extern_cpp public struct Light {
 // reservoirs of each round, of last frame's uv and of the shifts and duplication map, and the color written
 public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
-    public bool shadowTraverseInstanceBVH(Ray ray, float l, bool two_sided);
+    public float3 shadowTransmittance(Ray ray, float l);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
     public float3 hitPosition(Hit hit);
     public float3x3 worldTriangle(uint instance_index, uint triangle_index);
@@ -576,9 +576,9 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "traverseInstanceBVH($0, $1, $2)")
     __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2)")
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
-    __target_intrinsic(wgsl, "shadowTraverseInstanceBVH($0, $1, $2)")
-    __target_intrinsic(cuda, "fcptShadowTraverseInstanceBVH($0, $1, $2)")
-    public bool shadowTraverseInstanceBVH(Ray ray, float l, bool two_sided);
+    __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
+    __target_intrinsic(cuda, "fcptShadowTransmittance($0, $1)")
+    public float3 shadowTransmittance(Ray ray, float l);
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
@@ -759,16 +759,16 @@ public struct HookScene : IScene {
 
 // Shadow test toward a light sample, including the quick exit for lights behind the shading normal, along the shared
 // segment: short of its end, which an emitting triangle's sample lifts off it toward the start
-func occluded<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_offset: float, light_dir: float3) -> bool {
+func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_offset: float, light_dir: float3) -> float3 {
     let unit_light_dir: float3 = normalize(light_dir);
     // Compute quick exit criterion to potentially skip expensive shadow test
     if (dot(smooth_n, unit_light_dir) < 0.0f) {
-        return true;
+        return float3(0.0f);
     }
     // Apply geometry offset
     let offset_target: float3 = origin + geometry_offset * smooth_n;
     let light_ray: Ray = Ray(offset_target, unit_light_dir);
-    return scene.shadowTraverseInstanceBVH(light_ray, shadowLength(light_dir), true);
+    return scene.shadowTransmittance(light_ray, shadowLength(light_dir));
 }
 
 // Light sampling, as flex-cuda-pt's sampleLight: a light the light BVH picks by its importance to origin, a uniform point
@@ -798,7 +798,7 @@ public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float
         return sample;
     }
     let leaf: uint4 = scene.lightNode(n);
-    // Vector from start to the end of the shadow ray, as occluded() casts it from there
+    // Vector from start to the end of the shadow ray, as lightTransmittance() casts it from there
     var shadow: float3;
     if (leaf.x == 2u) {
         let light: Light = scene.light(leaf.y);
@@ -837,9 +837,8 @@ public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float
         sample.radiance = select(surface.material.emissive * max(sign(dot(- sample.dir, surface.smooth_n)), 0.0f), float3(0.0f), surface.skip) / sample.density;
         shadow = point + shadowLift(surface.smooth_n, surface.geometry_offset, start, point) - start;
     }
-    if (occluded(scene, origin, lift_n, geometry_offset, shadow)) {
-        sample.radiance = float3(0.0f);
-    }
+    let transmitted: float3 = lightTransmittance(scene, origin, lift_n, geometry_offset, shadow);
+    sample.radiance = select(sample.radiance * transmitted, float3(0.0f), all(transmitted == float3(0.0f)));
     return sample;
 }
 
@@ -925,7 +924,7 @@ func searchCDF<S: IScene>(scene: S, start: uint2, step: uint2, count: uint, u: f
 func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, is_inside: bool, dir: float3) -> float3 {
     let inside: bool = is_inside != wrongSide(is_inside, false, dir, surface.geometry_n);
     let ray: Ray = Ray(origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, inside), dir);
-    return select(scene.env_map_sample(dir), float3(0.0f), scene.shadowTraverseInstanceBVH(ray, POW32, true));
+    return scene.env_map_sample(dir) * scene.shadowTransmittance(ray, POW32);
 }
 
 // Next event estimation toward the environment map, drawing a direction by its luminance. lobe_state is the random state of skyBSDF.
