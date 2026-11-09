@@ -139,6 +139,14 @@ __extern_cpp public struct Domain {
 #endif
 }
 
+// No lobe: camera rays
+public static const uint LOBE_NONE = 3u;
+
+// Lobe the ray arriving at vertex b left by, LOBE_NONE for camera rays
+func arrivalLobe(b: uint, prev_lobe: uint) -> uint {
+    return select(LOBE_NONE, prev_lobe, b > 0u);
+}
+
 [ForceInline] public bool layersUsed() {
     __target_switch {
     case wgsl: case glsl: return false;
@@ -554,7 +562,7 @@ public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
     public float3 shadowTransmittance(Ray ray, float l);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
-    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer);
+    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe);
     public uint layers(Hit hit);
     public float3 hitPosition(Hit hit);
     public float3x3 worldTriangle(uint instance_index, uint triangle_index);
@@ -628,8 +636,8 @@ public struct HookScene : IScene {
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
-    __target_intrinsic(cuda, "fcptSurfaceAtPath($0, $1, $2, $3, $4)")
-    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer);
+    __target_intrinsic(cuda, "fcptSurfaceAtPath($0, $1, $2, $3, $4, $5, $6)")
+    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe);
     __target_intrinsic(wgsl, "1u")
     __target_intrinsic(cuda, "fcptLayers($0)")
     public uint layers(Hit hit);
@@ -1110,7 +1118,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         var geometry_density: float = 0.0f;
         if (!point_light_lighting) {
             if (coneUsed() || layersUsed()) {
-                surface = scene.surfaceAtPath(hit, ray.origin, stream(r.seed, b), width, layer);
+                surface = scene.surfaceAtPath(hit, ray.origin, stream(r.seed, b), width, layer, b, arrivalLobe(b, prev.lobe));
             } else {
                 surface = scene.surfaceAt(hit, ray.origin, stream(r.seed, b));
             }
