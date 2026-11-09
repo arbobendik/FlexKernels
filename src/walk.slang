@@ -218,6 +218,10 @@ func flightWeight(scatter: float3, extinction: float3, sigma: float, distance: f
     let passed: float3 = exp((float3(sigma) - extinction) * distance);
     return select(passed, scatter * passed / sigma, scatters);
 }
+// Scattering vertex: never reconnected, PDF 0 against the sky
+func scatteredVertex(is_inside: bool) -> Vertex {
+    return Vertex(false, LOBE_DIFFUSE, 0.0f, 1.0f, is_inside);
+}
 // z = 1 - 2 * u uniform in [-1, 1], phi = 2 * PI * v
 // => uniform on the sphere, PDF = 1 / (4 * PI)
 func isotropic(random_state: uint) -> float3 {
@@ -1634,19 +1638,36 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     width += spread * along;
                     spread += PI;
                 }
+                let light: TreeSample = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
+#ifdef FK_FCPT_WALK
+                    , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b, prev.lobe)
+#endif
+                    );
+                let f: float3 = throughput * light.radiance * (0.25f * INV_PI * powerHeuristic(light.density, select(0.0f, 0.25f * INV_PI, b < scene.maxBounces())));
                 if (replay && b == stop) {
+                    if (rc == RC_LIGHT && rgb_to_greyscale(f) > 0.0f) {
+                        return Shift(f, 1.0f);
+                    }
                     return fail;
                 }
                 if (!replay) {
+                    var candidate: Reservoir = chain;
+                    if (extractBits(chain.path, PATH_RC, 2u) == RC_SURFACE) {
+                        candidate.radiance = safeDivide(f, chain_throughput);
+                    } else {
+                        candidate.path = insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_LIGHT, PATH_RC, 2u);
+                    }
+                    offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
                     let survival_probability: float = survivalProbability(throughput, density);
                     if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
                         return fail;
                     }
                     density *= survival_probability;
                 }
-                nee_vertex.none = true;
+                // Emission met next is weighed against the light sampled here
+                nee_vertex = NEEVertex(false, 0.25f * INV_PI, ray.origin, float3(0.0f), ray.origin);
                 ray.unit_direction = isotropic(stream(r.seed, b));
-                prev = Vertex(false, LOBE_DIFFUSE, 0.25f * INV_PI, 1.0f, is_inside);
+                prev = scatteredVertex(is_inside);
                 hit = scene.traverseInstanceBVH(ray, true, POW32);
             }
         }
