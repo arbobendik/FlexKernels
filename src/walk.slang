@@ -153,6 +153,14 @@ __extern_cpp public struct Domain {
 #endif
 }
 
+// No lobe: of a camera ray, as flex-cuda-pt's LOBE_NONE, past its diffuse, refraction and reflection lobes
+public static const uint LOBE_NONE = 3u;
+
+// The lobe a ray met at vertex b left the vertex before by, none for camera rays, as flex-cuda-pt's walk shades it
+func arrivalLobe(b: uint, prev_lobe: uint) -> uint {
+    return select(LOBE_NONE, prev_lobe, b > 0u);
+}
+
 // Whether materials may have layers, which a ray meets in turn at one hit, flex-cuda-pt's walk's alone
 [ForceInline] public bool layersUsed() {
     __target_switch {
@@ -618,7 +626,7 @@ public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
     public float3 shadowTransmittance(Ray ray, float l);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
-    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer);
+    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe);
     public uint layers(Hit hit);
     public float3 hitPosition(Hit hit);
     public float3x3 worldTriangle(uint instance_index, uint triangle_index);
@@ -694,11 +702,12 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
-    // The surface as the path meets it: mip levels by its cone's width at the hit, the layer of the hit's material;
-    // FlexLight's has neither
+    // The surface as the path meets it: mip levels by its cone's width at the hit, the layer of the hit's material, and
+    // for Light Path nodes the ray's bounce depth and the lobe it left the vertex before by (LOBE_NONE from the camera);
+    // FlexLight's has none of them
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
-    __target_intrinsic(cuda, "fcptSurfaceAtPath($0, $1, $2, $3, $4)")
-    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer);
+    __target_intrinsic(cuda, "fcptSurfaceAtPath($0, $1, $2, $3, $4, $5, $6)")
+    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe);
     // How many layers the hit's material has, flex-cuda-pt's alone
     __target_intrinsic(wgsl, "1u")
     __target_intrinsic(cuda, "fcptLayers($0)")
@@ -1156,7 +1165,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         var geometry_density: float = 0.0f;
         if (!point_light_lighting) {
             if (coneUsed() || layersUsed()) {
-                surface = scene.surfaceAtPath(hit, ray.origin, stream(r.seed, b), width, layer);
+                surface = scene.surfaceAtPath(hit, ray.origin, stream(r.seed, b), width, layer, b, arrivalLobe(b, prev.lobe));
             } else {
                 surface = scene.surfaceAt(hit, ray.origin, stream(r.seed, b));
             }
