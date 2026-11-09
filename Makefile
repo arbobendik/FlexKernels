@@ -90,6 +90,9 @@ build/cpp-restir/pathtracer.cpp: $(SOURCE) $(SLANGC)
 build/terminator-cpu: tests/terminator.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
+build/walk-cpu: tests/walk.cpp build/cpp-restir/pathtracer.cpp
+	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+
 build/scatternee-cpu: tests/scatternee.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
@@ -133,7 +136,7 @@ test: test-cpu test-wgsl test-vulkan
 # What only FlexLight had against its goldens, but what draws random numbers
 test-cpu: build/parity-cpu build/albedo-cpu build/terminator-cpu build/coverage-cpu build/cones-cpu \
 		build/layers-cpu build/pathray-cpu build/media-cpu build/shadowmedia-cpu \
-		build/flight-cpu build/scatternee-cpu
+		build/flight-cpu build/scatternee-cpu build/walk-cpu
 	$< < tests/golden-cuda.txt > build/cpu.txt
 	build/albedo-cpu
 	build/terminator-cpu
@@ -145,6 +148,7 @@ test-cpu: build/parity-cpu build/albedo-cpu build/terminator-cpu build/coverage-
 	build/shadowmedia-cpu
 	build/flight-cpu
 	build/scatternee-cpu
+	build/walk-cpu
 	node tests/compare.mjs tests/golden-cuda.txt build/cpu.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cpu.txt 58
 
