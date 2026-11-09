@@ -76,6 +76,9 @@ build/cpp-restir/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp-restir
 	$(SLANGC) $(SLANGFLAGS) -DFK_RESTIR=1 -DFK_FCPT_WALK=1 $< -target cpp -o $@
 
+build/layers-cpu: tests/layers.cpp build/cpp-restir/pathtracer.cpp
+	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+
 build/cones-cpu: tests/cones.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
@@ -97,11 +100,13 @@ lint: $(ACTIONLINT)
 
 test: test-cpu test-wgsl test-vulkan
 
-test-cpu: build/parity-cpu build/albedo-cpu build/coverage-cpu build/cones-cpu
+test-cpu: build/parity-cpu build/albedo-cpu build/coverage-cpu build/cones-cpu \
+		build/layers-cpu
 	$< < tests/golden-cuda.txt > build/cpu.txt
 	build/albedo-cpu
 	build/coverage-cpu
 	build/cones-cpu
+	build/layers-cpu
 	node tests/compare.mjs tests/golden-cuda.txt build/cpu.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cpu.txt 58
 
