@@ -35,6 +35,18 @@ int main() {
                         cases++, differ += left.scatter.x != fcpt[i].scatter.x
                             || left.extinction.z != fcpt[i].extinction.z || filling != fill[i];
                     }
-    printf("media: %d of %d sides left into differ from flex-cuda-pt's%s\n", differ, cases, differ ? "  FAILED" : "");
-    return differ != 0;
+    int turns = 0;
+    for (const float transmission : {0.0f, 1.0f})
+        for (int k = 0; k < 16; k++) {
+            const float a = 0.4f * k;
+            Surface s = {up, up, 1e-4f, {ONE, ZERO, 1, 0, transmission, 1.5f, ZERO, ONE, 1}, false, 0, 1, false,
+                {ZERO, ZERO}, NONE};
+            const V in(cosf(a), 0, sinf(a));
+            const bool turned = facingSign(s.material.transmission, s.geometry_n, in) < 0;
+            const V g = facingRay_0(&s, in).geometry_n, back = turned ? V(-g.x, -g.y, -g.z) : g;
+            turns += back.z != up.z;
+        }
+    printf("media: %d of %d sides left into differ from flex-cuda-pt's, %d of 32 faces rebuilt wrong%s\n", differ,
+        cases, turns, differ || turns ? "  FAILED" : "");
+    return differ != 0 || turns != 0;
 }
