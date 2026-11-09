@@ -27,6 +27,15 @@ struct TestScene : IScene {
     }
     uint layers(Hit hit) { return hit.triangle_index % 3u; }
     float majorant(uint filling) { return float(filling) * 0.5f; }
+    Medium cameraMedium(out uint filling) {
+        filling = 7u;
+        return Medium(float3(0.25f), float3(0.5f));
+    }
+    float3 passMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 glowed) {
+        random_state += filling;
+        glowed += dir;
+        return exp(- origin * distance);
+    }
     float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe) {
         random_state += depth + lobe;
         weight *= 0.5f;
