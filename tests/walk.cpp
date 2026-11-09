@@ -81,6 +81,7 @@ float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t*, V*, V*,
     return 2 * distance;
 }
 
+static bool summing = false;
 static void furnace(const char* name, V camera, V aim, float angle, double truth, int& failed, float absorbs = 0) {
     const int N = 1 << 17;
     double sum = 0, sum2 = 0, through = 0;
@@ -98,6 +99,7 @@ static void furnace(const char* name, V camera, V aim, float angle, double truth
         path.seed = hash(3 * i + 2);
         Selection sel = {};
         sel.random_state = hash(3 * i + 3);
+        sel.sums = summing;
         walk_hook(dom, path, false, 1, &sel);
         const double y = sel.color.x;
         through += exp(-absorbs * hit.distance);
@@ -116,6 +118,14 @@ int main() {
     const Medium none = {ZERO, ZERO}, fog = {scaled(ONE, 2), scaled(ONE, 2)};
     scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
     furnace("white sphere", camera, center, 0.3f, 1, failed);
+    summing = true;
+    furnace("white sphere, ReSTIR off", camera, center, 0.3f, 1, failed);
+    // A white sheen over it drawn as its own lobe, reconnected and replayed by ReSTIR
+    scene[0].layer[0].sheen = ONE, scene[0].layer[0].sheen_roughness = 0.5f;
+    furnace("white sheen, ReSTIR off", camera, center, 0.3f, 1, failed);
+    summing = false;
+    furnace("white sheen", camera, center, 0.3f, 1, failed);
+    scene[0].layer[0] = lambert(1, 0);
     scene[0].coverage = 0.3f;
     furnace("white sphere covered at 0.3", camera, center, 0.3f, 1, failed);
     scene[0].layer[0] = lambert(0, 0);
