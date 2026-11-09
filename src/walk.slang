@@ -480,6 +480,7 @@ public interface IScene {
     public uint2 environmentMapSize();
     public float3 ambient();
     public uint maxBounces();
+#ifdef FK_RESTIR_PASSES
     public uint2 renderSize();
     public uint frame();
     public float3x3 viewMatrix();
@@ -518,6 +519,7 @@ public interface IScene {
     public void storeShiftData(int2 p, uint layer, uint4 value);
     public uint4 reservoirTemporal(int2 q, uint layer);
     public void storeColor(int2 p, uint layer, float4 color);
+#endif
 }
 #endif
 
@@ -583,6 +585,7 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "uniforms_uint.max_bounces")
     __target_intrinsic(cuda, "fcptMaxBounces()")
     public uint maxBounces();
+#ifdef FK_RESTIR_PASSES
     __target_intrinsic(wgsl, "uniforms_uint.render_size")
     __target_intrinsic(cuda, "fcptRenderSize()")
     public uint2 renderSize();
@@ -697,6 +700,7 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "textureStore(compute_out, $0, $1, $2)")
     __target_intrinsic(cuda, "fcptStoreColor($0, $1, $2)")
     public void storeColor(int2 p, uint layer, float4 color);
+#endif
 }
 #endif
 
@@ -1265,7 +1269,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
 }
 #endif
 
-#ifdef FK_RESTIR
+#ifdef FK_RESTIR_PASSES
 [ForceInline] int2 select(int2 f, int2 t, bool cond) { return select(cond, t, f); }
 [ForceInline] int2 select(int2 f, int2 t, bool2 cond) { return select(cond, t, f); }
 
@@ -1307,6 +1311,9 @@ public func partner<S: IScene>(scene: S, p: int2, t: uint) -> int2 {
     return p + select(delta, delta.yx, transpose);
 }
 
+#endif
+
+#ifdef FK_RESTIR
 public func shift<S: IScene>(scene: S, dom: Domain, r: Reservoir) -> Shift {
     var sel: Selection = emptySelection();
     if (r.w <= 0.0f) {
@@ -1321,7 +1328,7 @@ public func sameDomain(a: Domain, b: Domain) -> bool {
 }
 #endif
 
-#ifdef FK_RESTIR
+#ifdef FK_RESTIR_PASSES
 __extern_cpp public struct ShiftJob {
     __extern_cpp public Domain dom;
     __extern_cpp public Reservoir r;
@@ -1386,7 +1393,7 @@ public func spatialBins<S: IScene>(scene: S, p: int2) -> uint[3] {
 }
 #endif
 
-#ifdef FK_RESTIR
+#ifdef FK_RESTIR_PASSES
 groupshared Atomic<uint> bin_jobs[SHIFT_BINS];
 groupshared uint bin_offsets[SHIFT_BINS];
 
@@ -1497,7 +1504,7 @@ public func queuedShift<S: IScene>(scene: S, workgroup_id: uint3, local_invocati
 }
 #endif
 
-#ifdef FK_RESTIR
+#ifdef FK_RESTIR_PASSES
 public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     let p: int2 = int2(global_invocation_id.xy);
     var dom: Domain = {};
@@ -1549,7 +1556,7 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
 }
 #endif
 
-#ifdef FK_RESTIR
+#ifdef FK_RESTIR_PASSES
 // The temporal round of the shift queue
 public func restir_temporal_count<S: IScene>(scene: S, global_invocation_id: uint3, local_invocation_index: uint) {
     countShifts(scene, temporalBins(scene, int2(global_invocation_id.xy)), local_invocation_index);
@@ -1605,7 +1612,7 @@ public func restir_shift<S: IScene>(scene: S, workgroup_id: uint3, local_invocat
 }
 #endif
 
-#ifdef FK_RESTIR
+#ifdef FK_RESTIR_PASSES
 // Paired spatial reuse with pairwise MIS (Sec. 3) and shading with vector-valued weights (Sec. 6.3)
 public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
     let p: int2 = int2(global_invocation_id.xy);
@@ -1665,7 +1672,7 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
 }
 #endif
 
-#ifdef FK_RESTIR
+#ifdef FK_RESTIR_PASSES
 groupshared uint duplication_seeds[576];
 
 // Seed of last frame's reservoir at q, 0 for none or outside the image
@@ -1722,6 +1729,7 @@ public func restir_duplicates<S: IScene>(scene: S, global_invocation_id: uint3, 
     return walk(scene, dom, r, replay, scale, sel);
 }
 [CudaDeviceExport] public func shift_hook(dom: Domain, r: Reservoir) -> Shift { HookScene scene; return shift(scene, dom, r); }
+#ifdef FK_RESTIR_PASSES
 [CudaDeviceExport] public func restir_initial_hook(global_invocation_id: uint3) { HookScene scene; restir_initial(scene, global_invocation_id); }
 [CudaDeviceExport] public func restir_temporal_hook(global_invocation_id: uint3) { HookScene scene; restir_temporal(scene, global_invocation_id); }
 [CudaDeviceExport] public func restir_temporal_count_hook(global_invocation_id: uint3, local_invocation_index: uint) {
@@ -1753,4 +1761,5 @@ public func restir_duplicates<S: IScene>(scene: S, global_invocation_id: uint3, 
     HookScene scene;
     restir_duplicates(scene, global_invocation_id, local_invocation_id, local_invocation_index);
 }
+#endif
 #endif
