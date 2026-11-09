@@ -23,7 +23,9 @@ all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h \
 # hooks bridged to the consumer's own functions, which the outputs above leave out, as they call nothing that is not
 # defined and the module exports no name its importers declare themselves
 build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR=1
-build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1
+# flex-cuda-pt's walk features' struct fields, which FlexLight's would carry unused
+build/cuda-restir/pathtracer.cuh: SLANGFLAGS += -DFK_FCPT_WALK=1
+build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_FCPT_WALK=1
 # FlexLight's takes the passes as well, flex-cuda-pt's the walk and shift alone, and the Vulkan test both
 build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR_PASSES=1
 build/restir-passes/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1
@@ -83,7 +85,7 @@ build/albedo-cpu: tests/albedo.cpp build/cpp/pathtracer.cpp
 # The walk's side and sky weights on the CPU, the hooks its other code calls, which no test defines, linked away
 build/cpp-restir/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp-restir
-	$(SLANGC) $(SLANGFLAGS) -DFK_RESTIR=1 $< -target cpp -o $@
+	$(SLANGC) $(SLANGFLAGS) -DFK_RESTIR=1 -DFK_FCPT_WALK=1 $< -target cpp -o $@
 
 build/terminator-cpu: tests/terminator.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
