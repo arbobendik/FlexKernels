@@ -87,6 +87,9 @@ build/cpp-restir/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp-restir
 	$(SLANGC) $(SLANGFLAGS) -DFK_RESTIR=1 -DFK_FCPT_WALK=1 $< -target cpp -o $@
 
+build/flight-cpu: tests/flight.cpp build/cpp-restir/pathtracer.cpp
+	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+
 build/shadowmedia-cpu: tests/shadowmedia.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
@@ -123,7 +126,8 @@ test: test-cpu test-wgsl test-vulkan
 
 # What only FlexLight had against its goldens, but what draws random numbers
 test-cpu: build/parity-cpu build/albedo-cpu build/coverage-cpu build/cones-cpu \
-		build/layers-cpu build/pathray-cpu build/media-cpu build/shadowmedia-cpu
+		build/layers-cpu build/pathray-cpu build/media-cpu build/shadowmedia-cpu \
+		build/flight-cpu
 	$< < tests/golden-cuda.txt > build/cpu.txt
 	build/albedo-cpu
 	build/coverage-cpu
@@ -132,6 +136,7 @@ test-cpu: build/parity-cpu build/albedo-cpu build/coverage-cpu build/cones-cpu \
 	build/pathray-cpu
 	build/media-cpu
 	build/shadowmedia-cpu
+	build/flight-cpu
 	node tests/compare.mjs tests/golden-cuda.txt build/cpu.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cpu.txt 58
 
