@@ -26,6 +26,15 @@ struct TestScene : IScene {
         return surfaceAt(hit, origin + width, init_random_state + layer + depth * 4u + lobe);
     }
     uint layers(Hit hit) { return hit.triangle_index % 3u; }
+    float majorant(uint filling) { return float(filling) * 0.5f; }
+    float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe) {
+        random_state += depth + lobe;
+        weight *= 0.5f;
+        glowed += origin;
+        scatter = dir;
+        extinction = float3(float(filling));
+        return distance * 0.5f;
+    }
     float3 hitPosition(Hit hit) { return float3(hit.uv, hit.distance); }
     float3x3 worldTriangle(uint instance_index, uint triangle_index) {
         return float3x3(float3(float(instance_index)), float3(1.0f, 0.0f, 0.0f), float3(0.0f, float(triangle_index), 1.0f));
