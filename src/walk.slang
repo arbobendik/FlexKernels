@@ -196,6 +196,31 @@ func leavesInFront(face: float3, dir: float3, side_n: float3, g: float3) -> bool
     return (dot(dir, side_n) > 0.0f) == (dot(g, face) > 0.0f);
 }
 
+#ifdef FK_FCPT_WALK
+// What flex-cuda-pt's shadow segments read of the vertex they leave: the extinction and varying medium's key on either
+// side of the faced normal, the side normal that picks one toward the light, and the vertex's depth and arrival lobe
+// for the occluders' Light Path inputs
+__extern_cpp public struct ShadowContext {
+    __extern_cpp public float3 extinction_behind;
+    __extern_cpp public float3 extinction_front;
+    __extern_cpp public uint2 fillings;
+    __extern_cpp public float3 side;
+    __extern_cpp public uint depth;
+    __extern_cpp public uint lobe;
+}
+func shadowContext(surface: Surface, turned: bool, side_n: float3, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint) -> ShadowContext {
+    var faced: Surface = surface;
+    faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
+    let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction), filling, dir);
+    // The face's sides as the faced normal sees them
+    var context: ShadowContext = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, side_n, depth, lobe);
+    if (turned) {
+        context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, side_n, depth, lobe);
+    }
+    return context;
+}
+#endif
+
 // Whether materials may have layers, which a ray meets in turn at one hit, flex-cuda-pt's walk's alone
 [ForceInline] public bool layersUsed() {
     __target_switch {
@@ -665,6 +690,7 @@ __extern_cpp public struct Light {
 public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
     public float3 shadowTransmittance(Ray ray, float l);
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
     public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe);
     public uint layers(Hit hit);
@@ -739,6 +765,11 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
     __target_intrinsic(cuda, "fcptShadowTransmittance($0, $1)")
     public float3 shadowTransmittance(Ray ray, float l);
+    // Through the media from the start's side on, ratio tracking a varying one with the light pick's random state;
+    // occluders shaded for a shadow ray a bounce past the vertex. flex-cuda-pt's alone
+    __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
+    __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6)")
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe);
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
@@ -929,7 +960,11 @@ public struct HookScene : IScene {
 
 // Shadow test toward a light sample, including the quick exit for lights behind the shading normal, along the shared
 // segment: short of its end, which an emitting triangle's sample lifts off it toward the start
-func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_offset: float, light_dir: float3) -> float3 {
+func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_offset: float, light_dir: float3
+#ifdef FK_FCPT_WALK
+    , context: ShadowContext, random_state: uint
+#endif
+    ) -> float3 {
     let unit_light_dir: float3 = normalize(light_dir);
     // Compute quick exit criterion to potentially skip expensive shadow test
     if (dot(smooth_n, unit_light_dir) < 0.0f) {
@@ -938,13 +973,23 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
     // Apply geometry offset
     let offset_target: float3 = origin + geometry_offset * smooth_n;
     let light_ray: Ray = Ray(offset_target, unit_light_dir);
+#ifdef FK_FCPT_WALK
+    // From the medium on the side the light is, from the vertex, as flex-cuda-pt's sampleLight
+    let front: bool = dot(context.side, light_dir + geometry_offset * smooth_n) > 0.0f;
+    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe);
+#else
     return scene.shadowTransmittance(light_ray, shadowLength(light_dir));
+#endif
 }
 
 // Light sampling, as flex-cuda-pt's sampleLight: a light the light BVH picks by its importance to origin, a uniform point
 // on it or a direction in the cone of its sphere, seen from origin lifted by geometry_offset in front of smooth_n. Sided,
 // for translucent surfaces, light all around, origin lifted to the side of the face geometry_n the light lies on
-public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_n: float3, geometry_offset: float, sided: bool, init_random_state: uint) -> TreeSample {
+public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_n: float3, geometry_offset: float, sided: bool, init_random_state: uint
+#ifdef FK_FCPT_WALK
+    , context: ShadowContext
+#endif
+    ) -> TreeSample {
     let random_pick: Random = pcg(init_random_state);
     let random_side: Random = pcg(random_pick.state);
     let random_along: Random = pcg(random_side.state);
@@ -1007,7 +1052,11 @@ public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float
         sample.radiance = select(surface.material.emissive * max(sign(dot(- sample.dir, surface.smooth_n)), 0.0f), float3(0.0f), surface.skip) / sample.density;
         shadow = point + shadowLift(surface.smooth_n, surface.geometry_offset, start, point) - start;
     }
-    let transmitted: float3 = lightTransmittance(scene, origin, lift_n, geometry_offset, shadow);
+    let transmitted: float3 = lightTransmittance(scene, origin, lift_n, geometry_offset, shadow
+#ifdef FK_FCPT_WALK
+        , context, random_along.state
+#endif
+        );
     sample.radiance = select(sample.radiance * transmitted, float3(0.0f), all(transmitted == float3(0.0f)));
     return sample;
 }
@@ -1283,7 +1332,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             // Light sampling at the reconnection vertex replays its random numbers, as the light may have moved
             if (k == end && end_type == END_NEE) {
-                let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE));
+                let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
+#ifdef FK_FCPT_WALK
+                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe))
+#endif
+                    );
                 if (!nee || !(rgb_to_greyscale(light.radiance) > 0.0f)) {
                     return fail;
                 }
@@ -1307,7 +1360,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (rc == RC_LIGHT && nee && !footprint) {
                 // Forced reconnection to the light vertex of next event estimation (Sec. 6.2.3), the point its replayed
                 // random numbers pick again (unit Jacobian)
-                let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE));
+                let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
+#ifdef FK_FCPT_WALK
+                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe))
+#endif
+                    );
                 if (!(rgb_to_greyscale(light.radiance) > 0.0f)) {
                     return fail;
                 }
@@ -1333,7 +1390,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 offer(sel, withEnd(candidate, END_EMIT, b, throughput * emission), throughput * emission * scale / density);
             }
             if (nee) {
-                let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE));
+                let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
+#ifdef FK_FCPT_WALK
+                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe))
+#endif
+                    );
                 let f: float3 = throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state);
                 var candidate: Reservoir = chain;
                 if (chain_found) {
