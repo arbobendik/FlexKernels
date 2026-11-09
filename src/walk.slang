@@ -34,7 +34,13 @@ public static const uint PATH_INSIDE = 22u;
 public static const uint STREAM_NEE = 64u;
 public static const uint STREAM_RR = 128u;
 public static const uint STREAM_SELECT = 193u;
+public static const uint STREAM_COVERAGE = 256u;
+// Sky samples, apart from STREAM_COVERAGE where coverage is drawn
+#ifdef FK_FCPT_WALK
+public static const uint STREAM_SKY = 448u;
+#else
 public static const uint STREAM_SKY = 256u;
+#endif
 
 // Stream compaction of the temporal and paired spatial shifts (Sec. 6.2.2), sorted into bins of equal reconnection type and replay depth
 public static const uint SHIFT_DEPTHS = 8u;
@@ -135,6 +141,10 @@ __extern_cpp public struct Surface {
     __extern_cpp public Material material;
     __extern_cpp public bool skip;
     __extern_cpp public uint random_state;
+#ifdef FK_FCPT_WALK
+    // Share of rays the surface stops, the rest pass straight through
+    __extern_cpp public float coverage = 1.0f;
+#endif
 }
 
 __target_intrinsic(wgsl, "Light")
@@ -397,10 +407,47 @@ func isTranslucent(material: Material) -> bool {
     return rgb_to_greyscale(material.translucent) > 0.0f;
 }
 
+[ForceInline] public bool coverageUsed() {
+    __target_switch {
+    case wgsl: case glsl: return false;
+    default: return true;
+    }
+}
+[ForceInline] func coverageOf(surface: Surface) -> float {
+#ifdef FK_FCPT_WALK
+    return surface.coverage;
+#else
+    return 1.0f;
+#endif
+}
+
+// Uncovered: straight through at IOR 1, emission and absorption kept
+func uncovered(surface: Surface, u: float) -> Surface {
+    if (!coverageUsed() || u < coverageOf(surface)) {
+        return surface;
+    }
+    var material: Material = {};
+    material.albedo = float3(1.0f);
+    material.emissive = surface.material.emissive;
+    material.transmission = 1.0f;
+    material.ior = 1.0f;
+    material.absorption = surface.material.absorption;
+    var through: Surface = surface;
+    through.material = material;
+    return through;
+}
+
 // Opaque surfaces face the ray with both normals
 func facingRay(surface: Surface, dir: float3) -> Surface {
     let facing: float = facingSign(surface.material.transmission, surface.geometry_n, dir);
+#ifdef FK_FCPT_WALK
+    var faced: Surface = surface;
+    faced.smooth_n = surface.smooth_n * facing;
+    faced.geometry_n = surface.geometry_n * facing;
+    return faced;
+#else
     return Surface(surface.smooth_n * facing, surface.geometry_n * facing, surface.geometry_offset, surface.material, surface.skip, surface.random_state);
+#endif
 }
 
 // Whether the path tracer considers dir to point towards the incorrect side of the surface
@@ -952,6 +999,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         var geometry_density: float = 0.0f;
         if (!point_light_lighting) {
             surface = scene.surfaceAt(hit, ray.origin, stream(r.seed, b));
+            if (coverageUsed()) {
+                surface = uncovered(surface, pcg(stream(r.seed, b + STREAM_COVERAGE)).value);
+            }
             front_n = surface.smooth_n;
             surface = facingRay(surface, ray.unit_direction);
             if (is_inside) {
