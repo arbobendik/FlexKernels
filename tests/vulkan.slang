@@ -84,14 +84,20 @@ float walkOver(Domain dom, Reservoir r) {
     TestScene scene;
     Selection sel = {};
     const Shift shifted = walk(scene, dom, r, (r.path & 1u) != 0u, r.c, sel);
+    float passes = 0.0f;
+#ifdef FK_RESTIR_PASSES
     const int2 p = int2(int(r.seed % 64u), int(r.seed / 64u % 48u));
     const int2 q = temporalNeighbor(scene, p, dom) + partner(scene, p, r.path % 3u);
     const uint[3] bins = temporalBins(scene, p);
     const uint[3] spatial = spatialBins(scene, q);
-    return shifted.f.x * shifted.jac + sel.w_sum + shift(scene, dom, r).jac * float(sameDomain(dom, dom)) + float(q.x * q.y)
-        + float(bins[0] + bins[1] + spatial[2] + shiftBin(r));
+    passes = float(q.x * q.y) + float(bins[0] + bins[1] + spatial[2] + shiftBin(r));
+#endif
+    return shifted.f.x * shifted.jac + sel.w_sum + shift(scene, dom, r).jac * float(sameDomain(dom, dom)) + passes;
 }
 
+#endif
+
+#ifdef FK_RESTIR_PASSES
 // The shift queue's rounds over the test scene: counting, queueing and taking the workgroup's jobs
 void queueRound(uint3 id, uint local, uint3 group, uint3 local3) {
     TestScene scene;
@@ -115,7 +121,7 @@ void queueRound(uint3 id, uint local, uint3 group, uint3 local3) {
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void main(uint3 id: SV_DispatchThreadID, uint local: SV_GroupIndex, uint3 group: SV_GroupID, uint3 local3: SV_GroupThreadID) {
-#ifdef FK_RESTIR
+#ifdef FK_RESTIR_PASSES
     queueRound(id, local, group, local3);
 #endif
     const Reservoir r = reservoirs[id.x];

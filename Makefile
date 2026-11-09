@@ -24,6 +24,9 @@ all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h \
 # defined and the module exports no name its importers declare themselves
 build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR=1
 build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1
+# FlexLight's takes the passes as well, flex-cuda-pt's the walk and shift alone, and the Vulkan test both
+build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR_PASSES=1
+build/restir-passes/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1
 
 # The prelude is included next to the header instead of from the Slang installation, its Matrix template, which the
 # generated code takes for FlexLight's mat3x3, renamed SlangMatrix across the header so that it leaves the name to the
@@ -57,7 +60,8 @@ build/glsl/pathtracer.glsl: src/glsl.slang $(SOURCE) $(SLANGC)
 
 # The module flex-cuda-pt's Vulkan renderer imports, loadable by this Slang version alone, vendored with the CUDA header.
 # It embeds the source's path, as given here, and debug information its absolute one, which it leaves out.
-build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module: $(SOURCE) $(SLANGC)
+build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module \
+		build/restir-passes/pathtracer.slang-module: $(SOURCE) $(SLANGC)
 	mkdir -p $(@D)
 	$(SLANGC) $< -warnings-as-errors 30081 $(MODULEFLAGS) -o $@
 
@@ -107,11 +111,15 @@ test-cuda: build/parity-cuda  # On the GPU
 	node tests/compare.mjs tests/golden-cuda.txt build/cuda.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cuda.txt 58
 
-test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module  # Compile and validate only
+test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module \
+		build/restir-passes/pathtracer.slang-module  # Compile and validate only
 	$(SLANGC) -Ibuild/cuda -warnings-as-errors 30081 $< -target spirv -o build/vulkan.spv
 	spirv-val --target-env vulkan1.3 build/vulkan.spv
 	$(SLANGC) -Ibuild/cuda-restir -DFK_RESTIR=1 -warnings-as-errors 30081 $< -target spirv -o build/vulkan-restir.spv
 	spirv-val --target-env vulkan1.3 build/vulkan-restir.spv
+	$(SLANGC) -Ibuild/restir-passes -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1 -warnings-as-errors 30081 $< -target spirv \
+		-o build/vulkan-passes.spv
+	spirv-val --target-env vulkan1.3 build/vulkan-passes.spv
 
 # On the grid of the CUDA goldens
 golden-wgsl: tests/wgsl.mjs tests/golden-cuda.txt $(WGSL_REFERENCE)
