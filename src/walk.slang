@@ -1178,12 +1178,12 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     var layer: uint = 0u;
     var passed: bool = false;
     var passes: bool = false;
-    // Medium the ray travels in, the key of its material if varying, else UINT_MAX, and the hit's face as its mesh
-    // turns it: by plain values, as FlexLight's WGSL would carry a struct
-    var scatter_in: float3 = float3(0.0f);
+    // Medium the ray travels in, its extinction (its scattering comes with free flight), the key of its material if
+    // varying, else UINT_MAX, and whether facing the ray turned the hit's face: by plain values, as FlexLight's WGSL
+    // would carry a struct
     var extinction_in: float3 = float3(0.0f);
     var filling: uint = UINT_MAX;
-    var face_n: float3 = float3(0.0f);
+    var turned: bool = false;
     if (coneUsed()) {
         spread = coneOf(dom).y;
         width = coneOf(dom).x + spread * length(dom.x1 - dom.x0);
@@ -1223,7 +1223,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             front_n = surface.smooth_n;
             if (mediaUsed()) {
-                face_n = surface.geometry_n;
+                turned = facingSign(surface.material.transmission, surface.geometry_n, ray.unit_direction) < 0.0f;
             }
             surface = facingRay(surface, ray.unit_direction);
             if (layersUsed() && passed) {
@@ -1471,12 +1471,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 is_inside = !is_inside;
             }
             if (mediaUsed() && !(layersUsed() && passes)) {
-                // Into the medium on the side it leaves by
+                // Into the medium on the side it leaves by, of the face as the mesh turns it
                 var faced: Surface = surface;
-                faced.geometry_n = face_n;
-                let sides: MediumSides = mediumSides(faced, Medium(scatter_in, extinction_in), filling, ray.unit_direction);
-                let front: bool = leavesInFront(face_n, dir, side_n, surface.geometry_n);
-                scatter_in = select(sides.behind.scatter, sides.front.scatter, front);
+                faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
+                let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction_in), filling, ray.unit_direction);
+                let front: bool = leavesInFront(faced.geometry_n, dir, surface.geometry_n, surface.geometry_n);
                 extinction_in = select(sides.behind.extinction, sides.front.extinction, front);
                 filling = select(sides.fillings.x, sides.fillings.y, front);
             }
