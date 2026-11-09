@@ -7,7 +7,8 @@
 //   the sky through where both its faces leave the ray uncovered: 0.7^2;
 // - a coat over glass, both smooth dielectrics, returns all: 1;
 // - an index-matched sphere filled with a medium of albedo 1 returns all: 1;
-// - a white sphere inside an index-matched shell returns all: 1;
+// - a white sphere inside an index-matched shell returns all: 1, and so does one beside such a shell, whose sky
+//   light passes it to the sphere's light sampling and its escapes alike;
 // - inside a closed sphere of walls of albedo a emitting e inward: a e / (1 - a), as the walk leaves what the first
 //   hit emits to the consumer.
 // Printed: each furnace's reading against its value
@@ -136,6 +137,9 @@ int main() {
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, false, none}, {center, 0.5f, false, {lambert(1, 0)}, 1, 1, false,
         none}};
     furnace("white sphere in a shell", camera, center, 0.15f, 1, failed);
+    scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}, {V(0, 0, 3.2f), 2, false, {dielectric(1)}, 1, 1,
+        false, none}};
+    furnace("white sphere beside a shell", V(2.2f, 0, 0.6f), V(0, 0, 0.6f), 0.1f, 1, failed);
     scene = {{center, 1, true, {lambert(0.5f, 1)}, 1, 1, false, none}};
     furnace("inside walls of albedo 0.5", center, V(0, 0, 1), 3.14159265f, 1, failed);
     return failed;
