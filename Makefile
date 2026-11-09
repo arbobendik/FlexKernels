@@ -21,6 +21,8 @@ all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h \
 # ReSTIR variants
 build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR=1
 build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1
+build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR_PASSES=1
+build/restir-passes/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1
 
 # Prelude included by name, Matrix renamed SlangMatrix
 build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
@@ -46,7 +48,8 @@ build/glsl/pathtracer.glsl: src/glsl.slang $(SOURCE) $(SLANGC)
 	$(SLANGC) $(SLANGFLAGS) $< -entry main -stage fragment -target glsl -o $@
 	sed -i -e '/^#version/d' -e '/^layout(row_major)/d' -e '/^layout(location = 0)$$/,/^}$$/d' $@
 
-build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module: $(SOURCE) $(SLANGC)
+build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module \
+		build/restir-passes/pathtracer.slang-module: $(SOURCE) $(SLANGC)
 	mkdir -p $(@D)
 	$(SLANGC) $< -warnings-as-errors 30081 $(MODULEFLAGS) -o $@
 
@@ -94,11 +97,15 @@ test-cuda: build/parity-cuda
 	node tests/compare.mjs tests/golden-cuda.txt build/cuda.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cuda.txt 58
 
-test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module  # Compile and validate only
+test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module \
+		build/restir-passes/pathtracer.slang-module  # Compile and validate only
 	$(SLANGC) -Ibuild/cuda -warnings-as-errors 30081 $< -target spirv -o build/vulkan.spv
 	spirv-val --target-env vulkan1.3 build/vulkan.spv
 	$(SLANGC) -Ibuild/cuda-restir -DFK_RESTIR=1 -warnings-as-errors 30081 $< -target spirv -o build/vulkan-restir.spv
 	spirv-val --target-env vulkan1.3 build/vulkan-restir.spv
+	$(SLANGC) -Ibuild/restir-passes -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1 -warnings-as-errors 30081 $< -target spirv \
+		-o build/vulkan-passes.spv
+	spirv-val --target-env vulkan1.3 build/vulkan-passes.spv
 
 golden-wgsl: tests/wgsl.mjs tests/golden-cuda.txt $(WGSL_REFERENCE)
 	node tests/wgsl.mjs $(WGSL_REFERENCE) --flexlight < tests/golden-cuda.txt > tests/golden-wgsl.txt
