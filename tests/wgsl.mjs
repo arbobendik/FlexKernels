@@ -1,9 +1,13 @@
-// Usage: node wgsl.mjs shader.wgsl [--flexlight] < golden.txt
+// Evaluates the shared functions of a WGSL source, the generated one or, with --flexlight, FlexLight's unmodified
+// pathtracer-compute.wgsl for its goldens, on the inputs of each golden line through Dawn, the kernel appended as
+// FlexLight prepends the shared code, and prints them with its outputs in the golden format. The generated code takes
+// FlexLight's Material, which FlexLight's shader declares. Usage: node wgsl.mjs shader.wgsl [--flexlight] < golden.txt
 import { readFileSync } from "node:fs";
 import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
 const OUTPUTS = 156;
+// As pathtracer-compute.wgsl declares it
 const MATERIAL = /* wgsl */ `
 struct Material {
     albedo: vec3<f32>,
@@ -23,6 +27,7 @@ struct Material {
     tangent: vec3<f32>
 };
 `;
+// The light tree of flex-cuda-pt's renderer.cu, as it transpiles it, for the goldens of what FlexLight had none of
 const LIGHT_TREE = /* wgsl */ `
 struct LightBounds { low: vec3<f32>, high: vec3<f32>, w: vec3<f32>, phi: f32, cos_theta_o: f32 }
 fn parity_cosSubClamped(sin_a: f32, cos_a: f32, sin_b: f32, cos_b: f32) -> f32 {
@@ -106,10 +111,12 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[28] = bitcast<u32>(normal.value);
     r[29] = sphere.state;
     parity_put(&r, 30u, sphere.value);
+    // The normal map of the triangle of the case's directions, with UVs of positive area
     r[37] = bitcast<u32>(smithG1(alpha, abs(dot(n, in_dir))));
     let uv = albedo.xy;
     parity_put(&r, 38u, tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec3<f32>(v[9], v[10], v[11]), uv,
         vec2<f32>(uv.x + 0.5, uv.y + 0.1 * albedo.z), vec2<f32>(uv.x + 0.2 * albedo.x, uv.y + 0.6), n)));
+    // The material of the case and the BSDF on it through the half vector of its directions
     let material = Material(albedo, vec3<f32>(0.0), v[16], v[15], v[17], max(v[18], v[19])${FLEXLIGHT ? "" : ", vec3<f32>(0.0), vec3<f32>(1.0), 1.0, vec3<f32>(0.0), vec3<f32>(0.0), 0.5, 0.0, 0.0, vec3<f32>(0.0)"});
     let ggx_n = normalize(- in_dir + out_dir);
     let lobes = bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19], anisotropicFrame(material, n_i));
@@ -119,11 +126,12 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     parity_put(&r, 46u, lobes.F);
     r[49] = bitcast<u32>(lobes.F_greyscale);
     r[50] = bitcast<u32>(lobes.reflect_weight);
-    r[51] = bitcast<u32>(lobes.diffuse_weight${FLEXLIGHT ? "" : ".x"});
+    r[51] = bitcast<u32>(lobes.diffuse_weight${FLEXLIGHT ? "" : ".x"});  // Untinted, its channels are equal
     r[52] = bitcast<u32>(lobes.refract_weight${FLEXLIGHT ? "" : ".x"});
     r[53] = bitcast<u32>(lobes.p_diffuse);
     r[54] = bitcast<u32>(lobes.p_reflect);
     r[55] = bitcast<u32>(lobes.p_refract);
+    // Each lobe sampleBSDF can choose, toward its side
     var p_lobe = array<f32, 3>(lobes.p_diffuse, lobes.p_refract, lobes.p_reflect);
     for (var lobe = 0u; lobe < 3u; lobe++) {
         let side = select(dot(n_i, out_dir) > 0.0, dot(n_i, out_dir) < 0.0, lobe == 1u);
@@ -142,6 +150,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[75] = u32(sample.refracted);
     r[76] = sample.lobe;
     r[77] = bitcast<u32>(sample.pdf);
+    // As BSDF weighs them, the throughput of a direction of density about zero is any
     for (var lobe = 0u; lobe < 3u; lobe++) {
         let connected = connectBSDF(in_dir, out_dir, n, material, v[18], v[19], lobe, random_state);
         parity_put(&r, 78u + 4u * lobe, connected.throughput * connected.pdf);
@@ -150,6 +159,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     parity_put(&r, 90u, BSDF(in_dir, out_dir, n, vec3<f32>(v[9], v[10], v[11]), material, v[18], v[19], random_state));
     r[93] = u32(${FLEXLIGHT ? "material.roughness > 0.0 || (material.metallic < 1.0 && material.transmission < 1.0)"
         : "samplesLights(material)"});
+    // Two samples resampled by their shifts with MIS weights, as the reuse passes do
     var a = Reservoir();
     a.seed = random_state;
     a.f = albedo;
@@ -176,6 +186,8 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[106] = withEnd(reservoir, 1u, 3u, albedo).path;
     parity_put(&r, 107u, ${FLEXLIGHT ? "parity_beerLambert" : "beerLambert"}(v[18] + v[19], albedo));
     ${FLEXLIGHT ? "" : "parity_put(&r, 110u, pointLightRadiance(albedo, v[18], 1.0 + v[16]));"}
+    // As FlexLight's skyBSDF weighs a sample of the density against BSDF sampling, and by the power heuristic as
+    // flex-cuda-pt's light sampling did
     let g_n = vec3<f32>(v[9], v[10], v[11]);
     let refracted = (dot(in_dir, g_n) <= 0.0) != (dot(out_dir, g_n) > 0.0);
     let pdf = 0.5 + v[17];
@@ -191,10 +203,12 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     parity_put(&r, 116u, power);` : `
     parity_put(&r, 113u, neeBSDF(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, false, random_state));
     parity_put(&r, 116u, neeBSDF(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, true, random_state));`}
+    // As sampleBSDF passes a ray straight through equal IORs: refraction's throughput times its probability
     ${FLEXLIGHT ? `let straight = bsdfLobes(in_dir, - in_dir, n_i, n_i, material, 1.0, 1.0, anisotropicFrame(material, n_i));
     let through = lobeThroughput(in_dir, n_i, alpha, material, straight, 1u) * straight.p_refract;
     parity_put(&r, 119u, select(vec3<f32>(0.0), through, straight.p_refract > 0.0));` : `
     parity_put(&r, 119u, straightThrough(in_dir, n, material));`}
+    // Two light tree nodes of the case, children of one, picked to a point and a normal, and a triangle's density
     let first = LightBounds(min(in_dir, out_dir), max(in_dir, out_dir) + albedo * 0.5, n, 1.0 + albedo.x,
         2.0 * albedo.y - 1.0);
     let second = LightBounds(min(n, g_n) - vec3<f32>(0.25), max(n, g_n) + vec3<f32>(albedo.z), g_n, albedo.z * v[15],
@@ -230,6 +244,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[129] = bitcast<u32>(solidAngle(0.3 + albedo.x, n * (1.0 + v[16]), out_dir * (1.0 + v[15])));
     r[130] = bitcast<u32>(powerHeuristic(0.5 + v[17], 3.0 * albedo.y));
     r[131] = bitcast<u32>(powerHeuristic(0.5 + v[17], 0.0));`}
+    // A sphere of the case seen from its incoming direction, from inside at the larger radii, as pbrt-v4 samples it
     let center = 2.0 * g_n;
     let radius = 0.5 + 2.0 * v[16];
     ${FLEXLIGHT ? `let sin2 = radius * radius / dot(center - in_dir, center - in_dir);
@@ -244,6 +259,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     parity_put(&r, 133u, sampleSphere(center, radius, in_dir, albedo.x, albedo.z));`}
     r[125] = bitcast<u32>(pick);
     r[126] = bitcast<u32>(probability);
+    // ReSTIR's decisions on values of the case, either side of each of their thresholds${FLEXLIGHT ? ", as FlexLight's walk, its passes and facingRay write them" : ""}
     let d_here = 0.5 + v[16];
     let d_start = 1.0 + v[17];
     let throughput = albedo * (1.0 + 2.0 * v[16]);
@@ -289,6 +305,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     r[146] = bitcast<u32>(neighborWeight(share, c_n, albedo.z, c_pair, v[16]));
     r[147] = bitcast<u32>(canonical);`}
+    // The offset of a point above the triangle of the case's directions, its vertex normals around n${FLEXLIGHT ? ", as surfaceAt writes it" : ""}
     let t = mat3x3<f32>(in_dir, out_dir, g_n);
     let normals = mat3x3<f32>(n, n + 0.2 * v[16] * in_dir, n * (1.0 + v[17]) + 0.1 * g_n);
     let geometry_uvw = vec3<f32>(1.0 - 0.5 * albedo.x - 0.5 * albedo.y, 0.5 * albedo.x, 0.5 * albedo.y);
@@ -311,6 +328,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     let angle_tan: vec3<f32> = clamp(tan(angles), vec3<f32>(0.0f), vec3<f32>(PI * 0.25f));
     r[148] = bitcast<u32>(clamp(dot(diffs * angle_tan, geometry_uvw), 0.0f, min_edge_length * 0.125f));` : `r[148] = bitcast<u32>(geometryOffset(t[0], t[1], t[2], normals[0], normals[1], normals[2], geometry_n, geometry_uvw,
         offset_ray_target));`}
+    // A shadow segment of the case: the lift of its end, turned either way, its length and an occluder layer's transmittance${FLEXLIGHT ? ", as sampleLightTree lifts the end, turned, and as renderer.cu writes the rest" : ""}
     let shadow_start = 2.0 * in_dir;
     let shadow = out_dir * (1.0 + 3.0 * v[16]) - in_dir;
     let light_offset = 0.1 * albedo.x * (1.0 - v[17]);
@@ -328,7 +346,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
 const UNSIGNED = [0, 1, 2, 8, 27, 29, 33, 74, 75, 76, 93, 94, 105, 106, 124, 139, 140, 141];
 
 Object.assign(globalThis, globals);
-// Kept referenced: the device is torn down with the GPU object
+// Dawn tears the device down with the GPU object, so it stays referenced
 const gpu = create([]);
 const device = await (await gpu.requestAdapter({ powerPreference: "high-performance" })).requestDevice();
 const lines = readFileSync(0, "utf8").trim().split("\n").map((line) => line.trim().split(/\s+/));
@@ -344,6 +362,9 @@ const readback = buffer(results.size, GPUBufferUsage.MAP_READ | GPUBufferUsage.C
 device.queue.writeBuffer(cases, 0, inputs);
 let source = readFileSync(process.argv[2], "utf8");
 if (FLEXLIGHT) {
+  // Only the allowed changes to 754e9a0: surface tint, a separate absorption color, D without cancellation or BIAS, G1
+  // the exact Smith masking and the diffuse and refraction of what the dielectric does not reflect, refraction of the
+  // share not metallic.
   source = source.replace("return vec3<f32>(lobes.refract_weight * G1_l * (1.0f - lobes.F_greyscale) / lobes.p_refract);",
     "return lobes.refract_weight * G1_l * material.albedo / lobes.p_refract;")
     .replace("mix(lobes.F, vec3<f32>(lobes.F_greyscale), lobes.colorless_reflection)", "lobes.F")
@@ -382,7 +403,7 @@ const words = new Uint32Array(readback.getMappedRange());
 const floats = new Float32Array(words.buffer);
 lines.forEach((line, i) => {
   if (!FLEXLIGHT) {
-    // Radiance over a diffuse sphere integrates to its power, 4 * PI * intensity
+    // Integrating the radiance over a diffuse sphere must recover its power, 4 * PI * intensity.
     const radius = Math.fround(1 + Number(line[16])), area = 4 * Math.PI * radius ** 2;
     for (let channel = 0; channel < 3; channel++) {
       const power = 4 * Math.PI * Number(line[18]) * Number(line[12 + channel]);
@@ -390,6 +411,7 @@ lines.forEach((line, i) => {
       if (!(Math.abs(emitted - power) <= 1e-5 * Math.max(1, power))) throw new Error(`case ${i}: point light power mismatch`);
     }
   }
+  // All but the point light, checked above
   const outputs = Array.from({ length: OUTPUTS }, (_, j) => j).filter((j) => j < 110 || j >= 113)
     .map((j) => (UNSIGNED.includes(j) ? words : floats)[i * OUTPUTS + j]);
   console.log(line.slice(0, 21).concat(outputs).join(" "));

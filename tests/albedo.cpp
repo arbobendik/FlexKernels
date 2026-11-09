@@ -1,9 +1,19 @@
+// Directional albedo by sampleBSDF on the CPU, the mean throughput of its samples, at incidence cosines 1, 0.5 and 0.2:
+// of a white metal of roughness 0.5, GGX's single-scatter albedo under exact Smith masking, and of white opaque
+// dielectrics of IOR 1.5 and roughness 0.2 and 1, the diffuse's 1 - F of the dielectric over the visible normals plus
+// that reflection's single-scatter albedo, never above one, and of a gray metal of roughness 0.2 transmitting fully,
+// which refracts nothing and reflects half of what a white metal does; all integrated numerically. Then Blender's
+// Specular IOR Level and Tint: a smooth black dielectric of IOR 1.5 at normal incidence reflects 0.04 times the factor
+// the level gives and the tint, and a white one of roughness 0.2, its reflectance doubled and tinted, at most what it
+// receives in each channel; one of IOR 10, its reflectance doubled past total, at most all of it, and smooth white glass
+// without reflectance, light leaving it past the critical angle, all of it, as the true IOR refracts none. Last,
+// Blender's Translucent BSDF through the diffuse lobe
 #include <stdio.h>
 #include "pathtracer.cpp"
 
 int main() {
     const float COSINES[] = {1, 0.5f, 0.2f};
-    const Vector<float, 3> ZERO(0, 0, 0), ONE(1, 1, 1);
+    const Vector<float, 3> ZERO(0, 0, 0), ONE(1, 1, 1);  // No absorption, an untinted specular
     const Material MATERIALS[] = {{ONE, ZERO, 0.5f, 1, 0, 1.5f, ZERO, ONE, 1}, {ONE, ZERO, 0.2f, 0, 0, 1.5f, ZERO, ONE, 1},
         {ONE, ZERO, 1, 0, 0, 1.5f, ZERO, ONE, 1}, {Vector<float, 3>(0.5f, 0.5f, 0.5f), ZERO, 0.2f, 1, 1, 1.5f, ZERO, ONE, 1}};
     const float ALBEDOS[][3] = {{0.9158f, 0.8551f, 0.8315f}, {0.9998f, 0.9990f, 0.9877f}, {0.9209f, 0.9420f, 0.9478f},
@@ -33,6 +43,8 @@ int main() {
         for (int c = 0; c < 3; c++) failed |= m < 3 ? fabs(sum[c] - REFLECTED[m][c]) > 0.002f
             : sum[c] > 1.002f || (m > 3 && sum[c] < 0.99f);
     }
+    // Blender's Translucent BSDF, white and half mixed with a white diffuse: all it receives leaves, through to the other
+    // side and of the mix half back, each sample with the density and throughput connectBSDF and BSDF give its direction
     const Material TRANSLUCENT[] = {{ZERO, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ONE},
         {Vector<float, 3>(0.5f, 0.5f, 0.5f), ZERO, 1, 0, 0, 1, ZERO, ONE, 1, Vector<float, 3>(0.5f, 0.5f, 0.5f)}};
     for (int m = 0; m < 2; m++) for (int k = 0; k < 3; k++) {
@@ -50,6 +62,10 @@ int main() {
             sum / (1 << 18), through / (1 << 18), worst);
         failed |= fabs(sum / (1 << 18) - 1) > 0.002f || fabs(through / (1 << 18) - (m ? 0.5f : 1)) > 0.01f || worst > 1e-5;
     }
+    // The mix under a shading normal tilted from its face: in 64 bins of equal solid angle, the share of samples on the
+    // side of the face the shading normal sends them to is connectBSDF's density integrated over the bin, where both sides
+    // agree, as next event estimation weighs it; and that of the rest, mirrored across the face as renderer.cu carries
+    // them on, the density integrated at the mirror image, so the mirror keeps their mass
     const Vector<float, 3> tilted(0.95f, 0, 0.3122499f), above(0.3f / 1.044f, 0, -1 / 1.044f);
     constexpr float PI = 3.14159265f;
     const auto dot = [](Vector<float, 3> a, Vector<float, 3> b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
@@ -64,7 +80,7 @@ int main() {
     }
     for (int b = 0; b < 64; b++) {
         double expect_kept = 0, expect_moved = 0;
-        for (unsigned j = 0; j < 4096; j++) {
+        for (unsigned j = 0; j < 4096; j++) {  // Uniform points of the bin
             const float z = (b / 8 + (j % 64 + 0.5f) / 64) / 4 - 1, phi = (b % 8 + (j / 64 + 0.5f) / 64) / 8 * 2 * PI - PI;
             const Vector<float, 3> d(sqrtf(1 - z * z) * cosf(phi), sqrtf(1 - z * z) * sinf(phi), z);
             const float pdf = connectBSDF(above, d, tilted, TRANSLUCENT[1], 1, 1, 0u, hash(j)).pdf;
@@ -75,6 +91,9 @@ int main() {
     }
     printf("translucent tilted: worst bin off its density by %.2f of the tolerance\n", worst_bin);
     failed |= worst_bin > 1;
+    // Sheen: alone over black, its albedo E by midpoint quadrature over the hemisphere, which sheenAlbedo's table is
+    // nowhere below, sampling returns E over max(1, its table's); over white diffuse, at most and within 1% of all it
+    // receives; each sample with the density and throughput connectBSDF and BSDF give its direction
     const float ROUGHNESSES[] = {0.05f, 0.1f, 0.3f, 0.5f, 1}, VIEWS[] = {1, 0.5f, 0.2f, 0.02f};
     for (const float r : ROUGHNESSES) for (const float mu : VIEWS) {
         const Vector<float, 3> in_dir(sqrtf(1 - mu * mu), 0, -mu), v(-in_dir.x, 0, mu);
@@ -101,6 +120,9 @@ int main() {
         failed |= table < albedo * 0.999 || fabs(alone - expect) > 0.01 * fmax(expect, 0.05) || over > 1.002
             || over < 0.99 || worst > 1e-5;
     }
+    // Colored sheens, pure red and blue by weights 0.4 and 1, over white diffuse and a white metal near smooth: every
+    // channel at most and within 1% of all it receives, to four standard errors of its mean, the base scaled per channel
+    // by what the sheen takes
     const Vector<float, 3> TINTS[] = {Vector<float, 3>(1, 0, 0), Vector<float, 3>(0, 0, 1)};
     const float WEIGHTS[] = {0.4f, 1}, TINTED_ROUGHNESSES[] = {0.1f, 0.5f}, TINTED_VIEWS[] = {1, 0.2f, 0.02f};
     for (const float weight : WEIGHTS) for (const Vector<float, 3> tint : TINTS) for (int metal = 0; metal < 2; metal++)
@@ -123,6 +145,8 @@ int main() {
             tint.z * weight, metal ? "metal" : "diffuse", r, mu, sum[0], sum[1], sum[2], bad ? " FAILED" : "");
         failed |= bad;
     }
+    // Anisotropic GGX of roughnesses along tangent and bitangent: D, and its visible normal density at views of cosines
+    // 1, 0.5 and 0.2 along either, normalized by midpoint quadrature over the half vectors' hemisphere
     const float ALPHAS[][2] = {{0.5f, 0.1f}, {0.1f, 0.5f}, {0.3f, 0.3f}, {0.05f, 0.4f}};
     for (const auto &a : ALPHAS) {
         const Vector<float, 2> alphas(a[0], a[1]);
@@ -143,6 +167,11 @@ int main() {
         failed |= fabs(d - 1) > 1e-3;
         for (const double x : visible) failed |= fabs(x - 1) > 1e-3;
     }
+    // A white metal of roughness 0.5 and anisotropy 0.8 or -0.5, and white glass of the first, turned by 0.1 about the
+    // normal from a tangent along x, seen at those cosines along x and y: sampling returns the BSDF's albedo by midpoint
+    // quadrature over the sphere, at most 1, to 3 standard errors, the metals red and blue per channel likewise; each
+    // sample carrying light with the density and throughput connectBSDF and BSDF give it, the metals' BSDF reciprocal and
+    // Torrance-Sparrow's of the roughnesses Blender's Principled mapping gives along the tangent turned
     const Vector<float, 3> X(1, 0, 0), COLORS[] = {RED, Vector<float, 3>(0, 0, 1)};
     const float ANISOTROPIES[] = {0.8f, -0.5f, 0.8f}, ROUGHNESS = 0.5f, ALPHA = ROUGHNESS * ROUGHNESS;
     const auto stretched = [&](int m, Vector<float, 3> albedo) {
@@ -189,6 +218,9 @@ int main() {
         printf(", worst mismatch %.2g%s\n", worst, bad ? " FAILED" : "");
         failed |= bad;
     }
+    // Toward anisotropy 0 the glass's lobes become the isotropic ones; and the density of the second metal's and the
+    // glass's sampling, seen at cosine 0.5 between the axes, in the 64 bins of equal solid angle above: the share of
+    // samples is the density of connectBSDF's lobes integrated over the bin
     const Vector<float, 3> oblique(0.866f * cosf(0.3f), 0.866f * sinf(0.3f), -0.5f);
     Material isotropic = stretched(2, ONE), near = isotropic;
     isotropic.anisotropy = 0, near.anisotropy = 1e-6f;
@@ -201,6 +233,7 @@ int main() {
     }
     printf("anisotropic glass toward isotropic: worst mismatch %.2g\n", limit);
     failed |= limit > 1e-4;
+    // At the pole of Blender's radial tangent, where it lies along the normal, the glass still has a frame
     near.anisotropy = 0.8f, near.tangent = n;
     const SampleBSDF along = sampleBSDF(oblique, n, near, 1, 1.5f, hash(0), Vector<float, 2>(0, 0));
     printf("anisotropic glass of a tangent along the normal: %g\n", along.throughput.x * along.pdf);
@@ -212,7 +245,7 @@ int main() {
             share[bin(sampleBSDF(oblique, n, M, 1, 1.5f, hash(i), Vector<float, 2>(0, 0)).unit_direction)] += 1.0 / (1 << 22);
         for (int b = 0; b < 64; b++) {
             double expect = 0;
-            for (unsigned j = 0; j < 4096; j++) {
+            for (unsigned j = 0; j < 4096; j++) {  // Uniform points of the bin
                 const float z = (b / 8 + (j % 64 + 0.5f) / 64) / 4 - 1, phi = (b % 8 + (j / 64 + 0.5f) / 64) / 8 * 2 * PI - PI;
                 const Vector<float, 3> d(sqrtf(1 - z * z) * cosf(phi), sqrtf(1 - z * z) * sinf(phi), z);
                 for (unsigned lobe = 1; lobe < 3; lobe++) expect += connectBSDF(oblique, d, n, M, 1, 1.5f, lobe, hash(j)).pdf * PI / 16 / 4096;

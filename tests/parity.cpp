@@ -1,3 +1,5 @@
+// Evaluates the generated functions on the inputs of each golden line and prints them with its outputs in the golden
+// format: on the CPU from Slang's C++ target, or on the GPU from the CUDA header when built as CUDA
 #include <stdio.h>
 #include <vector>
 #ifdef __CUDACC__
@@ -5,7 +7,9 @@
 #include "pathtracer.cuh"
 typedef float3 Vec;
 typedef float2 Vec2;
+// FlexLight's Material, as flex-cuda-pt names it
 typedef BSDFMaterial Mat;
+// The light bounds of renderer.h's nodes
 typedef LightNode Bounds;
 __device__ Vec vec(const float* a) { return make_float3(a[0], a[1], a[2]); }
 __device__ Vec2 vec2(const float* a) { return make_float2(a[0], a[1]); }
@@ -64,12 +68,13 @@ __device__ Result evaluate(const Case& c) {
     r.normal_value = normal.value;
     r.sphere_state = sphere.state;
     r.sphere = sphere.value;
+    // As tests/wgsl.mjs evaluates FlexLight's normal map, BSDF and resampling
     r.g1 = smithG1(alpha, fabsf(n_dot_in));
     const float uv[][2] = {{c.in[12], c.in[13]}, {c.in[12] + 0.5f, c.in[13] + 0.1f * c.in[14]},
         {c.in[12] + 0.2f * c.in[12], c.in[13] + 0.6f}};
     r.normal_map = tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec(c.in + 9), vec2(uv[0]), vec2(uv[1]),
         vec2(uv[2]), n));
-    const float zero[] = {0, 0, 0}, one[] = {1, 1, 1};
+    const float zero[] = {0, 0, 0}, one[] = {1, 1, 1};  // No absorption, an untinted specular at its level
     const Mat material = {albedo, vec(zero), c.in[16], c.in[15], c.in[17], fmaxf(c.in[18], c.in[19]), vec(zero), vec(one),
         1};
     const float h[] = {minus_in[0] + c.in[3], minus_in[1] + c.in[4], minus_in[2] + c.in[5]}, scale = rnorm(h);
@@ -105,12 +110,14 @@ __device__ Result evaluate(const Case& c) {
     r.path = withEnd(r.r, 1, 3, albedo).path;
     r.beer_lambert = beerLambert(c.in[18] + c.in[19], albedo);
     r.point_light = pointLightRadiance(albedo, c.in[18], 1.0f + c.in[16]);
+    // As FlexLight's skyBSDF weighs a sample of the density against BSDF sampling, and by the power heuristic
     const bool refracted = (dot3(in_dir, vec(c.in + 9)) <= 0) != (dot3(out_dir, vec(c.in + 9)) > 0);
     r.nee_balance = neeBSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, 0.5f + c.in[17], false,
         c.random_state);
     r.nee_power = neeBSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, 0.5f + c.in[17], true,
         c.random_state);
     r.straight_through = straightThrough(in_dir, n, material);
+    // Two light tree nodes of the case, children of one, picked to a point and a normal, and a triangle's density
     float low_first[3], high_first[3], low_second[3], high_second[3];
     float light_point[3], facing[3], normal_scaled[3], toward[3];
     for (int i = 0; i < 3; i++) {
@@ -129,11 +136,14 @@ __device__ Result evaluate(const Case& c) {
     r.share_first = childShare(first, second, vec(light_point), vec(facing), 0);
     r.share_second = childShare(first, second, vec(light_point), vec(facing), 1);
     r.solid_angle = solidAngle(0.3f + albedo.x, vec(normal_scaled), vec(toward));
+    // Light sampling's weight against a density of the case, and against none
     r.power_weight = powerHeuristic(0.5f + c.in[17], 3 * albedo.y);
     r.power_full = powerHeuristic(0.5f + c.in[17], 0);
+    // A sphere of the case seen from its incoming direction, from inside at the larger radii
     const float center[] = {2 * c.in[9], 2 * c.in[10], 2 * c.in[11]}, radius = 0.5f + 2 * c.in[16];
     r.sphere_density = sphereDensity(vec(center), radius, in_dir);
     r.sphere_direction = sampleSphere(vec(center), radius, in_dir, albedo.x, albedo.z);
+    // ReSTIR's decisions on values of the case, either side of each of their thresholds
     const Vec g_n = vec(c.in + 9);
     r.facing = facingSign(c.in[17], g_n, in_dir);
     r.geometry_density = geometryDensity(g_n, out_dir, 0.5f + c.in[16]);
@@ -149,6 +159,7 @@ __device__ Result evaluate(const Case& c) {
     const float share = pairShare(2 * albedo.y, 0.5f + albedo.x, 3 + albedo.z);
     r.neighbor = neighborWeight(share, 2 * albedo.y, albedo.z, 0.5f + albedo.x, c.in[16]);
     r.canonical = c.in[17] - 0.5f > 0 ? canonicalWeight(share, 0.5f + albedo.x, c.in[17] - 0.5f, 2 * albedo.y, albedo.x) : 0;
+    // The offset of a point above the triangle of the case's directions, its vertex normals around n
     const float u = 0.5f * albedo.x, w = 0.5f * albedo.y, e1[] = {c.in[3] - c.in[0], c.in[4] - c.in[1], c.in[5] - c.in[2]},
         e2[] = {c.in[9] - c.in[0], c.in[10] - c.in[1], c.in[11] - c.in[2]};
     const float cross[] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]},
@@ -160,6 +171,7 @@ __device__ Result evaluate(const Case& c) {
     }
     const float uvw[] = {1 - u - w, u, w};
     r.geometry_offset = geometryOffset(in_dir, out_dir, g_n, n, vec(n1), vec(n2), vec(face), vec(uvw), vec(position));
+    // A shadow segment of the case: the lift of its end, turned either way, its length and an occluder layer's transmittance
     const float start[] = {2 * c.in[0], 2 * c.in[1], 2 * c.in[2]}, shadow[] = {c.in[3] * (1 + 3 * c.in[16]) - c.in[0],
         c.in[4] * (1 + 3 * c.in[16]) - c.in[1], c.in[5] * (1 + 3 * c.in[16]) - c.in[2]};
     r.lift = shadowLift(n, 0.1f * albedo.x * (1 - c.in[17]), vec(start), out_dir);
@@ -200,7 +212,7 @@ int main() {
     for (size_t i = 0; i < cases.size(); i++) {
         const Case& c = cases[i];
         const Result& r = results[i];
-        // Radiance over a diffuse sphere integrates to its power, 4 * PI * intensity
+        // Integrating the radiance over a diffuse sphere must recover its power, 4 * PI * intensity.
         const double pi = 3.141592653589793, radius = 1.0f + c.in[16], area = 4 * pi * radius * radius;
         const float radiance[] = {r.point_light.x, r.point_light.y, r.point_light.z};
         for (unsigned channel = 0; channel < 3; channel++) {
@@ -223,7 +235,7 @@ int main() {
         printf(" %.9g", r.g1); print(r.normal_map);
         printf(" %.9g %.9g", l.v_dot_h, l.n_dot_h); print(l.refracted); print(l.F);
         printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g", l.F_greyscale, l.reflect_weight, l.diffuse_weight.x,
-            l.refract_weight.x, l.p_diffuse, l.p_reflect, l.p_refract);
+            l.refract_weight.x, l.p_diffuse, l.p_reflect, l.p_refract);  // Untinted, the weights' channels are equal
         for (unsigned lobe = 0; lobe < 3; lobe++) { print(r.lobe_throughput[lobe]); printf(" %.9g", r.lobe_density[lobe]); }
         print(r.sample.unit_direction); print(r.sample.throughput);
         printf(" %u %u %u %.9g", r.sample.random_state, r.sample.refracted, r.sample.lobe, r.sample.pdf);

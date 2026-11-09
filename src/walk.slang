@@ -1,7 +1,10 @@
+// Path guiding and the bounce loop: the reservoirs, shifts and resampling weights of ReSTIR, the footprints and
+// survival of its paths, and the light tree of light sampling, beside the BSDFs of pathtracer.slang
 implementing pathtracer;
 
 #ifdef FK_RESTIR
-// ReSTIR PT Enhanced (Lin, Kettunen and Wyman 2026)
+// ReSTIR PT Enhanced (Lin, Kettunen and Wyman 2026) on top of the path tracer above.
+// Paths live in primary sample space, vertex b draws its random numbers from stream(seed, b).
 
 // How a path ends: next event estimation, emissive surface, point light sphere, environment or environment by next event estimation
 public static const uint END_NEE = 0u;
@@ -37,6 +40,9 @@ public static const uint STREAM_SELECT = 193u;
 public static const uint STREAM_SKY = 256u;
 #endif
 
+// Target plumbing: flex-cuda-pt's own Reservoir (renderer.h), by which its host sizes its buffers, the struct for every
+// other target; the walk and shift make one only by emptyReservoir and reach rc, a Hit there, only by reservoirHit and
+// withReservoirHit
 __target_intrinsic(cuda, "Reservoir")
 __extern_cpp public struct Reservoir {
     __extern_cpp public uint seed;
@@ -55,6 +61,7 @@ __extern_cpp public struct Reservoir {
     __extern_cpp public float3 radiance;
 }
 
+// Target plumbing: flex-cuda-pt's own Shift (renderer.h), as Reservoir
 __target_intrinsic(cuda, "Shift")
 __extern_cpp public struct Shift {
     __extern_cpp public float3 f;
@@ -67,6 +74,7 @@ __extern_cpp public struct Selection {
     __extern_cpp public float3 color;
     __extern_cpp public uint random_state;
 }
+// Target plumbing: a selection of zeros, its reservoir flex-cuda-pt's value-initialized, as emptyReservoir's
 [ForceInline] public Selection emptySelection() {
     __target_switch {
     case cuda: __intrinsic_asm "Selection{}";
@@ -79,6 +87,8 @@ __extern_cpp public struct Selection {
 public static const uint SHIFT_DEPTHS = 8u;
 public static const uint SHIFT_BINS = 40u;
 
+// Target plumbing: FlexLight's own Hit (pathtracer-compute.wgsl), the struct of flex-cuda-pt's hooks by another name
+// than its own Hit, which renderer.h lays out otherwise, the struct for every other target
 __target_intrinsic(wgsl, "Hit")
 __target_intrinsic(cuda, "FKHit")
 __extern_cpp public struct Hit {
@@ -89,6 +99,9 @@ __extern_cpp public struct Hit {
     __extern_cpp public float distance;
 }
 
+// Target plumbing: the triangle hit stored in a reservoir's rc, a uint4 (instance, triangle, uv), or flex-cuda-pt's
+// Hit, which its adapter reads, and writes through pointers to both; and a reservoir of zeros, flex-cuda-pt's
+// value-initialized
 [ForceInline] public Hit reservoirHit(Reservoir r) {
     __target_switch {
     case cuda: __intrinsic_asm "fcptReservoirHit($0)";
@@ -128,10 +141,10 @@ __extern_cpp public struct Vertex {
     return select(a / b, float3(0.0f), b == float3(0.0f));
 }
 
-// Weighted reservoir sampling (Sec. 6.3): w_sum += w, candidate kept with probability w / w_sum
+// Weighted reservoir sampling step, weight is the vector-valued resampling weight (Sec. 6.3)
 [CudaDeviceExport] public func offer(inout sel: Selection, candidate: Reservoir, weight: float3) {
     let w: float = rgb_to_greyscale(weight);
-    // Reject 0, NaN and infinite weights
+    // Also rejects NaN and infinite weights of degenerate samples
     if (!(w > 0.0f && w < 3.0e38f)) {
         return;
     }
@@ -144,8 +157,7 @@ __extern_cpp public struct Vertex {
     }
 }
 
-// shifted.f = f(y) * |J|
-// => resampling weight = mis * f(y) * |J| * W, candidate f = f(y), jac *= |J|
+// Resample a shifted sample with MIS weight mis, keeping its Jacobian for later shifts
 [CudaDeviceExport] public func offerShifted(inout sel: Selection, r: Reservoir, shifted: Shift, mis: float) {
     var candidate: Reservoir = r;
     candidate.f = shifted.f / shifted.jac;
@@ -168,6 +180,8 @@ __extern_cpp public struct Vertex {
     return candidate;
 }
 
+// Decisions of ReSTIR PT both consumers make inline alike, by their expressions; each consumer keeps the loops, seeds
+// and reads around them
 
 // Single-vertex roughness threshold (Sec. 4.2)
 static const float RESTIR_ROUGHNESS = 0.2;
@@ -178,13 +192,12 @@ static const float RESTIR_CAP = 20.0;
 static const float RESTIR_CAP_MIN = 1.0;
 static const float RESTIR_DUPLICATION_ALPHA = 0.1;
 
-// Sign turning the normals toward the arriving ray, kept for transmitting surfaces
+// Sign that turns a hit's normals toward the side the ray arrives from, which surfaces transmitting light keep
 [CudaDeviceExport] public func facingSign(transmission: float, face: float3, direction: float3) -> float {
     return transmission > 0.0f || dot(face, direction) < 0.0f ? 1.0f : -1.0f;
 }
 
-// PDF_area = PDF_solid_angle * |cos_theta| / distance^2
-// => PDF_area / PDF_solid_angle = |dot(geometry_n, direction)| / distance^2
+// Density of a segment's end in area measure per solid angle at its start
 [CudaDeviceExport] public func geometryDensity(geometry_n: float3, direction: float3, distance: float) -> float {
     return abs(dot(geometry_n, direction)) / (distance * distance);
 }
@@ -199,7 +212,7 @@ static const float RESTIR_DUPLICATION_ALPHA = 0.1;
     return open && prev_rough && prev_pdf * geometry_density * threshold <= 1.0f;
 }
 
-// Eq. 5 from this vertex along the sampled lobe
+// The criterion in the other direction, from this vertex along the sampled lobe
 [CudaDeviceExport] public func withinInverseFootprint(pdf: float, diffuse: bool, prev_cos: float, distance: float, threshold: float) -> bool {
     return pdf > 0.0f && (diffuse || pdf * prev_cos / (distance * distance) * threshold <= 1.0f);
 }
@@ -209,7 +222,9 @@ static const float RESTIR_DUPLICATION_ALPHA = 0.1;
     return pdf > 0.0f && (diffuse || roughness >= RESTIR_ROUGHNESS);
 }
 
-// Russian roulette: q = min(max(throughput) / density, 1)
+// Russian roulette's probability of continuing a path of a throughput over the density of its choices. Target
+// plumbing: FlexLight's clamp of the largest ratio for WGSL, flex-cuda-pt's ratio of the largest for every other
+// target, equal for positive densities
 [CudaDeviceExport] public func survivalProbability(throughput: float3, density: float) -> float {
     __target_switch {
     case wgsl:
@@ -220,10 +235,11 @@ static const float RESTIR_DUPLICATION_ALPHA = 0.1;
     }
 }
 
-// Temporal confidence cap (Sec. 5)
+// Temporal confidence cap, lowered where the previous frame duplicated samples (Sec. 5), duplicated 0 otherwise
 [CudaDeviceExport] public func confidenceCap(duplicated: float) -> float {
     return interpolate(RESTIR_CAP, RESTIR_CAP_MIN, pow(duplicated, RESTIR_DUPLICATION_ALPHA));
 }
+// Target plumbing: FlexLight's mix for WGSL, flex-cuda-pt's a + (b - a) * t for every other target
 float interpolate(float a, float b, float t) {
     __target_switch {
     case wgsl: __intrinsic_asm "mix($0, $1, $2)";
@@ -231,30 +247,34 @@ float interpolate(float a, float b, float t) {
     }
 }
 
-// Temporal MIS weights, p_t->c = g_previous the previous sample shifted here, p_c->t = g_current
-// m_c = c * p_c / (c * p_c + c_t * p_t->c)
-// m_t = c_t * p_t / (c_t * p_t + c * p_c->t)
+// MIS weights of temporal reuse: of the current sample of confidence c and target p_c against the previous one shifted
+// here, and of the previous one, confidence c_t, against the current one shifted back, by the targets g of the shifts
 [CudaDeviceExport] public func temporalWeights(c: float, p_c: float, c_t: float, p_t: float, g_previous: float, g_current: float) -> float2 {
     return float2(c * p_c / (c * p_c + c_t * g_previous), c_t * p_t / (c_t * p_t + c * g_current));
 }
 
-// Pair's share of all confidence (Sec. 3.2)
+// Share of a pair of spatial reuse (Sec. 3.2) in the confidence c_sum of all: the neighbor's confidence c_n and the
+// current pixel's, split evenly across the pairs into c_pair
 [CudaDeviceExport] public func pairShare(c_n: float, c_pair: float, c_sum: float) -> float {
     return (c_n + c_pair) / c_sum;
 }
 
-// Pairwise MIS weight of the neighbor's sample, g_here its target shifted to the current pixel
+// MIS weight of the neighbor's sample of a pair, of target p_n, against the current pixel's shifted to it, g_here
 [CudaDeviceExport] public func neighborWeight(share: float, c_n: float, p_n: float, c_pair: float, g_here: float) -> float {
     return share * c_n * p_n / (c_n * p_n + c_pair * g_here);
 }
 
-// Pairwise MIS weight of the canonical sample, g_there its target shifted to the neighbor
+// The canonical sample's share against the neighbor, which the consumers count where its target p_c is positive
 [CudaDeviceExport] public func canonicalWeight(share: float, c_pair: float, p_c: float, c_n: float, g_there: float) -> float {
     return share * c_pair * p_c / (c_pair * p_c + c_n * g_there);
 }
 
+// Light tree of flex-cuda-pt's renderer.cu, transpiled in its order with its names and expressions; the loops down the
+// tree stay with each consumer, which reads its nodes, and take one step each of pickChild or childShare
 
-// Bounds, normal cone (w, cos_theta_o) and power phi of a node's emitters (pbrt-v4 LightBounds)
+// A node's emitters: bounds, axis and angle of their normals' cone and power (pbrt-v4's LightBounds); each consumer keeps
+// its nodes' children. Target plumbing: flex-cuda-pt's own LightNode (renderer.h) holding them, the array it uploads,
+// the struct for every other target
 __target_intrinsic(cuda, "LightNode")
 __extern_cpp public struct LightBounds {
     __extern_cpp public float3 low;
@@ -264,21 +284,21 @@ __extern_cpp public struct LightBounds {
     __extern_cpp public float cos_theta_o;
 };
 
-// cos(max(0, a - b)) = cos_a * cos_b + sin_a * sin_b, 1 for a < b
+// Of max(0, a - b) for angles a, b in [0, PI] by their sines and cosines
 [CudaDeviceExport] public func cosSubClamped(sin_a: float, cos_a: float, sin_b: float, cos_b: float) -> float {
     return select(cos_a * cos_b + sin_a * sin_b, 1.0f, cos_a > cos_b);
 }
 [CudaDeviceExport] public func sinSubClamped(sin_a: float, cos_a: float, sin_b: float, cos_b: float) -> float {
     return select(sin_a * cos_b - cos_a * sin_b, 0.0f, cos_a > cos_b);
 }
-// sin = sqrt(1 - cos^2) on [0, PI]
+// Of an angle in [0, PI] by its cosine
 [CudaDeviceExport] public func sine(c: float) -> float {
     return sqrt(max(1.0f - c * c, 0.0f));
 }
 
-// Importance of a node to p (pbrt-v4 LightBounds::Importance)
-// theta_x = max(0, theta_w - theta_o), theta_p = max(0, theta_x - theta_b)
-// importance = phi * cos(theta_p) / max(d^2, |diagonal| / 2) * cos(max(0, theta_i - theta_b)), 1 without normal
+// Importance of a light BVH node to a point: power times bounds of the cosines at its emitters, two sided and diffuse,
+// and at the point (both hemispheres when normal is zero for transmission), over the squared distance
+// (pbrt-v4's LightBounds::Importance)
 [CudaDeviceExport] public func importance(node: LightBounds, p: float3, normal: float3) -> float {
     let center: float3 = (node.low + node.high) * 0.5f;
     let diagonal: float3 = node.high - node.low;
@@ -287,13 +307,13 @@ __extern_cpp public struct LightBounds {
     let r2: float = dot(diagonal, diagonal) / 4.0f;
     let cos_theta_w: float = abs(dot(node.w, wi));
     let sin_theta_o: float = sine(node.cos_theta_o);
-    // sin(theta_b) = r / d of the bounding sphere, all directions from inside it
+    // Directions of the bounding sphere of the bounds, all from inside it
     let cos_theta_b: float = select(sqrt(max(1.0f - r2 / d2, 0.0f)), -1.0f, d2 < r2);
     let sin_theta_b: float = sine(cos_theta_b);
     let cos_theta_x: float = cosSubClamped(sine(cos_theta_w), cos_theta_w, sin_theta_o, node.cos_theta_o);
     let sin_theta_x: float = sinSubClamped(sine(cos_theta_w), cos_theta_w, sin_theta_o, node.cos_theta_o);
     let cos_theta_p: float = cosSubClamped(sin_theta_x, cos_theta_x, sin_theta_b, cos_theta_b);
-    // theta_p >= theta_e = PI / 2 => no light
+    // Diffuse emitters spread a quarter turn: cos theta_e = 0
     if (cos_theta_p <= 0.0f) {
         return 0.0f;
     }
@@ -302,14 +322,15 @@ __extern_cpp public struct LightBounds {
         * select(cosSubClamped(sine(cos_theta_i), cos_theta_i, sin_theta_b, cos_theta_b), 1.0f, dot(normal, normal) == 0.0f), 0.0f);
 }
 
-// Uniform point on the triangle: PDF_area = probability / area, area = |normal| / 2
-// PDF = PDF_area * |toward|^2 / |cos| , |cos| = |dot(normal, toward)| / (|normal| * |toward|)
-// => PDF = 2 * probability * |toward|^3 / |dot(normal, toward)|
+// Density in solid angle of a uniform point toward on a triangle of normal twice its area, the triangle picked with
+// probability
 [CudaDeviceExport] public func solidAngle(probability: float, normal: float3, toward: float3) -> float {
     return 2.0f * probability * pow(length(toward), 3.0f) / abs(dot(normal, toward));
 }
 
-// One step down the light tree by the children's importance, pick rescaled (pbrt-v4 BVHLightSampler::Sample)
+// One step down from a node: of its children first and second, the one pick chooses by their shares of importance, 2 if
+// neither has any, the pick rescaled to choose again and probability times the choice's (pbrt-v4's
+// BVHLightSampler::Sample)
 [CudaDeviceExport] public func pickChild(first: LightBounds, second: LightBounds, p: float3, normal: float3, inout pick: float, inout probability: float) -> uint {
     let shares: float2 = float2(importance(first, p, normal), importance(second, p, normal));
     if (shares.x == 0.0f && shares.y == 0.0f) {
@@ -322,33 +343,35 @@ __extern_cpp public struct LightBounds {
     return child;
 }
 
-// Probability of one step down to child (pbrt-v4 BVHLightSampler::PMF)
+// One step down the trail of a leaf: of a node's children first and second, the share of importance of the one child
+// names, as pickChild chooses it (pbrt-v4's BVHLightSampler::PMF)
 [CudaDeviceExport] public func childShare(first: LightBounds, second: LightBounds, p: float3, normal: float3, child: uint) -> float {
     let shares: float2 = float2(importance(first, p, normal), importance(second, p, normal));
     return select(0.0f, shares[child] / (shares.x + shares.y), shares[child] > 0.0f);
 }
 
-// w = a^2 / (a^2 + b^2) = 1 / (1 + (b / a)^2) (Veach 1997)
+// Power heuristic weight of a strategy sampling at density a against one at density b (Veach 1997)
 [CudaDeviceExport] public func powerHeuristic(a: float, b: float) -> float {
     return select(1.0f, 1.0f / (1.0f + (b / a) * (b / a)), b > 0.0f);
 }
 
-// Uniform over the cone the sphere subtends: PDF = 1 / (2 * PI * (1 - cos_theta_max)), 1 / (4 * PI) inside
+// Solid angle density of sampleSphere's directions from p toward a sphere: uniform over the cone it subtends, or over
+// all directions from inside it
 [CudaDeviceExport] public func sphereDensity(center: float3, radius: float, p: float3) -> float {
-    // sin^2(theta_max) = radius^2 / distance^2
+    // Squared sine of the cone's half angle
     let sin2: float = radius * radius / dot(center - p, center - p);
     if (sin2 >= 1.0f) {
         return 0.25f / PI;
     }
-    // 1 - cos_theta_max = sin^2 / (1 + cos_theta_max)
-    // => PDF = (1 + cos_theta_max) / (2 * PI * sin^2)
+    // 1 / (2 PI (1 - cos)), as 2 PI sin^2 / (1 + cos) without cancellation for small spheres
     return (1.0f + sqrt(1.0f - sin2)) / (2.0f * PI * sin2);
 }
 
-// Uniform direction in the cone toward the sphere (pbrt-v4 Sphere::Sample by solid angle)
+// Direction from p toward a sphere, uniform over the cone it subtends, or over all directions from inside it, by the
+// uniform random numbers u1 and u2 (pbrt-v4's Sphere::Sample by solid angle)
 [CudaDeviceExport] public func sampleSphere(center: float3, radius: float, p: float3, u1: float, u2: float) -> float3 {
     let sin2: float = radius * radius / dot(center - p, center - p);
-    // 1 - cos_theta = u1 * (1 - cos_theta_max) = u1 * sin^2 / (1 + cos_theta_max), 2 * u1 inside
+    // 1 - cos theta, uniform over [0, 1 - cos of the cone's half angle], from inside over [0, 2]
     let one_minus_cos: float = select(u1 * sin2 / (1.0f + sqrt(max(1.0f - sin2, 0.0f))), 2.0f * u1, sin2 >= 1.0f);
     let sin_theta: float = sqrt(max(one_minus_cos * (2.0f - one_minus_cos), 0.0f));
     let phi: float = 2.0f * PI * u2;
@@ -358,6 +381,7 @@ __extern_cpp public struct LightBounds {
 #ifdef FK_RESTIR
 public static const float POW32 = 4294967296.0;
 
+// Target plumbing: FlexLight's own Ray, by which its scene's hooks trace, flex-cuda-pt's FKRay, as Hit
 __target_intrinsic(wgsl, "Ray")
 __target_intrinsic(cuda, "FKRay")
 __extern_cpp public struct Ray {
@@ -391,19 +415,22 @@ func raySphere(center: float3, radius: float, ray: Ray, max_len: float) -> float
 }
 
 __extern_cpp public struct TreeSample {
-    // Direction to the light point, radiance / PDF and PDF, 0 for point lights of no radius
+    // Unit direction toward the light point, the radiance arriving from it if visible over its density in solid angle and
+    // the latter, zero for point lights of no radius
     __extern_cpp public float3 dir;
     __extern_cpp public float3 radiance;
     __extern_cpp public float density;
     __extern_cpp public uint random_state;
 }
 
-// Whether the material is a thin surface transmitting diffusely
+// Whether material has Blender's Translucent BSDF, a thin surface transmitting diffusely
 func isTranslucent(material: Material) -> bool {
     return rgb_to_greyscale(material.translucent) > 0.0f;
 }
 
-// Light sampling at the vertex the ray left, for MIS of the emission the ray meets
+// Light sampling at the vertex a ray left, which the emission the ray meets weighs against: whether there was none, the
+// density of the lobe the ray was sampled with, the vertex, the normal its light sampling orients by, none sided, and the
+// start of its shadow rays
 __extern_cpp public struct NEEVertex {
     __extern_cpp public bool none;
     __extern_cpp public float pdf;
@@ -412,6 +439,7 @@ __extern_cpp public struct NEEVertex {
     __extern_cpp public float3 start;
 }
 
+// Target plumbing: FlexLight's own Surface, which its scene's surfaceAt returns, flex-cuda-pt's FKSurface, as Hit
 __target_intrinsic(wgsl, "Surface")
 __target_intrinsic(cuda, "FKSurface")
 __extern_cpp public struct Surface {
@@ -423,7 +451,7 @@ __extern_cpp public struct Surface {
     __extern_cpp public uint random_state;
 }
 
-// Opaque surfaces face the ray with both normals
+// Surfaces transmitting nothing face the ray along dir with both normals, as in flex-cuda-pt's walk and Cycles
 func facingRay(surface: Surface, dir: float3) -> Surface {
     let facing: float = facingSign(surface.material.transmission, surface.geometry_n, dir);
     return Surface(surface.smooth_n * facing, surface.geometry_n * facing, surface.geometry_offset, surface.material, surface.skip, surface.random_state);
@@ -442,6 +470,14 @@ func vertexEta(material: Material, n_dot_v: float) -> float2 {
     return float2(select(1.0f, material.ior, is_entering), select(material.ior, 1.0f, is_entering));
 }
 
+// The normal light and bounces leave by the side of: on surfaces transmitting nothing and seen from its side, the
+// smooth normal's, so a smooth normal is lit where it faces the light though its face doesn't (the shadow terminator);
+// else the face's, so a ray arriving behind the smooth normal leaves no way through, as flex-cuda-pt's side_n
+[CudaDeviceExport] public func sideNormal(surface: Surface, in_dir: float3) -> float3 {
+    let opaque: bool = !(surface.material.transmission > 0.0f) && !isTranslucent(surface.material);
+    return select(surface.geometry_n, surface.smooth_n, opaque && dot(surface.smooth_n, - in_dir) > 0.0f);
+}
+
 // Whether the path tracer considers dir to point towards the incorrect side of the surface
 func wrongSide(is_inside: bool, refracted: bool, dir: float3, geometry_n: float3) -> bool {
     return (is_inside == refracted) != (dot(dir, geometry_n) > 0.0f);
@@ -449,6 +485,7 @@ func wrongSide(is_inside: bool, refracted: bool, dir: float3, geometry_n: float3
 #endif
 
 #ifdef FK_RESTIR
+// Target plumbing: FlexLight's own Light, flex-cuda-pt's FKLight, as Hit
 __target_intrinsic(wgsl, "Light")
 __target_intrinsic(cuda, "FKLight")
 __extern_cpp public struct Light {
@@ -459,6 +496,22 @@ __extern_cpp public struct Light {
     __extern_cpp public float variance;
 }
 
+// Target plumbing: the scene the walk, light sampling and the environment reach, each consumer's own. Where FlexLight's
+// functions of the same names exist, they are the hooks; the rest read FlexLight's buffers where its layout and
+// flex-cuda-pt's differ:
+// lightNode(n) the leaf texel of node n of the light BVH (x zero for inner nodes, two for point lights, y the light or
+// instance, z the triangle), lightSecond(n) its second child, light(i) point light i, triangleOffset(i) the first
+// prototype triangle of instance i, lightTrail(j) the texel of the trail of slot j (x, y its bits) and
+// slotLeaf(n, j, trail_texel) whether node n is its leaf,
+// environmentCdf(cell) and environmentCdfSize() the environment map's luminance distribution, environmentMapSize() and
+// ambient() its size and the color without one, maxBounces() the bounces of a path; renderSize(), frame(), the views
+// and camera positions of this frame and the last, pairing(texel, t) reuse texture t, reservoirPrevious(q, layer) a
+// layer of last frame's reservoir at q, and previousDomain(q) the primary hit q had, the consumer's own;
+// restirNeighbours() the spatial partners, the reservoirs of last frame, of this frame's initial and temporal round and
+// the primary hits stored with the latter two, and the shift queue, FlexLight's ShiftQueue: its bins' job counts and
+// cursors, its jobs, the size of the indirect dispatch running them, and queuedShifts(i) the same buffer read only;
+// currentDomain(p, dom) the primary hit of p this frame, the consumer's own, the passes' uniforms, the stores of the
+// reservoirs of each round, of last frame's uv and of the shifts and duplication map, and the color written
 public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
     public bool shadowTraverseInstanceBVH(Ray ray, float l, bool two_sided);
@@ -480,6 +533,7 @@ public interface IScene {
     public uint2 environmentMapSize();
     public float3 ambient();
     public uint maxBounces();
+    // What only the passes call
 #ifdef FK_RESTIR_PASSES
     public uint2 renderSize();
     public uint frame();
@@ -524,6 +578,8 @@ public interface IScene {
 #endif
 
 #ifdef FK_RESTIR
+// Target plumbing: the scene of the ReSTIR variant outputs, each method FlexLight's own function or the read of its
+// buffer it stands for in its shader, and flex-cuda-pt's function of the name its adapter defines, in place of a call
 public struct HookScene : IScene {
     __target_intrinsic(wgsl, "traverseInstanceBVH($0, $1, $2)")
     __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2)")
@@ -705,8 +761,12 @@ public struct HookScene : IScene {
 #endif
 
 #ifdef FK_RESTIR
+// Target plumbing: WGSL's select of uints, in its argument order f, t, cond, as pathtracer.slang's of floats, which
+// uints would otherwise reach through float
 [ForceInline] uint select(uint f, uint t, bool cond) { return select(cond, t, f); }
 
+// Shadow test toward a light sample, including the quick exit for lights behind the shading normal, along the shared
+// segment: short of its end, which an emitting triangle's sample lifts off it toward the start
 func occluded<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_offset: float, light_dir: float3) -> bool {
     let unit_light_dir: float3 = normalize(light_dir);
     // Compute quick exit criterion to potentially skip expensive shadow test
@@ -719,10 +779,9 @@ func occluded<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_of
     return scene.shadowTraverseInstanceBVH(light_ray, shadowLength(light_dir), true);
 }
 
-// Light sampling: a light picked by the light tree, P(light) the product of child shares down to it
-// Triangle: uniform point, PDF = solidAngle(P(light))
-// Sphere: uniform in its cone, PDF = P(light) * sphereDensity
-// radiance = L * T / PDF; sided: light all around, origin lifted to the light's side of the face
+// Light sampling, as flex-cuda-pt's sampleLight: a light the light BVH picks by its importance to origin, a uniform point
+// on it or a direction in the cone of its sphere, seen from origin lifted by geometry_offset in front of smooth_n. Sided,
+// for translucent surfaces, light all around, origin lifted to the side of the face geometry_n the light lies on
 public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_n: float3, geometry_offset: float, sided: bool, init_random_state: uint) -> TreeSample {
     let random_pick: Random = pcg(init_random_state);
     let random_side: Random = pcg(random_pick.state);
@@ -747,7 +806,7 @@ public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float
         return sample;
     }
     let leaf: uint4 = scene.lightNode(n);
-    // Vector from start to the end of the shadow ray
+    // Vector from start to the end of the shadow ray, as occluded() casts it from there
     var shadow: float3;
     if (leaf.x == 2u) {
         let light: Light = scene.light(leaf.y);
@@ -756,7 +815,7 @@ public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float
             start = origin + geometry_offset * lift_n;
         }
         if (light.variance == 0.0f) {
-            // Delta light at the center: radiance / PDF = I / (d^2 * P(light))
+            // Delta light at the center
             shadow = light.position - start;
             sample.dir = normalize(light.position - start);
             sample.radiance = light.color * light.intensity / (dot(light.position - start, light.position - start) * probability);
@@ -769,16 +828,16 @@ public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float
     } else {
         let triangle_index: uint = scene.triangleOffset(leaf.y) + leaf.z;
         let t: float3x3 = scene.worldTriangle(leaf.y, triangle_index);
-        // Uniform point on the triangle: (1 - sqrt(u), sqrt(u) * (1 - v), sqrt(u) * v)
         let side: float = sqrt(random_side.value);
         let uv: float2 = float2(side * (1.0f - random_along.value), side * random_along.value);
         let point: float3 = mul(float3(1.0f - side, uv), t);
         if (sided) {
             lift_n = smooth_n * sign(dot(geometry_n, point - origin));
             start = origin + geometry_offset * lift_n;
-        } else if (!(dot(smooth_n, point - origin) > 0.0f)) {
+        } else if (!(dot(smooth_n, point - start) > 0.0f)) {
             return sample;
         }
+        // Emission at the point as the path tracer shades it, toward its smooth normal, the shadow ray ending in front of it
         let surface: Surface = scene.surfaceAt(Hit(uv, leaf.y, triangle_index, 0u, 0.0f), point, random_along.state);
         sample.random_state = surface.random_state;
         sample.dir = normalize(point - start);
@@ -792,8 +851,8 @@ public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float
     return sample;
 }
 
-// PDF = solidAngle(P(light)) or P(light) * sphereDensity, P(light) the product of child shares down the trail
-// of slot j (pbrt-v4's BVHLightSampler::PMF); with no smooth_n, all around
+// Density in solid angle of light sampling from origin, lifted to start, picking point on the light of trail slot j, down
+// its trail (pbrt-v4's BVHLightSampler::PMF), as flex-cuda-pt's lightPdf; with no smooth_n, sided, all around
 public func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, start: float3, j: uint, light_point: float3) -> float {
     let trail_texel: uint4 = scene.lightTrail(j);
     var trail: uint2 = trail_texel.xy;
@@ -805,7 +864,7 @@ public func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, star
         n = select(n + 1u, second, (trail.x & 1u) == 1u);
         trail = uint2((trail.x >> 1u) | (trail.y << 31u), trail.y >> 1u);
     }
-    if (!scene.slotLeaf(n, j, trail_texel) || !(importance(scene.lightBounds(n), origin, smooth_n) > 0.0f) || (dot(smooth_n, smooth_n) > 0.0f && !(dot(smooth_n, light_point - origin) > 0.0f))) {
+    if (!scene.slotLeaf(n, j, trail_texel) || !(importance(scene.lightBounds(n), origin, smooth_n) > 0.0f) || (dot(smooth_n, smooth_n) > 0.0f && !(dot(smooth_n, light_point - start) > 0.0f))) {
         return 0.0f;
     }
     let leaf: uint4 = scene.lightNode(n);
@@ -816,13 +875,11 @@ public func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, star
     return solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), light_point - start);
 }
 
-// radiance = L / PDF_light
-// neeBSDF = BSDF * n_dot_l / PDF_light * w_power
-// => neeBSDF * radiance * PDF_light = BSDF * n_dot_l * L / PDF_light * w_power
-// Delta lights or no competing BSDF sample: w_power = 1
+// BSDF times the radiance of a light sample, weighted per lobe against sampling the BSDF where a direction it samples
+// competes, by the power heuristic, delta lights never competing
 func lightBSDF(in_dir: float3, light: TreeSample, smooth_n: float3, geometry_n: float3, material: Material, eta_i: float, eta_o: float, competing: bool, random_state: uint) -> float3 {
     if (!competing || light.density == 0.0f) {
-        // Translucent materials transmit past the face too
+        // Translucent materials transmit past the face too, counting none of the share sampling mirrors back across it
         if (isTranslucent(material)) {
             return translucentBSDF(in_dir, light.dir, smooth_n, geometry_n, material, eta_i, eta_o, random_state) * light.radiance;
         }
@@ -832,7 +889,7 @@ func lightBSDF(in_dir: float3, light: TreeSample, smooth_n: float3, geometry_n: 
     return neeBSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, light.density, true, random_state) * light.radiance * light.density;
 }
 
-// Power heuristic of BSDF sampling at the vertex the ray left against light sampling of the point met
+// Weight of emission met at point on the light of hit against light sampling at the vertex the ray left
 func emissionWeight<S: IScene>(scene: S, vertex: NEEVertex, hit: Hit, light_point: float3) -> float {
     if (vertex.none) {
         return 1.0f;
@@ -846,9 +903,7 @@ func environmentMapped<S: IScene>(scene: S) -> bool {
     return scene.environmentMapSize().x > 1u && scene.environmentMapSize().y > 1u;
 }
 
-// p = p(row) * p(column | row), PDF_st = p * size.x * size.y
-// dw = 2 * PI^2 * sin(theta) ds dt, sin(theta) = length(dir.xz)
-// => PDF = p * size.x * size.y / (2 * PI^2 * sin(theta))
+// Solid angle density of sampleSky, piecewise constant over the luminance distribution of the environment map
 func environmentPdf<S: IScene>(scene: S, dir: float3) -> float {
     let size: uint2 = scene.environmentCdfSize() - uint2(1u, 0u);
     // Same coordinates as env_map_sample
@@ -874,14 +929,15 @@ func searchCDF<S: IScene>(scene: S, start: uint2, step: uint2, count: uint, u: f
 }
 
 // Radiance the path tracer's ray from a vertex along dir receives from the environment map if it hits nothing on the way.
-func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, is_inside: bool, dir: float3) -> float3 {
-    let inside: bool = is_inside != wrongSide(is_inside, false, dir, surface.geometry_n);
+// Escapes passing transparent texels are left to BSDF sampling.
+func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, side_n: float3, is_inside: bool, dir: float3) -> float3 {
+    let inside: bool = is_inside != wrongSide(is_inside, false, dir, side_n);
     let ray: Ray = Ray(origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, inside), dir);
     return select(scene.env_map_sample(dir), float3(0.0f), scene.shadowTraverseInstanceBVH(ray, POW32, true));
 }
 
-// Next event estimation toward the environment map, drawing a direction by its luminance
-func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_inside: bool, init_random_state: uint, lobe_state: uint) -> SkySample {
+// Next event estimation toward the environment map, drawing a direction by its luminance. lobe_state is the random state of skyBSDF.
+func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, side_n: float3, eta: float2, is_inside: bool, init_random_state: uint, lobe_state: uint) -> SkySample {
     let size: uint2 = scene.environmentCdfSize() - uint2(1u, 0u);
     let random_0: Random = pcg(init_random_state);
     let random_1: Random = pcg(random_0.state);
@@ -892,22 +948,24 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     let angles: float2 = (float2(float(column), float(row)) + float2(random_2.value, random_3.value)) / float2(size) * float2(2.0f * PI, PI);
     let dir: float3 = float3(sin(angles.y) * cos(angles.x), cos(angles.y), sin(angles.y) * sin(angles.x));
     let pdf: float = environmentPdf(scene, dir);
-    let f: float3 = skyBSDF(ray.unit_direction, dir, surface, eta, is_inside, pdf, lobe_state);
+    let f: float3 = skyBSDF(ray.unit_direction, dir, surface, side_n, eta, is_inside, pdf, lobe_state);
     // Only trace toward directions that contribute
     if (!(pdf > 0.0f) || all(f == float3(0.0f))) {
         return SkySample(dir, float3(0.0f), float3(0.0f), random_3.state);
     }
-    let radiance: float3 = skyRadiance(scene, ray.origin, surface, is_inside, dir);
+    let radiance: float3 = skyRadiance(scene, ray.origin, surface, side_n, is_inside, dir);
     return SkySample(dir, radiance, f * radiance, random_3.state);
 }
 
-// neeBSDF by the balance heuristic against the BSDF sampled escape
-func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
-    let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
+// BSDF times cosine toward an environment sample over its density, each lobe weighted against the BSDF sampled escape by the
+// balance heuristic. Lobes sampling can't produce toward dir are left to rays sampled to the wrong side, sampled again or mirrored.
+[CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, side_n: float3, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
+    let refracted: bool = wrongSide(is_inside, false, dir, side_n);
     return neeBSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y, refracted, pdf, false, random_state);
 }
 
-// w = PDF_lobe / (PDF_lobe + PDF_env), 1 for delta lobes and without environment sampling
+// MIS weight of a BSDF sampled escape from a vertex doing next event estimation, pdf is the density of the sampled lobe.
+// Delta lobes and rays sampled to the wrong side of the face (pdf zero) are never drawn by sampleSky.
 func escapeWeight<S: IScene>(scene: S, pdf: float, dir: float3) -> float {
     if (pdf <= 0.0f || !environmentMapped(scene)) {
         return 1.0f;
@@ -925,6 +983,7 @@ func environment<S: IScene>(scene: S, dir: float3) -> float3 {
 #endif
 
 #ifdef FK_RESTIR
+// Target plumbing: WGSL's extractBits of a uint, as pathtracer.slang's insertBits
 uint extractBits(uint e, uint offset, uint count) {
     __target_switch {
     case wgsl: __intrinsic_asm "extractBits($0, $1, $2)";
@@ -932,8 +991,10 @@ uint extractBits(uint e, uint offset, uint count) {
     }
 }
 
-// Walk a path from dom. Generating, every path is resampled into sel with its reconnection vertex (Sec. 6.1).
-// Replaying, the hybrid shift maps r into dom (Sec. 2.3) and returns f * |J| (Eq. 2), 0 outside its image.
+// Walk a path from dom like lightTrace. Generating, every path of the tree is resampled into sel with its reconnection
+// vertex (Sec. 6.1), Russian roulette only modifies their source density (Sec. 6.2.4). Replaying, the hybrid shift maps r into
+// dom (Sec. 2.3): random replay up to x_k-1 and reconnection to x_k. It returns the shifted integrand times the Jacobian
+// determinant of Eq. 2, zero if the path is not in the image of the shift.
 public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, scale: float, inout sel: Selection) -> Shift {
     let fail: Shift = Shift(float3(0.0f), 0.0f);
     let end: uint = extractBits(r.path, PATH_END, 5u);
@@ -964,6 +1025,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     var chain_throughput: float3 = float3(0.0f);
     for (var b: uint = 0u; ; b++) {
         let point_light_lighting: bool = hit.is_point_light == 1u;
+        // Loop scoped variables are initialized explicitly, some compilers keep the previous iteration's value otherwise
         var surface: Surface = {};
         // Smooth normal the surface emits along, before it faces the ray
         var front_n: float3 = float3(0.0f);
@@ -989,6 +1051,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let n_dot_v: float = dot(surface.smooth_n, - ray.unit_direction);
         let eta: float2 = vertexEta(material, n_dot_v);
         let nee: bool = scatter && samplesLights(material);
+        let side_n: float3 = sideNormal(surface, ray.unit_direction);
         // Emission met, of the surface or a point light, weighted against light sampling at the vertex the ray left
         var emission: float3 = material.emissive * max(sign(dot(- ray.unit_direction, front_n)), 0.0f);
         if (point_light_lighting) {
@@ -1027,13 +1090,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 if (!nee || !(rgb_to_greyscale(light.radiance) > 0.0f)) {
                     return fail;
                 }
-                return Shift(throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state) / r.jac, density / r.jac);
+                return Shift(throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, side_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state) / r.jac, density / r.jac);
             }
             if (k == end && end_type == END_SKY) {
                 if (!nee) {
                     return fail;
                 }
-                return Shift(throughput * skyBSDF(ray.unit_direction, r.dir, surface, eta, is_inside, environmentPdf(scene, r.dir), surface.random_state) * r.radiance / r.jac, density / r.jac);
+                return Shift(throughput * skyBSDF(ray.unit_direction, r.dir, surface, side_n, eta, is_inside, environmentPdf(scene, r.dir), surface.random_state) * r.radiance / r.jac, density / r.jac);
             }
             if (nee != (extractBits(r.path, PATH_NEE, 1u) == 1u)) {
                 return fail;
@@ -1041,7 +1104,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         } else if (replay && b == stop && (!scatter || (rc != RC_SURFACE && rc != RC_ENV))) {
             if (rc == RC_LIGHT && nee && !footprint && end_type == END_SKY) {
                 // Forced reconnection to the environment direction, drawn independently of the vertex (unit Jacobian)
-                let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state);
+                let sky: SkySample = sampleSky(scene, ray, surface, side_n, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state);
                 return Shift(throughput * sky.color, 1.0f);
             }
             if (rc == RC_LIGHT && nee && !footprint) {
@@ -1051,7 +1114,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 if (!(rgb_to_greyscale(light.radiance) > 0.0f)) {
                     return fail;
                 }
-                return Shift(throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state), 1.0f);
+                return Shift(throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, side_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state), 1.0f);
             }
             if (rc == RC_NONE && end_type == END_POINT && point_light_lighting) {
                 return Shift(throughput * emission, 1.0f);
@@ -1074,7 +1137,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             if (nee) {
                 let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE));
-                let f: float3 = throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state);
+                let f: float3 = throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, side_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state);
                 var candidate: Reservoir = chain;
                 if (chain_found) {
                     candidate.radiance = safeDivide(f, chain_throughput);
@@ -1090,7 +1153,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
             }
             if (nee && environmentMapped(scene) && b < scene.maxBounces()) {
-                let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state);
+                let sky: SkySample = sampleSky(scene, ray, surface, side_n, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state);
                 let f: float3 = throughput * sky.color;
                 var candidate: Reservoir = chain;
                 if (chain_found) {
@@ -1129,13 +1192,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     dir = normalize(reconnection - (ray.origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, is_inside != refracted)));
                 }
                 // The path tracer samples again or mirrors directions sampled to the wrong side of the face, which no density reaches
-                if (wrongSide(is_inside, refracted, dir, surface.geometry_n)) {
+                if (wrongSide(is_inside, refracted, dir, side_n)) {
                     return fail;
                 }
             } else if (!arrived) {
                 var bsdf_sampled: SampleBSDF = sampleBSDF(ray.unit_direction, surface.smooth_n, material, eta.x, eta.y, surface.random_state, float2(0.0f));
                 // Rays sampled to the wrong side of the face are sampled again or mirrored, as the path tracer's
-                wrong_side = wrongSide(is_inside, bsdf_sampled.refracted, bsdf_sampled.unit_direction, surface.geometry_n);
+                wrong_side = wrongSide(is_inside, bsdf_sampled.refracted, bsdf_sampled.unit_direction, side_n);
                 if (wrong_side && material.transmission > 0.0f) {
                     let geometry_bsdf_sampled: SampleBSDF = sampleBSDF(bsdf_sampled.unit_direction, surface.geometry_n, material, eta.x, eta.y, bsdf_sampled.random_state, float2(0.0f));
                     bsdf_sampled.unit_direction = geometry_bsdf_sampled.unit_direction;
@@ -1165,7 +1228,10 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             // Inverse ray footprint criterion for the density of the direction leaving this vertex (Eq. 5)
             let inverse_footprint: bool = withinInverseFootprint(lobe.pdf, lobe_index == LOBE_DIFFUSE, prev.cos, hit.distance, threshold);
-            let rough: bool = roughLobe(lobe.pdf, lobe_index == LOBE_DIFFUSE, material.roughness);
+            // Directions between the face and the smooth normal (the terminator's) are judged by a side the incoming
+            // direction decides, which shifts change, so no reconnection is made along them
+            let wedge: bool = dot(dir, surface.smooth_n) * dot(dir, surface.geometry_n) < 0.0f;
+            let rough: bool = !wedge && roughLobe(lobe.pdf, lobe_index == LOBE_DIFFUSE, material.roughness);
             if (arrived) {
                 if (!inverse_footprint) {
                     return fail;
@@ -1270,6 +1336,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
 #endif
 
 #ifdef FK_RESTIR_PASSES
+// Target plumbing: WGSL's select of int2s, in its argument order f, t, cond, by a condition or per component
 [ForceInline] int2 select(int2 f, int2 t, bool cond) { return select(cond, t, f); }
 [ForceInline] int2 select(int2 f, int2 t, bool2 cond) { return select(cond, t, f); }
 
@@ -1334,7 +1401,8 @@ __extern_cpp public struct ShiftJob {
     __extern_cpp public Reservoir r;
 }
 
-// Temporal round job t of p: previous sample into the current domain (t = 0), current into the previous (t = 1)
+// Temporal round job t of p: the previous frame's sample into the current domain (t = 0) or the current sample into the
+// previous domain (t = 1). False if the shift is zero or the identity, which temporal reuse handles itself.
 public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJob) -> bool {
     var dom: Domain = {};
     if (t > 1u || !scene.storedDomainInitial(p, dom)) {
@@ -1397,6 +1465,7 @@ public func spatialBins<S: IScene>(scene: S, p: int2) -> uint[3] {
 groupshared Atomic<uint> bin_jobs[SHIFT_BINS];
 groupshared uint bin_offsets[SHIFT_BINS];
 
+// Target plumbing: workgroup memory starts at zero in WGSL alone, Vulkan's is zeroed first, by the bins' invocations
 [ForceInline] void zeroBins(uint local_invocation_index) {
     __target_switch {
     case spirv:
@@ -1413,6 +1482,7 @@ groupshared uint bin_offsets[SHIFT_BINS];
 public func countShifts<S: IScene>(scene: S, bins: uint[3], local_invocation_index: uint) {
     __target_switch {
     case cuda:
+        // Target plumbing: flex-cuda-pt's raygens share no memory, each invocation counts its own jobs
         for (var t: uint = 0u; t < 3u; t++) {
             if (bins[t] < SHIFT_BINS) {
                 scene.queueCountAdd(bins[t], 1u);
@@ -1439,6 +1509,7 @@ public func countShifts<S: IScene>(scene: S, bins: uint[3], local_invocation_ind
 public func queueShifts<S: IScene>(scene: S, p: int2, bins: uint[3], global_invocation_id: uint3, local_invocation_index: uint) {
     __target_switch {
     case cuda:
+        // Target plumbing: flex-cuda-pt's raygens share no memory, each invocation places its own jobs after the bins before theirs
         for (var t: uint = 0u; t < 3u; t++) {
             if (bins[t] < SHIFT_BINS) {
                 var start: uint = 0u;
@@ -1505,6 +1576,7 @@ public func queuedShift<S: IScene>(scene: S, workgroup_id: uint3, local_invocati
 #endif
 
 #ifdef FK_RESTIR_PASSES
+// Initial candidates
 public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     let p: int2 = int2(global_invocation_id.xy);
     var dom: Domain = {};
@@ -1675,7 +1747,8 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
 #ifdef FK_RESTIR_PASSES
 groupshared uint duplication_seeds[576];
 
-// Seed of last frame's reservoir at q, 0 for none or outside the image
+// Target plumbing: the seed of the sample last frame's reservoir at q holds, zero for none or outside the image, as
+// restir_duplicates reads it into its workgroup's tile
 uint previousSeed<S: IScene>(S scene, int2 q) {
     var seed: uint = 0u;
     if (all(q >= int2(0)) && all(q < int2(scene.renderSize()))) {
@@ -1689,6 +1762,7 @@ uint previousSeed<S: IScene>(S scene, int2 q) {
 public func restir_duplicates<S: IScene>(scene: S, global_invocation_id: uint3, local_invocation_id: uint3, local_invocation_index: uint) {
     __target_switch {
     case cuda:
+        // Target plumbing: flex-cuda-pt's raygens share no memory, each invocation reads its neighborhood's seeds itself
         let own: uint = previousSeed(scene, int2(global_invocation_id.xy));
         var count: uint = 0u;
         for (var y: int = -8; y <= 8; y++) {
@@ -1724,6 +1798,8 @@ public func restir_duplicates<S: IScene>(scene: S, global_invocation_id: uint3, 
 #endif
 
 #ifdef FK_RESTIR
+// The passes over the consumer's scene of the ReSTIR variant outputs, which its compute entry points and raygens call
+// with their builtins, and the walk and shift for its own loops
 [CudaDeviceExport] public func walk_hook(dom: Domain, r: Reservoir, replay: bool, scale: float, inout sel: Selection) -> Shift {
     HookScene scene;
     return walk(scene, dom, r, replay, scale, sel);

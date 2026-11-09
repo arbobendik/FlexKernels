@@ -1,4 +1,6 @@
-# Test the kernels; on main, deploy them to each consumer
+# Generates the kernels and tests each target against the goldens of its consumer on pushes to main and on pull
+# requests; every push to main also commits them to the main of each consumer, one commit for each FlexKernels commit
+# that changes its kernels, built with them first, whose own workflows then release the extension and deploy the website.
 name: ci
 on:
   push:
@@ -30,7 +32,7 @@ jobs:
     needs: build
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
-    # One deploy at a time per consumer
+    # One deploy at a time, none cancelled: each passes on the commits since the consumer's last
     concurrency:
       group: deploy
       cancel-in-progress: false
@@ -48,8 +50,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0  # Full history, for the replay
-      # Deploy keys, so the consumers' workflows run
+          fetch-depth: 0  # For the commits passed on, each generated anew
+      # Pushes through a deploy key run the consumer's workflows, those with the default token would not
       - uses: actions/checkout@v7
         with:
           repository: ${{ matrix.repository }}
@@ -71,7 +73,7 @@ jobs:
         if: matrix.source == 'wgsl'
         run: npm install -g esbuild typescript
       - run: ci/deploy.sh consumer ${{ matrix.targets }}
-        env:  # libcuda comes with the GPU driver, which runners lack
+        env:  # flex-cuda-pt's, libcuda itself comes with the GPU driver, which runners lack
           CUDA_PATH: /usr/local/cuda-13.4
           NVCC: /usr/local/cuda-13.4/bin/nvcc
           LDLIBS: -L/usr/local/cuda-13.4/lib64/stubs

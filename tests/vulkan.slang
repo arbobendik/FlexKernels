@@ -1,3 +1,5 @@
+// The module imported into a compute shader compiled to SPIR-V, as flex-cuda-pt's Vulkan renderer imports it, calling
+// what that calls
 import pathtracer;
 
 RWStructuredBuffer<Reservoir> reservoirs;
@@ -6,6 +8,8 @@ RWStructuredBuffer<uint> queue;
 #endif
 
 #ifdef FK_RESTIR
+// A scene of each hook's simplest answer from its arguments, for the walk's code to reach SPIR-V whole: a light BVH of a
+// root and two leaves, a 4 x 4 environment, four bounces
 struct TestScene : IScene {
     Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len) {
         return Hit(ray.origin.xy, ray.unit_direction.x > 0.0f ? 0u : UINT_MAX, uint(consider_point_lights), 0u, max_len * 0.5f);
@@ -94,6 +98,7 @@ float walkOver(Domain dom, Reservoir r) {
 #endif
 
 #ifdef FK_RESTIR_PASSES
+// The shift queue's rounds over the test scene: counting, queueing and taking the workgroup's jobs
 void queueRound(uint3 id, uint local, uint3 group, uint3 local3) {
     TestScene scene;
     const uint[3] bins = spatialBins(scene, int2(id.xy));
@@ -129,10 +134,12 @@ void main(uint3 id: SV_DispatchThreadID, uint local: SV_GroupIndex, uint3 group:
     offer(sel, withEnd(r, 1u, 2u, connected.throughput * smithG1(r.w, fresnel(r.c, 1.0f, 1.5f))),
         safeDivide(r.f, tangentToWorldNormalMap(r.radiance, float3x3(r.dir, r.f, n))));
     offerShifted(sel, r, Shift(r.f, rgb_to_greyscale(r.radiance)), r.c);
+    // A step down the light tree, as light sampling and its density take one
     const LightBounds bounds = LightBounds(r.dir, r.radiance, n, r.w, r.c);
     float pick = r.jac, probability = 1.0f;
     const uint child = pickChild(bounds, bounds, r.f, n, pick, probability);
 #ifdef FK_RESTIR
+    // The walk's records: a domain at the reservoir's hit and the previous vertex of the reconnection criteria
     const Domain dom = Domain(r.dir, r.radiance, Hit(r.f.xy, r.rc.x, r.rc.y, END_POINT, r.w));
     const Vertex v = Vertex(r.w > 0.0f, LOBE_REFRACT, r.c, dot(dom.x0, dom.x1), (r.path >> PATH_INSIDE & 1u) != 0u);
 #endif
@@ -140,6 +147,7 @@ void main(uint3 id: SV_DispatchThreadID, uint local: SV_GroupIndex, uint3 group:
         + importance(bounds, r.f, n) * sine(pick) * powerHeuristic(r.w, r.jac) * float(samplesLights(material))
 #ifdef FK_RESTIR
         + v.pdf * v.cos * dom.hit.distance * float(v.rough != v.inside)
+        // The walk over the test scene, generating or replaying by the path's lowest bit
         + walkOver(dom, r)
 #endif
         );
