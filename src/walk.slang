@@ -40,6 +40,8 @@ public static const uint STREAM_SELECT = 193u;
 public static const uint STREAM_COVERAGE = 256u;
 // flex-cuda-pt's free flights through media, as its walk draws them
 public static const uint STREAM_MEDIUM = 320u;
+// flex-cuda-pt's tracking of the camera's varying medium to the first hit
+public static const uint STREAM_CAMERA = 384u;
 // Sky samples apart from flex-cuda-pt's coverage, which draws from 256 as its walk did, so both keep their noise
 #ifdef FK_FCPT_WALK
 public static const uint STREAM_SKY = 448u;
@@ -741,6 +743,8 @@ public interface IScene {
     public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe);
     public uint layers(Hit hit);
     public float majorant(uint filling);
+    public Medium cameraMedium(out uint filling);
+    public float3 passMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 glowed);
     public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe);
     public float3 hitPosition(Hit hit);
     public float3x3 worldTriangle(uint instance_index, uint triangle_index);
@@ -838,6 +842,15 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "0.0f")
     __target_intrinsic(cuda, "fcptMajorant($0)")
     public float majorant(uint filling);
+    // The medium the camera is in, flex-cuda-pt's alone: its coefficients and its material's key if varying, else
+    // UINT_MAX; and what a varying one lets through along a camera ray up to distance, absorbing alone, as what it
+    // scatters out there is taken to scatter back in, its emission on the way gathered
+    __target_intrinsic(wgsl, "Medium()")
+    __target_intrinsic(cuda, "fcptCameraMedium($0)")
+    public Medium cameraMedium(out uint filling);
+    __target_intrinsic(wgsl, "vec3<f32>(1.0f)")
+    __target_intrinsic(cuda, "fcptPassMedium($0, $1, $2, $3, $4, $5)")
+    public float3 passMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 glowed);
     __target_intrinsic(wgsl, "0.0f")
     __target_intrinsic(cuda, "fcptTrackMedium($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
     public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe);
@@ -1300,6 +1313,24 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         width = coneOf(dom).x + spread * length(dom.x1 - dom.x0);
     }
     var throughput: float3 = float3(1.0f);
+    if (mediaUsed()) {
+        // The camera's medium, which absorbs on the way to the first hit; what it scatters out there it is taken to
+        // scatter back in, as flex-cuda-pt's walk
+        let camera: Medium = scene.cameraMedium(filling);
+        scatter_in = camera.scatter;
+        extinction_in = camera.extinction;
+        let first: float = length(dom.x1 - dom.x0);
+        if (filling != UINT_MAX) {
+            var tracking: uint = stream(r.seed, STREAM_CAMERA);
+            var approach: float3 = float3(0.0f);
+            throughput *= scene.passMedium(filling, dom.x0, ray.unit_direction, first, tracking, approach);
+            if (!replay) {
+                addGlow(sel, approach);
+            }
+        } else {
+            throughput *= exp((scatter_in - extinction_in) * first);
+        }
+    }
     // Replaying the densities of the reconnection, generating the product of Russian roulette survival probabilities
     var density: float = 1.0f;
     var is_inside: bool = false;
