@@ -1182,6 +1182,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     var threshold: float = 0.0f;
     var reconnection: float3 = {};
     var prev: Vertex = {};
+    // Density of the direction an escape leaves along, which the escape weighs against sky light sampling
+    var sky_pdf: float = 0.0f;
     // Template for generated paths reconnecting at the first vertex meeting both footprint criteria
     var chain: Reservoir = emptyReservoir();
     chain.seed = r.seed;
@@ -1515,6 +1517,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 chain_throughput = throughput;
             }
             prev = Vertex(rough, lobe_index, lobe.pdf, abs(dot(surface.geometry_n, dir)), is_inside);
+            // Straight transmission keeps the preceding vertex's density against the sky
+            sky_pdf = select(lobe.pdf, sky_pdf, lobe_index == LOBE_REFRACT && eta.x == eta.y);
             if (coneUsed()) {
                 // Omega = 1 / PDF ~= PI * theta^2
                 // => spread += 2 * theta = 2 * sqrt(1 / (PI * PDF)), at most PI; delta lobes keep it
@@ -1541,6 +1545,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             prev.rough = false;
             // Environment next event estimation never passes texels, escapes through them take the full weight
             prev.pdf = 0.0f;
+            sky_pdf = 0.0f;
         }
         if (!replay) {
             if (point_light_lighting) {
@@ -1652,12 +1657,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 ray.unit_direction = isotropic(stream(r.seed, b));
                 // Scattering vertex: never reconnected, PDF 0 against the sky
                 prev = Vertex(false, LOBE_DIFFUSE, 0.0f, 1.0f, is_inside);
+                sky_pdf = prev.pdf;
                 hit = scene.traverseInstanceBVH(ray, true, POW32);
             }
         }
         if (hit.instance_index == UINT_MAX) {
             // BSDF sampled escapes share the environment with its next event estimation
-            let weight: float = escapeWeight(scene, select(0.0f, prev.pdf, !nee_vertex.none), ray.unit_direction);
+            let weight: float = escapeWeight(scene, select(0.0f, sky_pdf, !nee_vertex.none), ray.unit_direction);
             let f: float3 = throughput * environment(scene, ray.unit_direction);
             if (replay) {
                 if (b == stop && rc == RC_ENV) {
