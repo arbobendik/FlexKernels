@@ -1074,10 +1074,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     var passed: bool = false;
     var passes: bool = false;
     // Medium the ray travels in, a varying one's material key or UINT_MAX, and whether facing the ray turned the face
-    var scatter_in: float3 = float3(0.0f);
     var extinction_in: float3 = float3(0.0f);
     var filling: uint = UINT_MAX;
-    var face_n: float3 = float3(0.0f);
+    var turned: bool = false;
     if (coneUsed()) {
         spread = coneOf(dom).y;
         width = coneOf(dom).x + spread * length(dom.x1 - dom.x0);
@@ -1121,7 +1120,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             front_n = surface.smooth_n;
             if (mediaUsed()) {
-                face_n = surface.geometry_n;
+                turned = facingSign(surface.material.transmission, surface.geometry_n, ray.unit_direction) < 0.0f;
             }
             surface = facingRay(surface, ray.unit_direction);
             if (layersUsed() && passed) {
@@ -1424,10 +1423,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (mediaUsed() && !(layersUsed() && passes)) {
                 // Into the medium on the side the ray leaves by
                 var faced: Surface = surface;
-                faced.geometry_n = face_n;
-                let sides: MediumSides = mediumSides(faced, Medium(scatter_in, extinction_in), filling, ray.unit_direction);
-                let front: bool = (dot(dir, surface.geometry_n) > 0.0f) == (dot(surface.geometry_n, face_n) > 0.0f);
-                scatter_in = select(sides.behind.scatter, sides.front.scatter, front);
+                faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
+                let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction_in), filling, ray.unit_direction);
+                let front: bool = (dot(dir, surface.geometry_n) > 0.0f) == (dot(surface.geometry_n, faced.geometry_n) > 0.0f);
                 extinction_in = select(sides.behind.extinction, sides.front.extinction, front);
                 filling = select(sides.fillings.x, sides.fillings.y, front);
             }
