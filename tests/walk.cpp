@@ -9,6 +9,8 @@
 // - an index-matched sphere filled with a medium of albedo 1 returns all: 1;
 // - a white sphere inside an index-matched shell returns all: 1, and so does one beside such a shell, whose sky
 //   light passes it to the sphere's light sampling and its escapes alike;
+// - a white sphere seen from inside boundless fog returns all it receives as the fog lets it through, absorbing
+//   alone on the way from the camera: exp(-(e - s) d) over the camera rays' distances d to the sphere;
 // - inside a closed sphere of walls of albedo a emitting e inward: a e / (1 - a), as the walk leaves what the first
 //   hit emits to the consumer.
 // Printed: each furnace's reading against its value
@@ -100,9 +102,9 @@ float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t*, V*, V*,
 }
 
 // Mean and standard error of what paths from the camera bring back, toward the sphere aim, within angle of it
-static void furnace(const char* name, V camera, V aim, float angle, double truth, int& failed) {
+static void furnace(const char* name, V camera, V aim, float angle, double truth, int& failed, float absorbs = 0) {
     const int N = 1 << 17;
-    double sum = 0, sum2 = 0;
+    double sum = 0, sum2 = 0, through = 0;
     for (int i = 0; i < N; i++) {
         Random u = pcg(hash(3 * i + 1)), v = pcg(u.state);
         const float z = 1 - u.value * (1 - cosf(angle)), r = sqrtf(fmaxf(0, 1 - z * z)), phi = 6.2831853f * v.value;
@@ -119,9 +121,11 @@ static void furnace(const char* name, V camera, V aim, float angle, double truth
         sel.random_state = hash(3 * i + 3);
         walk_hook(dom, path, false, 1, &sel);
         const double y = sel.color.x;
+        through += exp(-absorbs * hit.distance);
         sum += y, sum2 += y * y;
     }
     const double mean = sum / N, se = sqrt(fmax(sum2 / N - mean * mean, 0) / N);
+    truth *= through / N;
     const bool ok = fabs(mean - truth) < fmax(4 * se, 1e-4) && se < 0.01;
     failed += !ok;
     printf("%-28s %.5f +- %.5f of %.5f%s\n", name, mean, se, truth, ok ? "" : "  FAILED");
@@ -147,6 +151,10 @@ int main() {
     scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}, {V(0, 0, 3.2f), 2, false, {dielectric(1)}, 1, 1,
         false, none}};
     furnace("white sphere beside a shell", V(2.2f, 0, 0.6f), V(0, 0, 0.6f), 0.1f, 1, failed);
+    scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
+    camera_fog = {scaled(ONE, 0.2f), scaled(ONE, 0.5f)};
+    furnace("white sphere in fog", camera, center, 0.3f, 1, failed, 0.3f);
+    camera_fog = none;
     scene = {{center, 1, true, {lambert(0.5f, 1)}, 1, 1, false, none}};
     furnace("inside walls of albedo 0.5", center, V(0, 0, 1), 3.14159265f, 1, failed);
     return failed;
