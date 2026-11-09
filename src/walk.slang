@@ -79,6 +79,8 @@ __extern_cpp public struct Selection {
 #ifdef FK_FCPT_WALK
     // Emission of varying media along the path, added unresampled
     __extern_cpp public float3 glow = float3(0.0f);
+    // Contributions summed, not resampled
+    __extern_cpp public bool sums = false;
 #endif
 }
 [ForceInline] func addGlow(inout sel: Selection, glow: float3) {
@@ -243,6 +245,13 @@ __extern_cpp public struct Vertex {
     if (!(w > 0.0f && w < 3.0e38f)) {
         return;
     }
+#ifdef FK_FCPT_WALK
+    // ReSTIR off: contributions summed
+    if (sel.sums) {
+        sel.color += weight;
+        return;
+    }
+#endif
     sel.w_sum += w;
     sel.color += weight;
     let random_value: Random = pcg(sel.random_state);
