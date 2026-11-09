@@ -131,6 +131,32 @@ __extern_cpp public struct Domain {
     __extern_cpp public float3 x0;
     __extern_cpp public float3 x1;
     __extern_cpp public Hit hit;
+#ifdef FK_FCPT_WALK
+    // flex-cuda-pt's pixel cone (Akenine-Moller et al. 2019): its width at x0 and the angle it spreads by
+    __extern_cpp public float width;
+    __extern_cpp public float spread;
+#endif
+}
+
+// Whether paths carry ray cones, by which flex-cuda-pt's surfaces pick their textures' mip levels, its walk's alone
+[ForceInline] public bool coneUsed() {
+    __target_switch {
+    case wgsl: case glsl: return false;
+    default: return true;
+    }
+}
+[ForceInline] func coneOf(dom: Domain) -> float2 {
+#ifdef FK_FCPT_WALK
+    return float2(dom.width, dom.spread);
+#else
+    return float2(0.0f);
+#endif
+}
+
+// A cone's spread after a bounce: widened by the angle of the solid angle the lobe's density spans, up to all around;
+// delta lobes keep it, as flex-cuda-pt's walk
+func widened(spread: float, pdf: float, delta: bool) -> float {
+    return spread + select(0.0f, min(2.0f * sqrt(1.0f / (PI * pdf)), PI), !delta);
 }
 
 // Sampling record of the previous path vertex for the reconnection criteria (Sec. 4)
@@ -565,6 +591,7 @@ public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
     public float3 shadowTransmittance(Ray ray, float l);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
+    public Surface surfaceAtCone(Hit hit, float3 origin, uint init_random_state, float width);
     public float3 hitPosition(Hit hit);
     public float3x3 worldTriangle(uint instance_index, uint triangle_index);
     public LightBounds lightBounds(uint n);
@@ -639,6 +666,10 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
+    // The surface with mip levels by the path's cone's width at the hit; FlexLight's has no cone
+    __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
+    __target_intrinsic(cuda, "fcptSurfaceAtCone($0, $1, $2, $3)")
+    public Surface surfaceAtCone(Hit hit, float3 origin, uint init_random_state, float width);
     __target_intrinsic(wgsl, "hitPosition($0)")
     __target_intrinsic(cuda, "fcptHitPosition($0)")
     public float3 hitPosition(Hit hit);
@@ -1058,6 +1089,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     let rc_hit: Hit = reservoirHit(r);
     var ray: Ray = Ray(dom.x1, normalize(dom.x1 - dom.x0));
     var hit: Hit = dom.hit;
+    // The path's cone: its width at the hit, widening by its spread, which each bounce widens
+    var spread: float = 0.0f;
+    var width: float = 0.0f;
+    if (coneUsed()) {
+        spread = coneOf(dom).y;
+        width = coneOf(dom).x + spread * length(dom.x1 - dom.x0);
+    }
     var throughput: float3 = float3(1.0f);
     // Replaying the densities of the reconnection, generating the product of Russian roulette survival probabilities
     var density: float = 1.0f;
@@ -1080,7 +1118,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         var scatter: bool = false;
         var geometry_density: float = 0.0f;
         if (!point_light_lighting) {
-            surface = scene.surfaceAt(hit, ray.origin, stream(r.seed, b));
+            if (coneUsed()) {
+                surface = scene.surfaceAtCone(hit, ray.origin, stream(r.seed, b), width);
+            } else {
+                surface = scene.surfaceAt(hit, ray.origin, stream(r.seed, b));
+            }
             if (coverageUsed()) {
                 surface = uncovered(surface, pcg(stream(r.seed, b + STREAM_COVERAGE)).value);
             }
@@ -1314,6 +1356,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 chain_throughput = throughput;
             }
             prev = Vertex(rough, lobe_index, lobe.pdf, abs(dot(surface.geometry_n, dir)), is_inside);
+            if (coneUsed()) {
+                spread = widened(spread, lobe.pdf, delta);
+            }
             if (refracted && !through) {
                 is_inside = !is_inside;
             }
@@ -1381,6 +1426,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         }
         // Project ray origin to hit point
         ray.origin += hit.distance * ray.unit_direction;
+        if (coneUsed()) {
+            width += spread * hit.distance;
+        }
     }
     return fail;
 }
