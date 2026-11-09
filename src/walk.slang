@@ -153,6 +153,33 @@ __extern_cpp public struct Domain {
 #endif
 }
 
+// Whether materials may have layers, which a ray meets in turn at one hit, flex-cuda-pt's walk's alone
+[ForceInline] public bool layersUsed() {
+    __target_switch {
+    case wgsl: case glsl: return false;
+    default: return true;
+    }
+}
+
+// Whether a ray leaving a hit of a material of so many layers meets its other layer there: refracting into it from
+// outside, or reflecting between them, as flex-cuda-pt's walk
+func passesLayer(layers: uint, refracting: bool, passed: bool) -> bool {
+    return layers > 1u && refracting != passed;
+}
+
+// Inside at a layer the ray passed on to: arriving from behind its face, as flex-cuda-pt decides by the face's side, so
+// that a refraction into the layer above, which turns FlexLight's toggle, leaves the layer below met from outside
+func arrivesBehind(dir: float3, n: float3) -> bool {
+    return dot(dir, n) > 0.0f;
+}
+
+// Only the top layer emits, where the ray first meets it
+func emitting(surface: Surface, top: bool) -> Surface {
+    var lower: Surface = surface;
+    lower.material.emissive = select(surface.material.emissive, float3(0.0f), !top);
+    return lower;
+}
+
 // A cone's spread after a bounce: widened by the angle of the solid angle the lobe's density spans, up to all around;
 // delta lobes keep it, as flex-cuda-pt's walk
 func widened(spread: float, pdf: float, delta: bool) -> float {
@@ -591,7 +618,8 @@ public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
     public float3 shadowTransmittance(Ray ray, float l);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
-    public Surface surfaceAtCone(Hit hit, float3 origin, uint init_random_state, float width);
+    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer);
+    public uint layers(Hit hit);
     public float3 hitPosition(Hit hit);
     public float3x3 worldTriangle(uint instance_index, uint triangle_index);
     public LightBounds lightBounds(uint n);
@@ -666,10 +694,15 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
-    // The surface with mip levels by the path's cone's width at the hit; FlexLight's has no cone
+    // The surface as the path meets it: mip levels by its cone's width at the hit, the layer of the hit's material;
+    // FlexLight's has neither
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
-    __target_intrinsic(cuda, "fcptSurfaceAtCone($0, $1, $2, $3)")
-    public Surface surfaceAtCone(Hit hit, float3 origin, uint init_random_state, float width);
+    __target_intrinsic(cuda, "fcptSurfaceAtPath($0, $1, $2, $3, $4)")
+    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer);
+    // How many layers the hit's material has, flex-cuda-pt's alone
+    __target_intrinsic(wgsl, "1u")
+    __target_intrinsic(cuda, "fcptLayers($0)")
+    public uint layers(Hit hit);
     __target_intrinsic(wgsl, "hitPosition($0)")
     __target_intrinsic(cuda, "fcptHitPosition($0)")
     public float3 hitPosition(Hit hit);
@@ -1092,6 +1125,10 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     // The path's cone: its width at the hit, widening by its spread, which each bounce widens
     var spread: float = 0.0f;
     var width: float = 0.0f;
+    // Layer of the hit's material the ray meets, and whether it came there from another layer of the hit
+    var layer: uint = 0u;
+    var passed: bool = false;
+    var passes: bool = false;
     if (coneUsed()) {
         spread = coneOf(dom).y;
         width = coneOf(dom).x + spread * length(dom.x1 - dom.x0);
@@ -1118,16 +1155,22 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         var scatter: bool = false;
         var geometry_density: float = 0.0f;
         if (!point_light_lighting) {
-            if (coneUsed()) {
-                surface = scene.surfaceAtCone(hit, ray.origin, stream(r.seed, b), width);
+            if (coneUsed() || layersUsed()) {
+                surface = scene.surfaceAtPath(hit, ray.origin, stream(r.seed, b), width, layer);
             } else {
                 surface = scene.surfaceAt(hit, ray.origin, stream(r.seed, b));
+            }
+            if (layersUsed()) {
+                surface = emitting(surface, !passed);
             }
             if (coverageUsed()) {
                 surface = uncovered(surface, pcg(stream(r.seed, b + STREAM_COVERAGE)).value);
             }
             front_n = surface.smooth_n;
             surface = facingRay(surface, ray.unit_direction);
+            if (layersUsed() && passed) {
+                is_inside = arrivesBehind(ray.unit_direction, surface.geometry_n);
+            }
             if (is_inside) {
                 throughput *= beerLambert(hit.distance, surface.material.absorption);
             }
@@ -1143,7 +1186,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let material: Material = surface.material;
         let n_dot_v: float = dot(surface.smooth_n, - ray.unit_direction);
         let eta: float2 = vertexEta(material, n_dot_v);
-        let nee: bool = scatter && samplesLights(material);
+        var nee: bool = scatter && samplesLights(material);
+        // Light is sampled at the top layer alone
+        if (layersUsed() && (passed || layer != 0u)) {
+            nee = false;
+        }
         let side_n: float3 = sideNormal(surface, ray.unit_direction);
         // Emission met, of the surface or a point light, weighted against light sampling at the vertex the ray left
         var emission: float3 = material.emissive * max(sign(dot(- ray.unit_direction, front_n)), 0.0f);
@@ -1338,6 +1385,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 throughput *= lobe.pdf;
                 density *= lobe.pdf;
             }
+            if (layersUsed()) {
+                passes = passesLayer(scene.layers(hit), lobe_index == LOBE_REFRACT, passed);
+            }
+            // A connection meeting another layer is not in the image of the shift
+            if (layersUsed() && connect && passes) {
+                return fail;
+            }
             // A replayed path meeting the criteria before x_k is not in the image of the shift
             if ((replay && b <= stop && footprint && inverse_footprint) || (connect && !rough)) {
                 return fail;
@@ -1363,7 +1417,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 is_inside = !is_inside;
             }
             ray.unit_direction = dir;
-            ray.origin += surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, is_inside != through);
+            if (!(layersUsed() && passes)) {
+                ray.origin += surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, is_inside != through);
+            }
         } else {
             prev.rough = false;
             // Environment next event estimation never passes texels, escapes through them take the full weight
@@ -1386,6 +1442,18 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 break;
             }
             density *= survival_probability;
+        }
+        if (layersUsed()) {
+            // Passing, the next vertex is the same hit in the other layer, reached without distance
+            passed = passes;
+            layer = select(0u, layer ^ 1u, passes);
+            passes = false;
+            if (passed) {
+                // Its footprint never reconnects between layers
+                prev.rough = false;
+                hit.distance = 0.0f;
+                continue;
+            }
         }
         // Only occluders in front of the reconnection vertex matter, passing through a point light no other
         hit = scene.traverseInstanceBVH(ray, !point_light_lighting, select(POW32, distance(reconnection, ray.origin) * 1.001f, replay && b == stop && rc == RC_SURFACE));
