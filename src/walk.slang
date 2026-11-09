@@ -35,6 +35,8 @@ public static const uint STREAM_NEE = 64u;
 public static const uint STREAM_RR = 128u;
 public static const uint STREAM_SELECT = 193u;
 public static const uint STREAM_COVERAGE = 256u;
+// Free flight
+public static const uint STREAM_MEDIUM = 320u;
 // Sky samples, apart from STREAM_COVERAGE where coverage is drawn
 #ifdef FK_FCPT_WALK
 public static const uint STREAM_SKY = 448u;
@@ -311,6 +313,25 @@ func shadowContext(surface: Surface, turned: bool, side_n: float3, extinction: f
     return context;
 }
 #endif
+
+// T(d) = exp(-extinction * d), free flight sampled by sigma
+// Unscattered: T(d) / P(t > d) = exp(-extinction * d) / exp(-sigma * d) = exp((sigma - extinction) * d)
+// Scattered at d: scatter * T(d) / PDF(d) = scatter * exp(-extinction * d) / (sigma * exp(-sigma * d))
+// => scatter * passed / sigma
+func flightWeight(scatter: float3, extinction: float3, sigma: float, distance: float, scatters: bool) -> float3 {
+    let passed: float3 = exp((float3(sigma) - extinction) * distance);
+    return select(passed, scatter * passed / sigma, scatters);
+}
+// z = 1 - 2 * u uniform in [-1, 1], phi = 2 * PI * v
+// => uniform on the sphere, PDF = 1 / (4 * PI)
+func isotropic(random_state: uint) -> float3 {
+    let u: Random = pcg(random_state);
+    let v: Random = pcg(u.state);
+    let z: float = 1.0f - 2.0f * u.value;
+    let r: float = sqrt(max(1.0f - z * z, 0.0f));
+    let angle: float = 2.0f * PI * v.value;
+    return float3(r * cos(angle), r * sin(angle), z);
+}
 
 [ForceInline] public bool layersUsed() {
     __target_switch {
@@ -1124,6 +1145,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     var passed: bool = false;
     var passes: bool = false;
     // Medium the ray travels in, a varying one's material key or UINT_MAX, and whether facing the ray turned the face
+    var scatter_in: float3 = float3(0.0f);
     var extinction_in: float3 = float3(0.0f);
     var filling: uint = UINT_MAX;
     var turned: bool = false;
@@ -1485,8 +1507,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 // Into the medium on the side the ray leaves by
                 var faced: Surface = surface;
                 faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
-                let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction_in), filling, ray.unit_direction);
+                let sides: MediumSides = mediumSides(faced, Medium(scatter_in, extinction_in), filling, ray.unit_direction);
                 let front: bool = (dot(dir, surface.geometry_n) > 0.0f) == (dot(surface.geometry_n, faced.geometry_n) > 0.0f);
+                scatter_in = select(sides.behind.scatter, sides.front.scatter, front);
                 extinction_in = select(sides.behind.extinction, sides.front.extinction, front);
                 filling = select(sides.fillings.x, sides.fillings.y, front);
             }
@@ -1540,6 +1563,43 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         if (replay && b == stop && rc == RC_ENV && hit.instance_index != UINT_MAX) {
             return fail;
         }
+        if (mediaUsed()) {
+            let sigma: float = (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f;
+            if (replay && b == stop && rc == RC_SURFACE && sigma > 0.0f) {
+                return fail;
+            }
+            prev.rough = prev.rough && !(sigma > 0.0f);
+            while (hit.instance_index != UINT_MAX) {
+                // PDF(t) = sigma * exp(-sigma * t)
+                // CDF(t) = 1 - exp(-sigma * t) = u
+                // => t = -ln(1 - u) / sigma
+                let along: float = - log(1.0f - pcg(stream(r.seed, b + STREAM_MEDIUM)).value) / sigma;
+                if (!(along < hit.distance)) {
+                    break;
+                }
+                b++;
+                ray.origin += along * ray.unit_direction;
+                throughput *= flightWeight(scatter_in, extinction_in, sigma, along, true);
+                if (coneUsed()) {
+                    width += spread * along;
+                    spread += PI;
+                }
+                if (replay && b == stop) {
+                    return fail;
+                }
+                if (!replay) {
+                    let survival_probability: float = survivalProbability(throughput, density);
+                    if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
+                        return fail;
+                    }
+                    density *= survival_probability;
+                }
+                nee_vertex.none = true;
+                ray.unit_direction = isotropic(stream(r.seed, b));
+                prev = Vertex(false, LOBE_DIFFUSE, 0.25f * INV_PI, 1.0f, is_inside);
+                hit = scene.traverseInstanceBVH(ray, true, POW32);
+            }
+        }
         if (hit.instance_index == UINT_MAX) {
             // BSDF sampled escapes share the environment with its next event estimation
             let weight: float = escapeWeight(scene, select(0.0f, prev.pdf, !nee_vertex.none), ray.unit_direction);
@@ -1569,7 +1629,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         // Project ray origin to hit point
         ray.origin += hit.distance * ray.unit_direction;
         if (mediaUsed()) {
-            throughput *= exp(- extinction_in * hit.distance);
+            throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
         }
         if (coneUsed()) {
             width += spread * hit.distance;
