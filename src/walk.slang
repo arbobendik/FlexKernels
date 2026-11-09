@@ -470,6 +470,14 @@ func vertexEta(material: Material, n_dot_v: float) -> float2 {
     return float2(select(1.0f, material.ior, is_entering), select(material.ior, 1.0f, is_entering));
 }
 
+// The normal light and bounces leave by the side of: on surfaces transmitting nothing and seen from its side, the
+// smooth normal's, so a smooth normal is lit where it faces the light though its face doesn't (the shadow terminator);
+// else the face's, so a ray arriving behind the smooth normal leaves no way through, as flex-cuda-pt's side_n
+[CudaDeviceExport] public func sideNormal(surface: Surface, in_dir: float3) -> float3 {
+    let opaque: bool = !(surface.material.transmission > 0.0f) && !isTranslucent(surface.material);
+    return select(surface.geometry_n, surface.smooth_n, opaque && dot(surface.smooth_n, - in_dir) > 0.0f);
+}
+
 // Whether the path tracer considers dir to point towards the incorrect side of the surface
 func wrongSide(is_inside: bool, refracted: bool, dir: float3, geometry_n: float3) -> bool {
     return (is_inside == refracted) != (dot(dir, geometry_n) > 0.0f);
@@ -826,7 +834,7 @@ public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float
         if (sided) {
             lift_n = smooth_n * sign(dot(geometry_n, point - origin));
             start = origin + geometry_offset * lift_n;
-        } else if (!(dot(smooth_n, point - origin) > 0.0f)) {
+        } else if (!(dot(smooth_n, point - start) > 0.0f)) {
             return sample;
         }
         // Emission at the point as the path tracer shades it, toward its smooth normal, the shadow ray ending in front of it
@@ -856,7 +864,7 @@ public func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, star
         n = select(n + 1u, second, (trail.x & 1u) == 1u);
         trail = uint2((trail.x >> 1u) | (trail.y << 31u), trail.y >> 1u);
     }
-    if (!scene.slotLeaf(n, j, trail_texel) || !(importance(scene.lightBounds(n), origin, smooth_n) > 0.0f) || (dot(smooth_n, smooth_n) > 0.0f && !(dot(smooth_n, light_point - origin) > 0.0f))) {
+    if (!scene.slotLeaf(n, j, trail_texel) || !(importance(scene.lightBounds(n), origin, smooth_n) > 0.0f) || (dot(smooth_n, smooth_n) > 0.0f && !(dot(smooth_n, light_point - start) > 0.0f))) {
         return 0.0f;
     }
     let leaf: uint4 = scene.lightNode(n);
@@ -922,14 +930,14 @@ func searchCDF<S: IScene>(scene: S, start: uint2, step: uint2, count: uint, u: f
 
 // Radiance the path tracer's ray from a vertex along dir receives from the environment map if it hits nothing on the way.
 // Escapes passing transparent texels are left to BSDF sampling.
-func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, is_inside: bool, dir: float3) -> float3 {
-    let inside: bool = is_inside != wrongSide(is_inside, false, dir, surface.geometry_n);
+func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, side_n: float3, is_inside: bool, dir: float3) -> float3 {
+    let inside: bool = is_inside != wrongSide(is_inside, false, dir, side_n);
     let ray: Ray = Ray(origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, inside), dir);
     return select(scene.env_map_sample(dir), float3(0.0f), scene.shadowTraverseInstanceBVH(ray, POW32, true));
 }
 
 // Next event estimation toward the environment map, drawing a direction by its luminance. lobe_state is the random state of skyBSDF.
-func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_inside: bool, init_random_state: uint, lobe_state: uint) -> SkySample {
+func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, side_n: float3, eta: float2, is_inside: bool, init_random_state: uint, lobe_state: uint) -> SkySample {
     let size: uint2 = scene.environmentCdfSize() - uint2(1u, 0u);
     let random_0: Random = pcg(init_random_state);
     let random_1: Random = pcg(random_0.state);
@@ -940,19 +948,19 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     let angles: float2 = (float2(float(column), float(row)) + float2(random_2.value, random_3.value)) / float2(size) * float2(2.0f * PI, PI);
     let dir: float3 = float3(sin(angles.y) * cos(angles.x), cos(angles.y), sin(angles.y) * sin(angles.x));
     let pdf: float = environmentPdf(scene, dir);
-    let f: float3 = skyBSDF(ray.unit_direction, dir, surface, eta, is_inside, pdf, lobe_state);
+    let f: float3 = skyBSDF(ray.unit_direction, dir, surface, side_n, eta, is_inside, pdf, lobe_state);
     // Only trace toward directions that contribute
     if (!(pdf > 0.0f) || all(f == float3(0.0f))) {
         return SkySample(dir, float3(0.0f), float3(0.0f), random_3.state);
     }
-    let radiance: float3 = skyRadiance(scene, ray.origin, surface, is_inside, dir);
+    let radiance: float3 = skyRadiance(scene, ray.origin, surface, side_n, is_inside, dir);
     return SkySample(dir, radiance, f * radiance, random_3.state);
 }
 
 // BSDF times cosine toward an environment sample over its density, each lobe weighted against the BSDF sampled escape by the
 // balance heuristic. Lobes sampling can't produce toward dir are left to rays sampled to the wrong side, sampled again or mirrored.
-func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
-    let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
+[CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, side_n: float3, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
+    let refracted: bool = wrongSide(is_inside, false, dir, side_n);
     return neeBSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y, refracted, pdf, false, random_state);
 }
 
@@ -1043,6 +1051,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let n_dot_v: float = dot(surface.smooth_n, - ray.unit_direction);
         let eta: float2 = vertexEta(material, n_dot_v);
         let nee: bool = scatter && samplesLights(material);
+        let side_n: float3 = sideNormal(surface, ray.unit_direction);
         // Emission met, of the surface or a point light, weighted against light sampling at the vertex the ray left
         var emission: float3 = material.emissive * max(sign(dot(- ray.unit_direction, front_n)), 0.0f);
         if (point_light_lighting) {
@@ -1081,13 +1090,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 if (!nee || !(rgb_to_greyscale(light.radiance) > 0.0f)) {
                     return fail;
                 }
-                return Shift(throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state) / r.jac, density / r.jac);
+                return Shift(throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, side_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state) / r.jac, density / r.jac);
             }
             if (k == end && end_type == END_SKY) {
                 if (!nee) {
                     return fail;
                 }
-                return Shift(throughput * skyBSDF(ray.unit_direction, r.dir, surface, eta, is_inside, environmentPdf(scene, r.dir), surface.random_state) * r.radiance / r.jac, density / r.jac);
+                return Shift(throughput * skyBSDF(ray.unit_direction, r.dir, surface, side_n, eta, is_inside, environmentPdf(scene, r.dir), surface.random_state) * r.radiance / r.jac, density / r.jac);
             }
             if (nee != (extractBits(r.path, PATH_NEE, 1u) == 1u)) {
                 return fail;
@@ -1095,7 +1104,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         } else if (replay && b == stop && (!scatter || (rc != RC_SURFACE && rc != RC_ENV))) {
             if (rc == RC_LIGHT && nee && !footprint && end_type == END_SKY) {
                 // Forced reconnection to the environment direction, drawn independently of the vertex (unit Jacobian)
-                let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state);
+                let sky: SkySample = sampleSky(scene, ray, surface, side_n, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state);
                 return Shift(throughput * sky.color, 1.0f);
             }
             if (rc == RC_LIGHT && nee && !footprint) {
@@ -1105,7 +1114,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 if (!(rgb_to_greyscale(light.radiance) > 0.0f)) {
                     return fail;
                 }
-                return Shift(throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state), 1.0f);
+                return Shift(throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, side_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state), 1.0f);
             }
             if (rc == RC_NONE && end_type == END_POINT && point_light_lighting) {
                 return Shift(throughput * emission, 1.0f);
@@ -1128,7 +1137,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             if (nee) {
                 let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE));
-                let f: float3 = throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state);
+                let f: float3 = throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, side_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state);
                 var candidate: Reservoir = chain;
                 if (chain_found) {
                     candidate.radiance = safeDivide(f, chain_throughput);
@@ -1144,7 +1153,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
             }
             if (nee && environmentMapped(scene) && b < scene.maxBounces()) {
-                let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state);
+                let sky: SkySample = sampleSky(scene, ray, surface, side_n, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state);
                 let f: float3 = throughput * sky.color;
                 var candidate: Reservoir = chain;
                 if (chain_found) {
@@ -1183,13 +1192,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     dir = normalize(reconnection - (ray.origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, is_inside != refracted)));
                 }
                 // The path tracer samples again or mirrors directions sampled to the wrong side of the face, which no density reaches
-                if (wrongSide(is_inside, refracted, dir, surface.geometry_n)) {
+                if (wrongSide(is_inside, refracted, dir, side_n)) {
                     return fail;
                 }
             } else if (!arrived) {
                 var bsdf_sampled: SampleBSDF = sampleBSDF(ray.unit_direction, surface.smooth_n, material, eta.x, eta.y, surface.random_state, float2(0.0f));
                 // Rays sampled to the wrong side of the face are sampled again or mirrored, as the path tracer's
-                wrong_side = wrongSide(is_inside, bsdf_sampled.refracted, bsdf_sampled.unit_direction, surface.geometry_n);
+                wrong_side = wrongSide(is_inside, bsdf_sampled.refracted, bsdf_sampled.unit_direction, side_n);
                 if (wrong_side && material.transmission > 0.0f) {
                     let geometry_bsdf_sampled: SampleBSDF = sampleBSDF(bsdf_sampled.unit_direction, surface.geometry_n, material, eta.x, eta.y, bsdf_sampled.random_state, float2(0.0f));
                     bsdf_sampled.unit_direction = geometry_bsdf_sampled.unit_direction;
@@ -1219,7 +1228,10 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             // Inverse ray footprint criterion for the density of the direction leaving this vertex (Eq. 5)
             let inverse_footprint: bool = withinInverseFootprint(lobe.pdf, lobe_index == LOBE_DIFFUSE, prev.cos, hit.distance, threshold);
-            let rough: bool = roughLobe(lobe.pdf, lobe_index == LOBE_DIFFUSE, material.roughness);
+            // Directions between the face and the smooth normal (the terminator's) are judged by a side the incoming
+            // direction decides, which shifts change, so no reconnection is made along them
+            let wedge: bool = dot(dir, surface.smooth_n) * dot(dir, surface.geometry_n) < 0.0f;
+            let rough: bool = !wedge && roughLobe(lobe.pdf, lobe_index == LOBE_DIFFUSE, material.roughness);
             if (arrived) {
                 if (!inverse_footprint) {
                     return fail;
