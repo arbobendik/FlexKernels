@@ -23,7 +23,9 @@ all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h \
 # hooks bridged to the consumer's own functions, which the outputs above leave out, as they call nothing that is not
 # defined and the module exports no name its importers declare themselves
 build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR=1
-build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1
+# flex-cuda-pt's walk features' struct fields, which FlexLight's would carry unused
+build/cuda-restir/pathtracer.cuh: SLANGFLAGS += -DFK_FCPT_WALK=1
+build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_FCPT_WALK=1
 # FlexLight's takes the passes as well, flex-cuda-pt's the walk and shift alone, and the Vulkan test both
 build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR_PASSES=1
 build/restir-passes/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1
