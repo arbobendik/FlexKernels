@@ -19,9 +19,10 @@ struct TestScene : IScene {
         return Surface(normalize(origin), float3(0.0f, 0.0f, 1.0f), 1e-4f, Material(origin, float3(hit.uv, 0.0f), 0.5f,
             0.0f, hit.distance, 1.5f, origin), hit.is_point_light != 0u, init_random_state + 1u);
     }
-    Surface surfaceAtCone(Hit hit, float3 origin, uint init_random_state, float width) {
-        return surfaceAt(hit, origin + width, init_random_state);
+    Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer) {
+        return surfaceAt(hit, origin + width, init_random_state + layer);
     }
+    uint layers(Hit hit) { return hit.triangle_index % 3u; }
     float3 hitPosition(Hit hit) { return float3(hit.uv, hit.distance); }
     float3x3 worldTriangle(uint instance_index, uint triangle_index) {
         return float3x3(float3(float(instance_index)), float3(1.0f, 0.0f, 0.0f), float3(0.0f, float(triangle_index), 1.0f));
