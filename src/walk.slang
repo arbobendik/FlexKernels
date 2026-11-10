@@ -1192,7 +1192,14 @@ func emissionWeight<S: IScene>(scene: S, vertex: NEEVertex, hit: Hit, light_poin
 #endif
 
 #ifdef FK_RESTIR
+// Whether light sampling draws the environment: where it has a map, which in FlexLight always comes with its luminance
+// distribution, and in flex-cuda-pt only with one once its world has it
 func environmentMapped<S: IScene>(scene: S) -> bool {
+#ifdef FK_FCPT_WALK
+    if (!(scene.environmentCdfSize().x > 1u && scene.environmentCdfSize().y > 1u)) {
+        return false;
+    }
+#endif
     return scene.environmentMapSize().x > 1u && scene.environmentMapSize().y > 1u;
 }
 
