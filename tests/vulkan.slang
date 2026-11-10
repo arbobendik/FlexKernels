@@ -23,6 +23,9 @@ struct TestScene : IScene {
         return Surface(normalize(origin), float3(0.0f, 0.0f, 1.0f), 1e-4f, Material(origin, float3(hit.uv, 0.0f), 0.5f,
             0.0f, hit.distance, 1.5f, origin), hit.is_point_light != 0u, init_random_state + 1u);
     }
+    Surface lightSurfaceAt(Hit hit, float3 point, uint init_random_state, float3 dir, uint depth, float length) {
+        return surfaceAt(hit, point + dir * length, init_random_state + depth);
+    }
     Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe,
         float3 dir) {
         return surfaceAt(hit, origin + width + dir, init_random_state + layer + depth * 4u + lobe);

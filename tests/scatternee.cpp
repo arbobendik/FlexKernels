@@ -27,6 +27,15 @@ Surface HookScene_surfaceAt_0(Hit, V, uint32_t state) {
     return Surface{DOWN, DOWN, 0, {ONE, ONE, 1, 0, 0, 1, ZERO, ONE, 1}, false, state, 1, false, {ZERO, ZERO},
         0xFFFFFFFFu};
 }
+// A sample's emission shaded seen from the point at the origin, the light unlifted: along the point's own direction, at
+// the vertex's depth (3), its distance; the samples handed otherwise counted
+static int emission_misfits = 0;
+Surface HookScene_lightSurfaceAt_0(Hit hit, V point, uint32_t state, V dir, uint32_t depth, float length) {
+    const float distance = sqrtf(point.x * point.x + point.y * point.y + point.z * point.z);
+    emission_misfits += depth != 3 || fabsf(length - distance) > 1e-6f * distance
+        || (dir.x * point.x + dir.y * point.y + dir.z * point.z) < (1 - 1e-6f) * distance;
+    return HookScene_surfaceAt_0(hit, point, state);
+}
 V HookScene_shadowTransmittanceIn_0(Ray, float, V, uint32_t filling, uint32_t, uint32_t, uint32_t, bool, float, float) {
     hook_filling = filling;
     return V(1, 1, 1);
@@ -57,7 +66,7 @@ int main() {
             sum += s.radiance.x, sum2 += double(s.radiance.x) * s.radiance.x;
         }
         const double mean = sum / N, se = sqrt((sum2 / N - mean * mean) / N);
-        const bool ok = fabs(mean - omega) < 4 * se && hook_filling == 9;
+        const bool ok = fabs(mean - omega) < 4 * se && hook_filling == 9 && emission_misfits == 0;
         failed += !ok;
         printf("ray along (%g, %g, %g): %.5f +- %.5f of %.5f sr%s\n", dir.x, dir.y, dir.z, mean, se, omega,
             ok ? "" : "  FAILED");

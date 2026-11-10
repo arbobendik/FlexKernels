@@ -75,6 +75,10 @@ Surface HookScene_surfaceAtPath_0(Hit hit, V origin, uint32_t state, float, uint
 Surface HookScene_surfaceAt_0(Hit hit, V origin, uint32_t state) {
     return HookScene_surfaceAtPath_0(hit, origin, state, 0, 0, 1, 0, ZERO);
 }
+// No emitting triangle: its lights are delta ones
+Surface HookScene_lightSurfaceAt_0(Hit hit, V point, uint32_t state, V, uint32_t, float) {
+    return HookScene_surfaceAt_0(hit, point, state);
+}
 uint32_t HookScene_layers_0(Hit hit) { return scene[hit.instance_index].layers; }
 // No light in the tree: a leaf of no importance, which lights no point and is no light's slot; or where a furnace sets
 // it, a sun of irradiance 1 travelling -x: a delta light 1e4 along +x of intensity 1e8, the walk having no distant one
