@@ -1200,6 +1200,84 @@ uint extractBits(uint e, uint offset, uint count) {
     }
 }
 
+// Medium between ray.origin and hit: scattering vertices by free flight or tracking, with light sampling
+// True where the walk ends there, ended its result
+[ForceInline] func crossMedium<S: IScene>(scene: S, r: Reservoir, replay: bool, stop: uint, rc: uint, scale: float,
+    chain: Reservoir, chain_throughput: float3, is_inside: bool, filling: uint, inout b: uint, inout ray: Ray,
+    inout hit: Hit, inout throughput: float3, inout density: float, inout weight: float3, inout glowed: float3,
+    inout scatter_in: float3, inout extinction_in: float3, inout width: float, inout spread: float, inout prev: Vertex,
+    inout nee_vertex: NEEVertex, inout sky_pdf: float, inout sel: Selection, out ended: Shift) -> bool {
+    ended = Shift(float3(0.0f), 0.0f);
+    // Free flight by the mean scattering coefficient, or tracking under a varying medium's majorant
+    let varying: bool = filling != UINT_MAX;
+    let sigma: float = select((scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, scene.majorant(filling), varying);
+    if (replay && b == stop && rc == RC_SURFACE && sigma > 0.0f) {
+        return true;
+    }
+    prev.rough = prev.rough && !(sigma > 0.0f);
+    var tracking: uint = stream(r.seed, b + STREAM_MEDIUM);
+    // Tracking weight and emission up to the next collision
+    weight = float3(1.0f);
+    glowed = float3(0.0f);
+    while (hit.instance_index != UINT_MAX) {
+        var along: float = freeFlight(pcg(stream(r.seed, b + STREAM_MEDIUM)).value, sigma);
+        if (varying) {
+            along = scene.trackMedium(filling, ray.origin, ray.unit_direction, hit.distance, tracking, weight, glowed, scatter_in, extinction_in, b, prev.lobe);
+        }
+        if (!(along < hit.distance)) {
+            break;
+        }
+        if (varying && !replay) {
+            addGlow(sel, throughput * glowed / density);
+        }
+        glowed = float3(0.0f);
+        b++;
+        ray.origin += along * ray.unit_direction;
+        throughput *= select(flightWeight(scatter_in, extinction_in, sigma, along, true), weight, varying);
+        tracking = stream(r.seed, b + STREAM_MEDIUM);
+        weight = float3(1.0f);
+        if (coneUsed()) {
+            width += spread * along;
+            spread += PI;
+        }
+        let light: TreeSample = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
+#ifdef FK_FCPT_WALK
+            , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b, prev.lobe)
+#endif
+            );
+        let sampled: bool = scatterSampled(replay, b, stop, varying);
+        let f: float3 = select(float3(0.0f), throughput * light.radiance * (0.25f * INV_PI * powerHeuristic(light.density, select(0.0f, 0.25f * INV_PI, b < scene.maxBounces()))), sampled);
+        if (replay && b == stop) {
+            if (rc == RC_LIGHT && rgb_to_greyscale(f) > 0.0f) {
+                ended = Shift(f, 1.0f);
+                return true;
+            }
+            return true;
+        }
+        if (!replay) {
+            var candidate: Reservoir = chain;
+            if (extractBits(chain.path, PATH_RC, 2u) == RC_SURFACE) {
+                candidate.radiance = safeDivide(f, chain_throughput);
+            } else {
+                candidate.path = insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_LIGHT, PATH_RC, 2u);
+            }
+            offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
+            let survival_probability: float = survivalProbability(throughput, density);
+            if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
+                return true;
+            }
+            density *= survival_probability;
+        }
+        // Emission met next is weighed against the light sampled here
+        nee_vertex = NEEVertex(false, 0.25f * INV_PI, ray.origin, float3(0.0f), ray.origin);
+        ray.unit_direction = isotropic(stream(r.seed, b));
+        prev = scatteredVertex(is_inside);
+        sky_pdf = prev.pdf;
+        hit = scene.traverseInstanceBVH(ray, true, POW32);
+    }
+    return false;
+}
+
 // Walk a path from dom. Generating, every path is resampled into sel with its reconnection vertex (Sec. 6.1).
 // Replaying, the hybrid shift maps r into dom (Sec. 2.3) and returns f * |J| (Eq. 2), 0 outside its image.
 public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, scale: float, inout sel: Selection) -> Shift {
@@ -1658,71 +1736,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             return fail;
         }
         if (mediaUsed()) {
-            // Free flight by the mean scattering coefficient, or tracking under a varying medium's majorant
-            let varying: bool = filling != UINT_MAX;
-            let sigma: float = select((scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, scene.majorant(filling), varying);
-            if (replay && b == stop && rc == RC_SURFACE && sigma > 0.0f) {
-                return fail;
-            }
-            prev.rough = prev.rough && !(sigma > 0.0f);
-            var tracking: uint = stream(r.seed, b + STREAM_MEDIUM);
-            // Tracking weight and emission up to the next collision
-            weight = float3(1.0f);
-            glowed = float3(0.0f);
-            while (hit.instance_index != UINT_MAX) {
-                var along: float = freeFlight(pcg(stream(r.seed, b + STREAM_MEDIUM)).value, sigma);
-                if (varying) {
-                    along = scene.trackMedium(filling, ray.origin, ray.unit_direction, hit.distance, tracking, weight, glowed, scatter_in, extinction_in, b, prev.lobe);
-                }
-                if (!(along < hit.distance)) {
-                    break;
-                }
-                if (varying && !replay) {
-                    addGlow(sel, throughput * glowed / density);
-                }
-                glowed = float3(0.0f);
-                b++;
-                ray.origin += along * ray.unit_direction;
-                throughput *= select(flightWeight(scatter_in, extinction_in, sigma, along, true), weight, varying);
-                tracking = stream(r.seed, b + STREAM_MEDIUM);
-                weight = float3(1.0f);
-                if (coneUsed()) {
-                    width += spread * along;
-                    spread += PI;
-                }
-                let light: TreeSample = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
-#ifdef FK_FCPT_WALK
-                    , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b, prev.lobe)
-#endif
-                    );
-                let sampled: bool = scatterSampled(replay, b, stop, varying);
-                let f: float3 = select(float3(0.0f), throughput * light.radiance * (0.25f * INV_PI * powerHeuristic(light.density, select(0.0f, 0.25f * INV_PI, b < scene.maxBounces()))), sampled);
-                if (replay && b == stop) {
-                    if (rc == RC_LIGHT && rgb_to_greyscale(f) > 0.0f) {
-                        return Shift(f, 1.0f);
-                    }
-                    return fail;
-                }
-                if (!replay) {
-                    var candidate: Reservoir = chain;
-                    if (extractBits(chain.path, PATH_RC, 2u) == RC_SURFACE) {
-                        candidate.radiance = safeDivide(f, chain_throughput);
-                    } else {
-                        candidate.path = insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_LIGHT, PATH_RC, 2u);
-                    }
-                    offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
-                    let survival_probability: float = survivalProbability(throughput, density);
-                    if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
-                        return fail;
-                    }
-                    density *= survival_probability;
-                }
-                // Emission met next is weighed against the light sampled here
-                nee_vertex = NEEVertex(false, 0.25f * INV_PI, ray.origin, float3(0.0f), ray.origin);
-                ray.unit_direction = isotropic(stream(r.seed, b));
-                prev = scatteredVertex(is_inside);
-                sky_pdf = prev.pdf;
-                hit = scene.traverseInstanceBVH(ray, true, POW32);
+            var ended: Shift = {};
+            if (crossMedium(scene, r, replay, stop, rc, scale, chain, chain_throughput, is_inside, filling, b, ray,
+                hit, throughput, density, weight, glowed, scatter_in, extinction_in, width, spread, prev, nee_vertex,
+                sky_pdf, sel, ended)) {
+                return ended;
             }
         }
         if (hit.instance_index == UINT_MAX) {
