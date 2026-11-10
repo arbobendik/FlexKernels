@@ -1364,6 +1364,61 @@ uint extractBits(uint e, uint offset, uint count) {
     return false;
 }
 
+// The ray reaching hit across the medium it crossed: escaping on a miss, where the walk ends, else moved to the hit
+// with what the medium let through. True where the walk ends, with ended its result
+[ForceInline] func arrive<S: IScene>(scene: S, r: Reservoir, replay: bool, stop: uint, rc: uint, end: uint,
+    end_type: uint, scale: float, b: uint, chain: Reservoir, chain_throughput: float3, nee_vertex: NEEVertex,
+    prev: Vertex, sky_pdf: float, density: float, hit: Hit, filling: uint, scatter_in: float3, extinction_in: float3,
+    weight: float3, glowed: float3, spread: float, inout ray: Ray, inout throughput: float3, inout width: float,
+    inout sel: Selection, out ended: Shift) -> bool {
+    ended = Shift(float3(0.0f), 0.0f);
+    if (hit.instance_index == UINT_MAX) {
+        // BSDF sampled escapes share the environment with its next event estimation
+        let weight: float = escapeWeight(scene, select(0.0f, sky_pdf, !nee_vertex.none), ray.unit_direction);
+        let f: float3 = throughput * environment(scene, ray.unit_direction);
+        if (replay) {
+            if (b == stop && rc == RC_ENV) {
+                ended = Shift(f * weight / r.jac, density / r.jac);
+                return true;
+            }
+            if (rc == RC_NONE && end_type == END_ENV && b == end && !prev.rough) {
+                ended = Shift(f * weight, 1.0f);
+                return true;
+            }
+            return true;
+        }
+        var candidate: Reservoir = chain;
+        if (extractBits(chain.path, PATH_RC, 2u) == RC_SURFACE) {
+            // Escaping right after x_k, the shift evaluates the weight with the new incoming direction
+            candidate.radiance = safeDivide(f * select(weight, 1.0f, extractBits(chain.path, PATH_K, 5u) == b), chain_throughput);
+        } else if (prev.rough) {
+            // Reconnection to the environment direction, guarded by the roughness threshold only (Sec. 4.2)
+            candidate.path = insertBits(insertBits(insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_ENV, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 2u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
+            candidate.jac = prev.pdf;
+            candidate.dir = ray.unit_direction;
+        }
+        offer(sel, withEnd(candidate, END_ENV, b, f * weight), f * weight * scale / density);
+        return true;
+    }
+    // Project ray origin to hit point
+    ray.origin += hit.distance * ray.unit_direction;
+    if (mediaUsed()) {
+        // What the medium lets through to the hit, unscattered, and what a varying one emits on the way
+        if (filling != UINT_MAX) {
+            if (!replay) {
+                addGlow(sel, throughput * glowed / density);
+            }
+            throughput *= weight;
+        } else {
+            throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
+        }
+    }
+    if (coneUsed()) {
+        width += spread * hit.distance;
+    }
+    return false;
+}
+
 // Walk a path from dom like lightTrace. Generating, every path of the tree is resampled into sel with its reconnection
 // vertex (Sec. 6.1), Russian roulette only modifies their source density (Sec. 6.2.4). Replaying, the hybrid shift maps r into
 // dom (Sec. 2.3): random replay up to x_k-1 and reconnection to x_k. It returns the shifted integrand times the Jacobian
@@ -1790,47 +1845,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 return ended;
             }
         }
-        if (hit.instance_index == UINT_MAX) {
-            // BSDF sampled escapes share the environment with its next event estimation
-            let weight: float = escapeWeight(scene, select(0.0f, sky_pdf, !nee_vertex.none), ray.unit_direction);
-            let f: float3 = throughput * environment(scene, ray.unit_direction);
-            if (replay) {
-                if (b == stop && rc == RC_ENV) {
-                    return Shift(f * weight / r.jac, density / r.jac);
-                }
-                if (rc == RC_NONE && end_type == END_ENV && b == end && !prev.rough) {
-                    return Shift(f * weight, 1.0f);
-                }
-                return fail;
-            }
-            var candidate: Reservoir = chain;
-            if (extractBits(chain.path, PATH_RC, 2u) == RC_SURFACE) {
-                // Escaping right after x_k, the shift evaluates the weight with the new incoming direction
-                candidate.radiance = safeDivide(f * select(weight, 1.0f, extractBits(chain.path, PATH_K, 5u) == b), chain_throughput);
-            } else if (prev.rough) {
-                // Reconnection to the environment direction, guarded by the roughness threshold only (Sec. 4.2)
-                candidate.path = insertBits(insertBits(insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_ENV, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 2u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
-                candidate.jac = prev.pdf;
-                candidate.dir = ray.unit_direction;
-            }
-            offer(sel, withEnd(candidate, END_ENV, b, f * weight), f * weight * scale / density);
-            break;
-        }
-        // Project ray origin to hit point
-        ray.origin += hit.distance * ray.unit_direction;
-        if (mediaUsed()) {
-            // What the medium lets through to the hit, unscattered, and what a varying one emits on the way
-            if (filling != UINT_MAX) {
-                if (!replay) {
-                    addGlow(sel, throughput * glowed / density);
-                }
-                throughput *= weight;
-            } else {
-                throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
-            }
-        }
-        if (coneUsed()) {
-            width += spread * hit.distance;
+        var arrived_end: Shift = {};
+        if (arrive(scene, r, replay, stop, rc, end, end_type, scale, b, chain, chain_throughput, nee_vertex, prev,
+            sky_pdf, density, hit, filling, scatter_in, extinction_in, weight, glowed, spread, ray, throughput, width,
+            sel, arrived_end)) {
+            return arrived_end;
         }
     }
     return fail;
