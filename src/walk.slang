@@ -1071,6 +1071,12 @@ public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float
 // PDF = solidAngle(P(light)) or P(light) * sphereDensity, P(light) the product of child shares down the trail
 // of slot j; with no smooth_n, all around
 public func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, start: float3, j: uint, light_point: float3) -> float {
+#ifdef FK_FCPT_WALK
+    // Lights of no slot are never sampled
+    if (j == UINT_MAX) {
+        return 0.0f;
+    }
+#endif
     let trail_texel: uint4 = scene.lightTrail(j);
     var trail: uint2 = trail_texel.xy;
     var probability: float = 1.0f;
