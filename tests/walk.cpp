@@ -17,7 +17,8 @@
 //   homogeneous or varying, ReSTIR on or off: a sun of irradiance 1 along -x scattered in on the way, (s / 4 pi)
 //   int_0^1 exp(-s (t + sqrt(1 - t^2))) dt, and walls emitting 1 inward seen through it as the walk's glow, exp(-s);
 // - paths of it that scattered on the camera's way, shifted into another pixel's domain and back: their integrand
-//   exactly, at Jacobian 1 both ways; and with a bounce more, single and double scattering.
+//   exactly, at Jacobian 1 both ways; and with a bounce more, single and double scattering;
+// - the sun scattered in from vertices nearer the fog's face than a surface's margin, their shadow rays meeting it.
 // Printed: each furnace's reading against its value
 #include <stdio.h>
 #include <math.h>
@@ -39,14 +40,16 @@ static Material dielectric(float ior) {
     return Material{ONE, ZERO, 0, 0, 1, ior, ONE, ONE, 1, ZERO, ZERO, 0.5f, 0, 0, ZERO};
 }
 
-Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool) {
+// Past a surface's margin of 1e-4 when the ray leaves one, else (a medium vertex's) from its start
+Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface) {
     Hit hit = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, max_len};
+    const float near = surface ? 1e-4f : 0.0f;
     for (unsigned i = 0; i < scene.size(); i++) {
         const V oc = ray.origin - scene[i].center;
         const float b = dotv(oc, ray.unit_direction), c = dotv(oc, oc) - scene[i].radius * scene[i].radius;
         if (b * b - c < 0) continue;
-        const float s = sqrtf(b * b - c), t = -b - s > 1e-4f ? -b - s : -b + s;
-        if (t > 1e-4f && t < hit.distance) hit.instance_index = i, hit.distance = t;
+        const float s = sqrtf(b * b - c), t = -b - s > near ? -b - s : -b + s;
+        if (t > near && t < hit.distance) hit.instance_index = i, hit.distance = t;
     }
     return hit;
 }
@@ -77,19 +80,21 @@ Matrix<float, 3, 3> HookScene_worldTriangle_0(uint32_t, uint32_t) { return Matri
 V HookScene_calculatePointLightContrib_0(uint32_t) { return ZERO; }
 V HookScene_hitPosition_0(Hit) { return ZERO; }
 // Shadows pass index-matched clear surfaces alone, through media by their extinction
-V HookScene_shadowTransmittance_0(Ray ray, float l) {
-    for (float along = 0;;) {
-        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, true);
+static V shadowThrough(Ray ray, float l, bool surface) {
+    for (float along = 0;; surface = true) {
+        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, surface);
         if (hit.instance_index == 0xFFFFFFFFu) return ONE;
         const Material& m = scene[hit.instance_index].layer[0];
         if (!(m.transmission == 1 && m.ior == 1 && scene[hit.instance_index].layers == 1)) return ZERO;
         along += hit.distance, ray.origin = ray.origin + scaled(ray.unit_direction, hit.distance);
     }
 }
+V HookScene_shadowTransmittance_0(Ray ray, float l) { return shadowThrough(ray, l, true); }
 // the medium a shadow ray starts in filling it up to the first surface it meets
-V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t, bool) {
-    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, true).distance, l);
-    const V through = HookScene_shadowTransmittance_0(ray, l);
+V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t,
+    bool surface) {
+    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface).distance, l);
+    const V through = shadowThrough(ray, l, surface);
     return V(through.x * expf(-extinction.x * inside), through.y * expf(-extinction.y * inside),
         through.z * expf(-extinction.z * inside));
 }
@@ -214,7 +219,13 @@ int main() {
     camera_fog = {scaled(ONE, 0.2f), scaled(ONE, 0.2f)};
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
     furnace("sun in fog 0.2, bounces 1", center, V(0, 0, -1), 0, 0.014264, failed);
+    // From 0.5e-4 inside the fog sphere's face toward the sun, of extinction 10, down: the camera ray leaves it after
+    // 0.01, each scattering vertex within 0.5e-4 of that face, which the sun's shadow ray, of no margin, meets:
+    // (s / 4 pi) int_0^T exp(-s (t + sqrt(1 - t^2) - x)) dt at the camera's x in float, by scipy's quad
     bounces = 0;
+    camera_fog = {scaled(ONE, 10), scaled(ONE, 10)};
+    scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
+    furnace("sun in fog by its face", V(1 - 0.5e-4f, 0, 0), V(1 - 0.5e-4f, 0, -1), 0, 0.00757074921909657, failed);
     // Replay in the fog: paths the sun reaches after scattering on the camera's way, shifted into a pixel 0.1 off and
     // back, read their own integrand again at Jacobian 1 both ways, the shift the identity on their random numbers
     sun = true, varying = summing = false, camera_fog = {scaled(ONE, 0.5f), scaled(ONE, 0.5f)};
