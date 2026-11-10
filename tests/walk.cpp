@@ -83,7 +83,12 @@ V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, ui
 static uint32_t bounces = 64;
 uint32_t HookScene_maxBounces_0() { return bounces; }
 static float sky = 1;
-V HookScene_env_map_sample_0(V) { return scaled(ONE, sky); }
+static bool escapes_checked = false;
+static int escapes = 0, escape_misfits = 0;
+V HookScene_env_map_sample_0(V, uint32_t depth, uint32_t lobe) {
+    if (escapes_checked) escapes += depth == 0 && lobe == 0, escape_misfits += depth != 0 || lobe != 0 && lobe != 3;
+    return scaled(ONE, sky);
+}
 V HookScene_ambient_0() { return ONE; }
 Vector<uint32_t, 2> HookScene_environmentMapSize_0() { return Vector<uint32_t, 2>(4, 2); }
 Vector<uint32_t, 2> HookScene_environmentCdfSize_0() { return Vector<uint32_t, 2>(5, 2); }
@@ -150,7 +155,9 @@ int main() {
     const V camera(0, 0, 3), center(0, 0, 0);
     const Medium none = {ZERO, ZERO}, fog = {scaled(ONE, 2), scaled(ONE, 2)};
     scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
+    escapes_checked = true;
     furnace("white sphere", camera, center, 0.3f, 1, failed);
+    escapes_checked = false;
     summing = true;
     furnace("white sphere, ReSTIR off", camera, center, 0.3f, 1, failed);
     // A white sheen over it drawn as its own lobe, reconnected and replayed by ReSTIR
@@ -210,6 +217,9 @@ int main() {
     checking = true;
     furnace("sun in fog by its face", V(1 - 0.5e-4f, 0, 0), V(1 - 0.5e-4f, 0, -1), 0, 0.00757074921909657, failed);
     checking = false;
+    failed += escapes != 1 << 17 || escape_misfits > 0;
+    printf("escape context: %d of %d escapes off the sphere's vertex, %d misfits%s\n", escapes, 1 << 17, escape_misfits,
+        escapes != 1 << 17 || escape_misfits > 0 ? "  FAILED" : "");
     failed += misfits > 0 || segments == 0;
     printf("handed segments: %d misfits, %d medium vertices checked%s\n", misfits, segments,
         misfits > 0 || segments == 0 ? "  FAILED" : "");
