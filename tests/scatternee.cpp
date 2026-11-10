@@ -27,7 +27,7 @@ Surface HookScene_surfaceAt_0(Hit, V, uint32_t state) {
     return Surface{DOWN, DOWN, 0, {ONE, ONE, 1, 0, 0, 1, ZERO, ONE, 1}, false, state, 1, false, {ZERO, ZERO},
         0xFFFFFFFFu};
 }
-V HookScene_shadowTransmittanceIn_0(Ray, float, V, uint32_t filling, uint32_t, uint32_t, uint32_t, bool) {
+V HookScene_shadowTransmittanceIn_0(Ray, float, V, uint32_t filling, uint32_t, uint32_t, uint32_t, bool, float, float) {
     hook_filling = filling;
     return V(1, 1, 1);
 }
@@ -51,7 +51,8 @@ int main() {
     for (const V dir : {V(0, 0, 1), V(0, 0, -1), V(1, 0, 0)}) {
         double sum = 0, sum2 = 0;
         for (int i = 0; i < N; i++) {
-            ShadowContext context = {V(0.1f, 0.1f, 0.1f), V(0.1f, 0.1f, 0.1f), Vector<uint32_t, 2>(9, 9), dir, 3, 0, false};
+            ShadowContext context = {V(0.1f, 0.1f, 0.1f), V(0.1f, 0.1f, 0.1f), Vector<uint32_t, 2>(9, 9), dir, 3, 0, false,
+                0, 0};
             const TreeSample s = sampleLightTree_0(V(0, 0, 0), dir, dir, 0, true, hash(i), &context);
             sum += s.radiance.x, sum2 += double(s.radiance.x) * s.radiance.x;
         }
