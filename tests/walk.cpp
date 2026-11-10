@@ -33,9 +33,10 @@ static V scaled(V a, float s) { return V(a.x * s, a.y * s, a.z * s); }
 struct Shape { V center; float radius; bool inward; Material layer[2]; unsigned layers; float coverage; bool encloses;
     Medium volume; };
 static std::vector<Shape> scene;
-// Of the camera ray each walk starts with, as handed, and of the shadow rays of medium vertices where a furnace checks
-// them, their segment's length against the distance from where it started
-static V handed_direction;
+// The camera's medium: fog where a furnace sets it, else none; homogeneous, or varying of the same coefficients
+static Medium camera_fog = {ZERO, ZERO};
+// Of the camera ray each walk starts with, its distance as handed, and of the shadow rays of medium vertices where a
+// furnace checks them, their segment's length against the distance from where it started
 static float handed_distance;
 static V segment_start;
 static bool checking = false;
@@ -60,13 +61,19 @@ Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface) 
     }
     return hit;
 }
-Surface HookScene_surfaceAtPath_0(Hit hit, V origin, uint32_t state, float, uint32_t layer, uint32_t, uint32_t) {
+// The ray's direction each surface is shaded by: at the first hit, outside fog, the camera ray's own, bit for bit
+static V handed_direction;
+static int shaded_misfits = 0;
+Surface HookScene_surfaceAtPath_0(Hit hit, V origin, uint32_t state, float, uint32_t layer, uint32_t depth, uint32_t,
+    V dir) {
+    shaded_misfits += depth == 0 && camera_fog.extinction.x == 0
+        && (dir.x != handed_direction.x || dir.y != handed_direction.y || dir.z != handed_direction.z);
     const Shape& s = scene[hit.instance_index];
     const V n = scaled(origin - s.center, (s.inward ? -1 : 1) / s.radius);
     return Surface{n, n, 1e-4f, s.layer[layer], false, state, s.coverage, s.encloses, s.volume, 0xFFFFFFFFu};
 }
 Surface HookScene_surfaceAt_0(Hit hit, V origin, uint32_t state) {
-    return HookScene_surfaceAtPath_0(hit, origin, state, 0, 0, 0, 0);
+    return HookScene_surfaceAtPath_0(hit, origin, state, 0, 0, 1, 0, ZERO);
 }
 uint32_t HookScene_layers_0(Hit hit) { return scene[hit.instance_index].layers; }
 // No light in the tree: a leaf of no importance, which lights no point and is no light's slot; or where a furnace sets
@@ -131,8 +138,7 @@ Vector<float, 4> HookScene_environmentCdf_0(Vector<uint32_t, 2> cell) {
     return cell.x == 4 ? Vector<float, 4>((cell.y + 1) / 2.0f, 0.5f, 0, 0)
         : Vector<float, 4>((cell.x + 1) / 4.0f, 0.25f, 0, 0);
 }
-// The camera's medium: fog where a furnace sets it, else none; homogeneous, or varying of the same coefficients
-static Medium camera_fog = {ZERO, ZERO};
+// The camera's medium, as below
 static bool varying = false;
 Medium HookScene_cameraMedium_0(V direction, float distance, uint32_t* filling) {
     handed_direction = direction, handed_distance = distance;
@@ -290,6 +296,8 @@ int main() {
     failed += !replayed;
     printf("replay in fog: %d of %d scattered paths there and back exactly%s\n", kept, scattered,
         replayed ? "" : "  FAILED");
+    failed += shaded_misfits > 0;
+    printf("shaded directions: %d misfits%s\n", shaded_misfits, shaded_misfits > 0 ? "  FAILED" : "");
     failed += escapes != 1 << 17 || escape_misfits > 0;
     printf("escape context: %d of %d escapes off the sphere's vertex, %d misfits%s\n", escapes, 1 << 17, escape_misfits,
         escapes != 1 << 17 || escape_misfits > 0 ? "  FAILED" : "");
