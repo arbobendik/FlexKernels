@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <vector>
+#include <initializer_list>
 #include "pathtracer.cpp"
 
 using V = Vector<float, 3>;
@@ -37,13 +38,18 @@ Surface HookScene_surfaceAt_0(Hit hit, V origin, uint32_t state) {
     return HookScene_surfaceAtPath_0(hit, origin, state, 0, 0, 0, 0);
 }
 uint32_t HookScene_layers_0(Hit hit) { return scene[hit.instance_index].layers; }
-Vector<uint32_t, 4> HookScene_lightNode_0(uint32_t) { return Vector<uint32_t, 4>(1, 0, 0, 0); }
+// Sun: irradiance 1 along -x, a delta light 1e4 along +x of intensity 1e8
+static bool sun = false;
+static const V SUN(1e4f, 0, 0);
+Vector<uint32_t, 4> HookScene_lightNode_0(uint32_t) { return Vector<uint32_t, 4>(sun ? 2 : 1, 0, 0, 0); }
 uint32_t HookScene_lightSecond_0(uint32_t) { return 0; }
-LightBounds HookScene_lightBounds_0(uint32_t) { return LightBounds{ZERO, ZERO, V(0, 0, 1), 0, 1}; }
+LightBounds HookScene_lightBounds_0(uint32_t) {
+    return sun ? LightBounds{SUN, SUN, V(1, 0, 0), 1, -1} : LightBounds{ZERO, ZERO, V(0, 0, 1), 0, 1};
+}
 Vector<uint32_t, 4> HookScene_lightTrail_0(uint32_t) { return Vector<uint32_t, 4>(0, 0, 0, 0); }
 uint32_t HookScene_lightSlot_0(Hit) { return 0; }
 bool HookScene_slotLeaf_0(uint32_t, uint32_t, Vector<uint32_t, 4>) { return false; }
-Light HookScene_light_0(uint32_t) { return Light{}; }
+Light HookScene_light_0(uint32_t) { return Light{SUN, 0, ONE, 1e8f, 0}; }
 uint32_t HookScene_triangleOffset_0(uint32_t) { return 0; }
 Matrix<float, 3, 3> HookScene_worldTriangle_0(uint32_t, uint32_t) { return Matrix<float, 3, 3>(0.0f); }
 V HookScene_calculatePointLightContrib_0(uint32_t) { return ZERO; }
@@ -58,10 +64,15 @@ V HookScene_shadowTransmittance_0(Ray ray, float l) {
     }
 }
 V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t) {
-    return HookScene_shadowTransmittance_0(ray, l);
+    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l).distance, l);
+    const V through = HookScene_shadowTransmittance_0(ray, l);
+    return V(through.x * expf(-extinction.x * inside), through.y * expf(-extinction.y * inside),
+        through.z * expf(-extinction.z * inside));
 }
-uint32_t HookScene_maxBounces_0() { return 64; }
-V HookScene_env_map_sample_0(V) { return ONE; }
+static uint32_t bounces = 64;
+uint32_t HookScene_maxBounces_0() { return bounces; }
+static float sky = 1;
+V HookScene_env_map_sample_0(V) { return scaled(ONE, sky); }
 V HookScene_ambient_0() { return ONE; }
 Vector<uint32_t, 2> HookScene_environmentMapSize_0() { return Vector<uint32_t, 2>(4, 2); }
 Vector<uint32_t, 2> HookScene_environmentCdfSize_0() { return Vector<uint32_t, 2>(5, 2); }
@@ -70,16 +81,25 @@ Vector<float, 4> HookScene_environmentCdf_0(Vector<uint32_t, 2> cell) {
         : Vector<float, 4>((cell.x + 1) / 4.0f, 0.25f, 0, 0);
 }
 static Medium camera_fog = {ZERO, ZERO};
+static bool varying = false;
 Medium HookScene_cameraMedium_0(uint32_t* filling) {
-    *filling = 0xFFFFFFFFu;
+    *filling = varying ? 0 : 0xFFFFFFFFu;
     return camera_fog;
 }
-float HookScene_majorant_0(uint32_t) { return 0; }
-float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t*, V*, V*, V*, V*, uint32_t, uint32_t) {
-    return 2 * distance;
+float HookScene_majorant_0(uint32_t) { return camera_fog.extinction.x; }
+float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t* state, V* weight, V*, V* scatter, V* extinction,
+    uint32_t, uint32_t) {
+    const Random u = pcg(*state);
+    *state = u.state;
+    const float along = -logf(1 - u.value) / camera_fog.extinction.x;
+    if (along < distance) {
+        *weight = scaled(*weight, camera_fog.scatter.x / camera_fog.extinction.x);
+        *scatter = camera_fog.scatter, *extinction = camera_fog.extinction;
+    }
+    return along < distance ? along : 2 * distance;
 }
 
-static bool summing = false;
+static bool summing = false, seen = false;
 static void furnace(const char* name, V camera, V aim, float angle, double truth, int& failed, float absorbs = 0) {
     const int N = 1 << 17;
     double sum = 0, sum2 = 0, through = 0;
@@ -99,7 +119,7 @@ static void furnace(const char* name, V camera, V aim, float angle, double truth
         sel.random_state = hash(3 * i + 3);
         sel.sums = summing;
         walk_hook(dom, path, false, 1, &sel);
-        const double y = sel.color.x;
+        const double y = sel.color.x + (seen ? sel.glow.x : 0);
         through += exp(-absorbs * hit.distance);
         sum += y, sum2 += y * y;
     }
@@ -144,5 +164,24 @@ int main() {
     camera_fog = none;
     scene = {{center, 1, true, {lambert(0.5f, 1)}, 1, 1, false, none}};
     furnace("inside walls of albedo 0.5", center, V(0, 0, 1), 3.14159265f, 1, failed);
+    bounces = 0, sky = 0;
+    for (const float sigma : {0.2f, 0.5f}) {
+        // (sigma / 4 pi) int_0^1 exp(-sigma (s + sqrt(1 - s^2))) ds by Simpson's rule over s = sin t, and exp(-sigma)
+        const double in_scattered = sigma == 0.2f ? 0.0123111280712487 : 0.0209620516427305;
+        camera_fog = {scaled(ONE, sigma), scaled(ONE, sigma)};
+        char name[64];
+        for (int run = 0; run < 4; run++) {
+            varying = run & 1, summing = run & 2;
+            const char* kind = varying ? (summing ? "varying, ReSTIR off" : "varying") : (summing ? "ReSTIR off" : "");
+            sun = true, seen = false;
+            scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
+            snprintf(name, sizeof name, "sun in fog %.1f %s", sigma, kind);
+            furnace(name, center, V(0, 0, -1), 0, in_scattered, failed);
+            sun = false, seen = true;
+            scene = {{center, 1, true, {lambert(0, 1)}, 1, 1, false, none}};
+            snprintf(name, sizeof name, "walls in fog %.1f %s", sigma, kind);
+            furnace(name, center, V(0, 0, -1), 0, exp(-double(sigma)), failed);
+        }
+    }
     return failed;
 }
