@@ -1166,6 +1166,12 @@ public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float
 // Density in solid angle of light sampling from origin, lifted to start, picking point on the light of trail slot j, down
 // its trail (pbrt-v4's BVHLightSampler::PMF), as flex-cuda-pt's lightPdf; with no smooth_n, sided, all around
 public func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, start: float3, j: uint, light_point: float3) -> float {
+#ifdef FK_FCPT_WALK
+    // Of no slot, a light no light sampling picks (flex-cuda-pt's strands): its BSDF hit weighs fully
+    if (j == UINT_MAX) {
+        return 0.0f;
+    }
+#endif
     let trail_texel: uint4 = scene.lightTrail(j);
     var trail: uint2 = trail_texel.xy;
     var probability: float = 1.0f;
