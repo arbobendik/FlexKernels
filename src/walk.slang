@@ -761,7 +761,7 @@ public interface IScene {
     public uint layers(Hit hit);
     public float majorant(uint filling);
     public Medium cameraMedium(float3 direction, float distance, out uint filling);
-    public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe);
+    public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe, bool camera);
     public float3 hitPosition(Hit hit);
     public float3x3 worldTriangle(uint instance_index, uint triangle_index);
     public LightBounds lightBounds(uint n);
@@ -870,8 +870,8 @@ public struct HookScene : IScene {
     __target_intrinsic(cuda, "fcptCameraMedium($0, $1, $2)")
     public Medium cameraMedium(float3 direction, float distance, out uint filling);
     __target_intrinsic(wgsl, "0.0f")
-    __target_intrinsic(cuda, "fcptTrackMedium($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
-    public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe);
+    __target_intrinsic(cuda, "fcptTrackMedium($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")
+    public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe, bool camera);
     __target_intrinsic(wgsl, "hitPosition($0)")
     __target_intrinsic(cuda, "fcptHitPosition($0)")
     public float3 hitPosition(Hit hit);
@@ -1345,7 +1345,8 @@ uint extractBits(uint e, uint offset, uint count) {
             b == UINT_MAX))).value, sigma);
         if (varying) {
             along = scene.trackMedium(filling, ray.origin, ray.unit_direction, hit.distance, tracking, weight, glowed,
-                scatter_in, extinction_in, select(b, 0u, b == UINT_MAX), select(prev.lobe, LOBE_NONE, b == UINT_MAX));
+                scatter_in, extinction_in, select(b, 0u, b == UINT_MAX), select(prev.lobe, LOBE_NONE, b == UINT_MAX),
+                b == UINT_MAX);
         }
         if (!(along < hit.distance)) {
             break;

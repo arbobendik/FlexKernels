@@ -153,8 +153,11 @@ Medium HookScene_cameraMedium_0(V direction, float distance, uint32_t* filling) 
 }
 // The varying camera fog, tracked under its extinction: each tentative collision real, scattering by its albedo
 float HookScene_majorant_0(uint32_t) { return camera_fog.extinction.x; }
+// Of each walk, the camera's own segment flagged as the camera's, its first tracked, and none after it
+static int tracked = 0, tracked_misfits = 0, walk_tracks = 0;
 float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t* state, V* weight, V*, V* scatter, V* extinction,
-    uint32_t, uint32_t) {
+    uint32_t, uint32_t, bool camera) {
+    tracked++, tracked_misfits += camera != (walk_tracks++ == 0);
     const Random u = pcg(*state);
     *state = u.state;
     const float along = -logf(1 - u.value) / camera_fog.extinction.x;
@@ -185,7 +188,7 @@ static void furnace(const char* name, V camera, V aim, float angle, double truth
         Selection sel = {};
         sel.random_state = hash(3 * i + 3);
         sel.sums = summing;
-        segment_start = camera;
+        segment_start = camera, walk_tracks = 0;
         walk_hook(dom, path, false, 1, &sel);
         // As the walk derives them from the domain's points, to float precision
         misfits += dotv(handed_direction, dir) < 1 - 1e-6f
@@ -310,6 +313,9 @@ int main() {
     failed += unslotted != 0 || !(slotted > 0);
     printf("light of no slot: density %g, the sun's %g%s\n", unslotted, slotted,
         unslotted != 0 || !(slotted > 0) ? "  FAILED" : "");
+    failed += tracked_misfits > 0 || tracked == 0;
+    printf("camera segments: %d misfits of %d tracked%s\n", tracked_misfits, tracked,
+        tracked_misfits > 0 || tracked == 0 ? "  FAILED" : "");
     failed += shaded_misfits > 0;
     printf("shaded directions: %d misfits%s\n", shaded_misfits, shaded_misfits > 0 ? "  FAILED" : "");
     failed += escapes != 1 << 17 || escape_misfits > 0;
