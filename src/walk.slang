@@ -762,7 +762,6 @@ public interface IScene {
     public uint layers(Hit hit);
     public float majorant(uint filling);
     public Medium cameraMedium(out uint filling);
-    public float3 passMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 glowed);
     public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe);
     public float3 hitPosition(Hit hit);
     public float3x3 worldTriangle(uint instance_index, uint triangle_index);
@@ -861,14 +860,10 @@ public struct HookScene : IScene {
     __target_intrinsic(cuda, "fcptMajorant($0)")
     public float majorant(uint filling);
     // The medium the camera is in, flex-cuda-pt's alone: its coefficients and its material's key if varying, else
-    // UINT_MAX; and what a varying one lets through along a camera ray up to distance, absorbing alone, as what it
-    // scatters out there is taken to scatter back in, its emission on the way gathered
+    // UINT_MAX
     __target_intrinsic(wgsl, "Medium()")
     __target_intrinsic(cuda, "fcptCameraMedium($0)")
     public Medium cameraMedium(out uint filling);
-    __target_intrinsic(wgsl, "vec3<f32>(1.0f)")
-    __target_intrinsic(cuda, "fcptPassMedium($0, $1, $2, $3, $4, $5)")
-    public float3 passMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 glowed);
     __target_intrinsic(wgsl, "0.0f")
     __target_intrinsic(cuda, "fcptTrackMedium($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
     public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe);
@@ -1307,14 +1302,17 @@ uint extractBits(uint e, uint offset, uint count) {
         return true;
     }
     prev.rough = prev.rough && !(sigma > 0.0f);
-    var tracking: uint = stream(r.seed, b + STREAM_MEDIUM);
+    // From the camera (b UINT_MAX) at its own stream, of depth 0 and no lobe
+    var tracking: uint = stream(r.seed, select(b + STREAM_MEDIUM, STREAM_CAMERA, b == UINT_MAX));
     // A varying medium's tentative collisions passed and what it emits along the ray to the next
     weight = float3(1.0f);
     glowed = float3(0.0f);
     while (hit.instance_index != UINT_MAX) {
-        var along: float = freeFlight(pcg(stream(r.seed, b + STREAM_MEDIUM)).value, sigma);
+        var along: float = freeFlight(pcg(stream(r.seed, select(b + STREAM_MEDIUM, STREAM_CAMERA,
+            b == UINT_MAX))).value, sigma);
         if (varying) {
-            along = scene.trackMedium(filling, ray.origin, ray.unit_direction, hit.distance, tracking, weight, glowed, scatter_in, extinction_in, b, prev.lobe);
+            along = scene.trackMedium(filling, ray.origin, ray.unit_direction, hit.distance, tracking, weight, glowed,
+                scatter_in, extinction_in, select(b, 0u, b == UINT_MAX), select(prev.lobe, LOBE_NONE, b == UINT_MAX));
         }
         if (!(along < hit.distance)) {
             break;
@@ -1336,7 +1334,8 @@ uint extractBits(uint e, uint offset, uint count) {
         // its sides, against the isotropic phase function by the power heuristic, as flex-cuda-pt's walk
         let light: TreeSample = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
-            , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b, prev.lobe)
+            , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b,
+                arrivalLobe(b, prev.lobe))
 #endif
             );
         let sampled: bool = scatterSampled(replay, b, stop, varying);
@@ -1468,24 +1467,6 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         width = coneOf(dom).x + spread * length(dom.x1 - dom.x0);
     }
     var throughput: float3 = float3(1.0f);
-    if (mediaUsed()) {
-        // The camera's medium, which absorbs on the way to the first hit; what it scatters out there it is taken to
-        // scatter back in, as flex-cuda-pt's walk
-        let camera: Medium = scene.cameraMedium(filling);
-        scatter_in = camera.scatter;
-        extinction_in = camera.extinction;
-        let first: float = length(dom.x1 - dom.x0);
-        if (filling != UINT_MAX) {
-            var tracking: uint = stream(r.seed, STREAM_CAMERA);
-            var approach: float3 = float3(0.0f);
-            throughput *= scene.passMedium(filling, dom.x0, ray.unit_direction, first, tracking, approach);
-            if (!replay) {
-                addGlow(sel, approach);
-            }
-        } else {
-            throughput *= exp((scatter_in - extinction_in) * first);
-        }
-    }
     // Replaying the densities of the reconnection, generating the product of Russian roulette survival probabilities
     var density: float = 1.0f;
     var is_inside: bool = false;
@@ -1500,7 +1481,33 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     var chain: Reservoir = emptyReservoir();
     chain.seed = r.seed;
     var chain_throughput: float3 = float3(0.0f);
-    for (var b: uint = 0u; ; b++) {
+    // The camera's medium, which scatters on the way to the first hit as any medium does: vertices there count from
+    // b = 0, the camera being the one before them, at UINT_MAX
+    var b: uint = UINT_MAX;
+    if (mediaUsed()) {
+        let camera: Medium = scene.cameraMedium(filling);
+        scatter_in = camera.scatter;
+        extinction_in = camera.extinction;
+        ray.origin = dom.x0;
+        hit.distance = length(dom.x1 - dom.x0);
+        if (coneUsed()) {
+            width = coneOf(dom).x;
+        }
+        var ended: Shift = {};
+        if (crossMedium(scene, r, replay, stop, rc, scale, chain, chain_throughput, is_inside, filling, b, ray, hit,
+            throughput, density, weight, glowed, scatter_in, extinction_in, width, spread, prev, nee_vertex, sky_pdf,
+            sel, ended)) {
+            return ended;
+        }
+        if (arrive(scene, r, replay, stop, rc, end, end_type, scale, b, chain, chain_throughput, nee_vertex, prev,
+            sky_pdf, density, hit, filling, scatter_in, extinction_in, weight, glowed, spread, ray, throughput, width,
+            sel, ended)) {
+            return ended;
+        }
+    }
+    // The first surface met, whose footprint bounds reconnections
+    let primary: uint = b + 1u;
+    for (b = primary; ; b++) {
         let point_light_lighting: bool = hit.is_point_light == 1u;
         // Loop scoped variables are initialized explicitly, some compilers keep the previous iteration's value otherwise
         var surface: Surface = {};
@@ -1533,7 +1540,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             scatter = !surface.skip;
             geometry_density = geometryDensity(surface.geometry_n, ray.unit_direction, hit.distance);
-            if (b == 0u) {
+            if (b == primary) {
                 // Primary ray footprint (Eq. 5)
                 threshold = footprintThreshold(geometry_density);
             }
@@ -1640,6 +1647,12 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 }
                 offer(sel, withEnd(candidate, END_EMIT, b, throughput * emission), throughput * emission * scale / density);
             }
+#ifdef FK_FCPT_WALK
+            else {
+                // Seen from the camera through its medium, by what that lets through: flex-cuda-pt's walk adds it
+                addGlow(sel, throughput * emission);
+            }
+#endif
             if (nee) {
                 let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
@@ -2267,7 +2280,12 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
     scene.storeReservoirPrevious(p, finalize(sel, c_sum), dom.hit);
     scene.storePreviousLayer(p, 5u, uint4(asuint(dom.hit.uv), 0u, 0u));
     let primary: Surface = scene.surfaceAt(dom.hit, dom.x1, sel.random_state);
+#ifdef FK_FCPT_WALK
+    // flex-cuda-pt's walk adds the primary hit's emission itself, through the camera's medium
+    let emission: float3 = float3(0.0f);
+#else
     let emission: float3 = select(primary.material.emissive * max(sign(dot(normalize(dom.x0 - dom.x1), primary.smooth_n)), 0.0f), float3(0.0f), primary.skip);
+#endif
     // Clamp color to 16 bit float
     let final_color: float3 = clamp(sel.color + emission, float3(0.0f), float3(65519.0f));
     scene.storeColor(p, 0u, float4(final_color, 1.0f));
