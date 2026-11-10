@@ -18,14 +18,15 @@ static Material dielectric(float ior) {
     return Material{ONE, ZERO, 0, 0, 1, ior, ONE, ONE, 1, ZERO, ZERO, 0.5f, 0, 0, ZERO};
 }
 
-Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool) {
+Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface) {
     Hit hit = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, max_len};
+    const float near = surface ? 1e-4f : 0.0f;
     for (unsigned i = 0; i < scene.size(); i++) {
         const V oc = ray.origin - scene[i].center;
         const float b = dotv(oc, ray.unit_direction), c = dotv(oc, oc) - scene[i].radius * scene[i].radius;
         if (b * b - c < 0) continue;
-        const float s = sqrtf(b * b - c), t = -b - s > 1e-4f ? -b - s : -b + s;
-        if (t > 1e-4f && t < hit.distance) hit.instance_index = i, hit.distance = t;
+        const float s = sqrtf(b * b - c), t = -b - s > near ? -b - s : -b + s;
+        if (t > near && t < hit.distance) hit.instance_index = i, hit.distance = t;
     }
     return hit;
 }
@@ -54,18 +55,20 @@ uint32_t HookScene_triangleOffset_0(uint32_t) { return 0; }
 Matrix<float, 3, 3> HookScene_worldTriangle_0(uint32_t, uint32_t) { return Matrix<float, 3, 3>(0.0f); }
 V HookScene_calculatePointLightContrib_0(uint32_t) { return ZERO; }
 V HookScene_hitPosition_0(Hit) { return ZERO; }
-V HookScene_shadowTransmittance_0(Ray ray, float l) {
-    for (float along = 0;;) {
-        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, true);
+static V shadowThrough(Ray ray, float l, bool surface) {
+    for (float along = 0;; surface = true) {
+        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, surface);
         if (hit.instance_index == 0xFFFFFFFFu) return ONE;
         const Material& m = scene[hit.instance_index].layer[0];
         if (!(m.transmission == 1 && m.ior == 1 && scene[hit.instance_index].layers == 1)) return ZERO;
         along += hit.distance, ray.origin = ray.origin + scaled(ray.unit_direction, hit.distance);
     }
 }
-V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t, bool) {
-    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, true).distance, l);
-    const V through = HookScene_shadowTransmittance_0(ray, l);
+V HookScene_shadowTransmittance_0(Ray ray, float l) { return shadowThrough(ray, l, true); }
+V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t,
+    bool surface) {
+    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface).distance, l);
+    const V through = shadowThrough(ray, l, surface);
     return V(through.x * expf(-extinction.x * inside), through.y * expf(-extinction.y * inside),
         through.z * expf(-extinction.z * inside));
 }
@@ -217,7 +220,11 @@ int main() {
     camera_fog = {scaled(ONE, 0.2f), scaled(ONE, 0.2f)};
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
     furnace("sun in fog 0.2, bounces 1", center, V(0, 0, -1), 0, 0.014264, failed);
+    // (s / 4 pi) int_0^T exp(-s (t + sqrt(1 - t^2) - x)) dt at the camera's x, by scipy's quad
     bounces = 0;
+    camera_fog = {scaled(ONE, 10), scaled(ONE, 10)};
+    scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
+    furnace("sun in fog by its face", V(1 - 0.5e-4f, 0, 0), V(1 - 0.5e-4f, 0, -1), 0, 0.00757074921909657, failed);
     sun = true, varying = summing = false, camera_fog = {scaled(ONE, 0.5f), scaled(ONE, 0.5f)};
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
     const auto domain = [&](V dir) {
