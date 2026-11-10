@@ -203,15 +203,16 @@ __extern_cpp public struct ShadowContext {
     __extern_cpp public float3 side;
     __extern_cpp public uint depth;
     __extern_cpp public uint lobe;
+    __extern_cpp public bool surface;
 }
 func shadowContext(surface: Surface, turned: bool, side_n: float3, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint) -> ShadowContext {
     var faced: Surface = surface;
     faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
     let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction), filling, dir);
     // The face's sides as the faced normal sees them
-    var context: ShadowContext = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, side_n, depth, lobe);
+    var context: ShadowContext = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, side_n, depth, lobe, true);
     if (turned) {
-        context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, side_n, depth, lobe);
+        context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, side_n, depth, lobe, true);
     }
     return context;
 }
@@ -680,9 +681,9 @@ __extern_cpp public struct Light {
 }
 
 public interface IScene {
-    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
+    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface);
     public float3 shadowTransmittance(Ray ray, float l);
-    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe);
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
     public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe);
     public uint layers(Hit hit);
@@ -752,15 +753,15 @@ public interface IScene {
 #ifdef FK_RESTIR
 public struct HookScene : IScene {
     __target_intrinsic(wgsl, "traverseInstanceBVH($0, $1, $2)")
-    __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2)")
-    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
+    __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2, $3)")
+    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface);
     __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
     __target_intrinsic(cuda, "fcptShadowTransmittance($0, $1)")
     public float3 shadowTransmittance(Ray ray, float l);
     // Shadow ray transmittance through media and occluders
     __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
-    __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6)")
-    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe);
+    __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6, $7)")
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface);
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
@@ -970,7 +971,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
 #ifdef FK_FCPT_WALK
     // Medium on the side of the light
     let front: bool = dot(context.side, light_dir + geometry_offset * smooth_n) > 0.0f;
-    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe);
+    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe, context.surface);
 #else
     return scene.shadowTransmittance(light_ray, shadowLength(light_dir));
 #endif
@@ -1241,7 +1242,7 @@ uint extractBits(uint e, uint offset, uint count) {
         let light: TreeSample = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
             , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b,
-                arrivalLobe(b, prev.lobe))
+                arrivalLobe(b, prev.lobe), false)
 #endif
             );
         let sampled: bool = scatterSampled(replay, b, stop, varying);
@@ -1277,7 +1278,7 @@ uint extractBits(uint e, uint offset, uint count) {
         ray.unit_direction = isotropic(stream(r.seed, b));
         prev = scatteredVertex(is_inside);
         sky_pdf = prev.pdf;
-        hit = scene.traverseInstanceBVH(ray, true, POW32);
+        hit = scene.traverseInstanceBVH(ray, true, POW32, false);
     }
     return false;
 }
@@ -1798,7 +1799,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
         }
         // Only occluders in front of the reconnection vertex matter, passing through a point light no other
-        hit = scene.traverseInstanceBVH(ray, !point_light_lighting, select(POW32, distance(reconnection, ray.origin) * 1.001f, replay && b == stop && rc == RC_SURFACE));
+        hit = scene.traverseInstanceBVH(ray, !point_light_lighting, select(POW32, distance(reconnection, ray.origin) * 1.001f, replay && b == stop && rc == RC_SURFACE), true);
         // Reaching the reconnection vertex, it is shaded exactly where the stored path has it
         if (replay && b == stop && rc == RC_SURFACE && hit.instance_index == rc_hit.instance_index && hit.triangle_index == rc_hit.triangle_index) {
             hit.uv = rc_hit.uv;
