@@ -121,8 +121,13 @@ V HookScene_env_map_sample_0(V, uint32_t depth, uint32_t lobe) {
 }
 V HookScene_ambient_0() { return ONE; }
 Vector<uint32_t, 2> HookScene_environmentMapSize_0() { return Vector<uint32_t, 2>(4, 2); }
-Vector<uint32_t, 2> HookScene_environmentCdfSize_0() { return Vector<uint32_t, 2>(5, 2); }
+// Of no luminance distribution (1 x 1) where a furnace sets it, as flex-cuda-pt's world before it has one, its reads
+// counted
+static bool cdf = true;
+static int cdf_reads = 0;
+Vector<uint32_t, 2> HookScene_environmentCdfSize_0() { return Vector<uint32_t, 2>(cdf ? 5 : 1, cdf ? 2 : 1); }
 Vector<float, 4> HookScene_environmentCdf_0(Vector<uint32_t, 2> cell) {
+    cdf_reads++;
     return cell.x == 4 ? Vector<float, 4>((cell.y + 1) / 2.0f, 0.5f, 0, 0)
         : Vector<float, 4>((cell.x + 1) / 4.0f, 0.25f, 0, 0);
 }
@@ -192,6 +197,12 @@ int main() {
     escapes_checked = true;
     furnace("white sphere", camera, center, 0.3f, 1, failed);
     escapes_checked = false;
+    // A sky mapped but of no luminance distribution isn't light sampled: escapes alone, unweighted, bring it all
+    cdf = false, cdf_reads = 0;
+    furnace("white sphere, sky unsampled", camera, center, 0.3f, 1, failed);
+    failed += cdf_reads > 0;
+    printf("sky unsampled: %d reads of its distribution%s\n", cdf_reads, cdf_reads > 0 ? "  FAILED" : "");
+    cdf = true;
     summing = true;
     furnace("white sphere, ReSTIR off", camera, center, 0.3f, 1, failed);
     summing = false;
