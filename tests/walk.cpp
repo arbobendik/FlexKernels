@@ -9,8 +9,8 @@
 // - an index-matched sphere filled with a medium of albedo 1 returns all: 1;
 // - a white sphere inside an index-matched shell returns all: 1, and so does one beside such a shell, whose sky
 //   light passes it to the sphere's light sampling and its escapes alike;
-// - a white sphere seen from inside boundless fog returns all it receives as the fog lets it through, absorbing
-//   alone on the way from the camera: exp(-(e - s) d) over the camera rays' distances d to the sphere;
+// - a white sphere seen from inside a boundless absorber, scattering nothing, returns all it receives as the absorber
+//   lets it through: exp(-e d) over the camera rays' distances d to the sphere;
 // - inside a closed sphere of walls of albedo a emitting e inward: a e / (1 - a), as the walk leaves what the first
 //   hit emits to the consumer.
 // Printed: each furnace's reading against its value
@@ -94,7 +94,6 @@ Medium HookScene_cameraMedium_0(uint32_t* filling) {
     *filling = 0xFFFFFFFFu;
     return camera_fog;
 }
-V HookScene_passMedium_0(uint32_t, V, V, float, uint32_t*, V*) { return ONE; }
 // Varying media: none here
 float HookScene_majorant_0(uint32_t) { return 0; }
 float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t*, V*, V*, V*, V*, uint32_t, uint32_t) {
@@ -157,8 +156,8 @@ int main() {
         false, none}};
     furnace("white sphere beside a shell", V(2.2f, 0, 0.6f), V(0, 0, 0.6f), 0.1f, 1, failed);
     scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
-    camera_fog = {scaled(ONE, 0.2f), scaled(ONE, 0.5f)};
-    furnace("white sphere in fog", camera, center, 0.3f, 1, failed, 0.3f);
+    camera_fog = {ZERO, scaled(ONE, 0.5f)};
+    furnace("white sphere in an absorber", camera, center, 0.3f, 1, failed, 0.5f);
     camera_fog = none;
     scene = {{center, 1, true, {lambert(0.5f, 1)}, 1, 1, false, none}};
     furnace("inside walls of albedo 0.5", center, V(0, 0, 1), 3.14159265f, 1, failed);
