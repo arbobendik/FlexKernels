@@ -74,7 +74,6 @@ Medium HookScene_cameraMedium_0(uint32_t* filling) {
     *filling = 0xFFFFFFFFu;
     return camera_fog;
 }
-V HookScene_passMedium_0(uint32_t, V, V, float, uint32_t*, V*) { return ONE; }
 float HookScene_majorant_0(uint32_t) { return 0; }
 float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t*, V*, V*, V*, V*, uint32_t, uint32_t) {
     return 2 * distance;
@@ -140,8 +139,8 @@ int main() {
         false, none}};
     furnace("white sphere beside a shell", V(2.2f, 0, 0.6f), V(0, 0, 0.6f), 0.1f, 1, failed);
     scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
-    camera_fog = {scaled(ONE, 0.2f), scaled(ONE, 0.5f)};
-    furnace("white sphere in fog", camera, center, 0.3f, 1, failed, 0.3f);
+    camera_fog = {ZERO, scaled(ONE, 0.5f)};
+    furnace("white sphere in an absorber", camera, center, 0.3f, 1, failed, 0.5f);
     camera_fog = none;
     scene = {{center, 1, true, {lambert(0.5f, 1)}, 1, 1, false, none}};
     furnace("inside walls of albedo 0.5", center, V(0, 0, 1), 3.14159265f, 1, failed);
