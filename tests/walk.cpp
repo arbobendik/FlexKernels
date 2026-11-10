@@ -15,7 +15,9 @@
 //   hit emits to the consumer;
 // - from the centre of a white fog sphere of extinction s and radius 1, down, under a black sky, alone (bounces 0),
 //   homogeneous or varying, ReSTIR on or off: a sun of irradiance 1 along -x scattered in on the way, (s / 4 pi)
-//   int_0^1 exp(-s (t + sqrt(1 - t^2))) dt, and walls emitting 1 inward seen through it as the walk's glow, exp(-s).
+//   int_0^1 exp(-s (t + sqrt(1 - t^2))) dt, and walls emitting 1 inward seen through it as the walk's glow, exp(-s);
+// - paths of it that scattered on the camera's way, shifted into another pixel's domain and back: their integrand
+//   exactly, at Jacobian 1 both ways.
 // Printed: each furnace's reading against its value
 #include <stdio.h>
 #include <math.h>
@@ -206,5 +208,33 @@ int main() {
             furnace(name, center, V(0, 0, -1), 0, exp(-double(sigma)), failed);
         }
     }
+    // Replay in the fog: paths the sun reaches after scattering on the camera's way, shifted into a pixel 0.1 off and
+    // back, read their own integrand again at Jacobian 1 both ways, the shift the identity on their random numbers
+    sun = true, varying = summing = false, camera_fog = {scaled(ONE, 0.5f), scaled(ONE, 0.5f)};
+    scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
+    const auto domain = [&](V dir) {
+        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{center, dir}, true, 1e30f);
+        return Domain{center, center + scaled(dir, hit.distance), hit};
+    };
+    const Domain here = domain(V(0, 0, -1)), there = domain(V(sinf(0.1f), 0, -cosf(0.1f)));
+    int scattered = 0, kept = 0;
+    for (int i = 0; i < 4096; i++) {
+        Reservoir path = {};
+        path.seed = hash(3 * i + 2);
+        Selection sel = {};
+        sel.random_state = hash(3 * i + 3);
+        walk_hook(here, path, false, 1, &sel);
+        const Reservoir r = finalize(sel, 1);
+        const Shift to = shift_hook(there, r);
+        Reservoir moved = r;
+        moved.f = to.f;
+        const Shift back = shift_hook(here, moved);
+        scattered += r.w > 0;
+        kept += r.w > 0 && to.f.x > 0 && to.jac == 1 && back.jac == 1 && back.f.x == r.f.x && back.f.z == r.f.z;
+    }
+    const bool replayed = scattered > 256 && kept == scattered;
+    failed += !replayed;
+    printf("replay in fog: %d of %d scattered paths there and back exactly%s\n", kept, scattered,
+        replayed ? "" : "  FAILED");
     return failed;
 }
