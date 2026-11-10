@@ -627,7 +627,7 @@ public interface IScene {
     public float3 shadowTransmittance(Ray ray, float l);
     public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
-    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe);
+    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe, float3 dir);
     public uint layers(Hit hit);
     public float majorant(uint filling);
     public Medium cameraMedium(float3 direction, float distance, out uint filling);
@@ -708,8 +708,8 @@ public struct HookScene : IScene {
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
-    __target_intrinsic(cuda, "fcptSurfaceAtPath($0, $1, $2, $3, $4, $5, $6)")
-    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe);
+    __target_intrinsic(cuda, "fcptSurfaceAtPath($0, $1, $2, $3, $4, $5, $6, $7)")
+    public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe, float3 dir);
     __target_intrinsic(wgsl, "1u")
     __target_intrinsic(cuda, "fcptLayers($0)")
     public uint layers(Hit hit);
@@ -1410,7 +1410,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         var geometry_density: float = 0.0f;
         if (!point_light_lighting) {
             if (fullWalk()) {
-                surface = scene.surfaceAtPath(hit, ray.origin, stream(r.seed, b), width, layer, b, arrivalLobe(b, prev.lobe));
+                surface = scene.surfaceAtPath(hit, ray.origin, stream(r.seed, b), width, layer, b, arrivalLobe(b, prev.lobe), ray.unit_direction);
             } else {
                 surface = scene.surfaceAt(hit, ray.origin, stream(r.seed, b));
             }
