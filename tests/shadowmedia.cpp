@@ -6,9 +6,12 @@
 using V = Vector<float, 3>;
 static V got_extinction(0, 0, 0);
 static uint32_t got_filling, got_state, got_depth, got_lobe;
+static float got_length, got_width;
+static bool got_surface;
 V HookScene_shadowTransmittanceIn_0(Ray, float, V extinction, uint32_t filling, uint32_t state, uint32_t depth,
-    uint32_t lobe, bool) {
+    uint32_t lobe, bool surface, float length, float width) {
     got_extinction = extinction, got_filling = filling, got_state = state, got_depth = depth, got_lobe = lobe;
+    got_surface = surface, got_length = length, got_width = width;
     return V(1, 1, 1);
 }
 
@@ -27,7 +30,8 @@ int main() {
                         const V side(tilt * facing, 0, facing * sqrtf(1 - tilt * tilt));
                         Surface faced = {up, g, 0, {ONE, ZERO, 1, 0, 0, 1, ZERO, ONE, 1}, false, 0, 1, encloses,
                             {ONE, extinct}, FILLS};
-                        ShadowContext context = shadowContext_0(&faced, turned, side, carried, AIR, in, 5, 2);
+                        ShadowContext context = shadowContext_0(&faced, turned, side, carried, AIR, in, 5, 2, 0.75f,
+                            0.125f);
                         lightTransmittance_0(ZERO, light, 0, light, &context, 77);
                         V ext[2] = {carried, carried};
                         unsigned fill[2] = {AIR, AIR};
@@ -38,7 +42,8 @@ int main() {
                         }
                         const unsigned i = dot_0(side, light) > 0;
                         cases++, differ += got_extinction.x != ext[i].x || got_extinction.z != ext[i].z
-                            || got_filling != fill[i] || got_state != 77 || got_depth != 5 || got_lobe != 2;
+                            || got_filling != fill[i] || got_state != 77 || got_depth != 5 || got_lobe != 2
+                            || !got_surface || got_length != 0.75f || got_width != 0.125f;
                     }
     printf("shadow media: %d of %d hooks handed another medium than flex-cuda-pt's%s\n", differ, cases,
         differ ? "  FAILED" : "");
