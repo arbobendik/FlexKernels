@@ -15,8 +15,9 @@ struct TestScene : IScene {
         return Hit(ray.origin.xy, ray.unit_direction.x > 0.0f ? 0u : UINT_MAX, uint(consider_point_lights) + uint(surface), 0u, max_len * 0.5f);
     }
     float3 shadowTransmittance(Ray ray, float l) { return float3(l > ray.origin.x ? 0.0f : 1.0f, 1.0f, 0.5f); }
-    float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface) {
-        return shadowTransmittance(ray, l) * exp(- extinction * l) * float(filling + random_state + depth + lobe + uint(surface));
+    float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width) {
+        return shadowTransmittance(ray, l) * exp(- extinction * l * length)
+            * float(filling + random_state + depth + lobe + uint(surface)) * width;
     }
     Surface surfaceAt(Hit hit, float3 origin, uint init_random_state) {
         return Surface(normalize(origin), float3(0.0f, 0.0f, 1.0f), 1e-4f, Material(origin, float3(hit.uv, 0.0f), 0.5f,
@@ -27,9 +28,9 @@ struct TestScene : IScene {
     }
     uint layers(Hit hit) { return hit.triangle_index % 3u; }
     float majorant(uint filling) { return float(filling) * 0.5f; }
-    Medium cameraMedium(out uint filling) {
+    Medium cameraMedium(float3 direction, float distance, out uint filling) {
         filling = 7u;
-        return Medium(float3(0.25f), float3(0.5f));
+        return Medium(float3(0.25f) * direction, float3(0.5f * distance));
     }
     float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe) {
         random_state += depth + lobe;
