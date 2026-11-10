@@ -11,6 +11,11 @@ static V scaled(V a, float s) { return V(a.x * s, a.y * s, a.z * s); }
 struct Shape { V center; float radius; bool inward; Material layer[2]; unsigned layers; float coverage; bool encloses;
     Medium volume; };
 static std::vector<Shape> scene;
+static V handed_direction;
+static float handed_distance;
+static V segment_start;
+static bool checking = false;
+static int segments = 0, misfits = 0;
 static Material lambert(float albedo, float emits) {
     return Material{scaled(ONE, albedo), scaled(ONE, emits), 1, 0, 0, 1, ONE, ONE, 1, ZERO, ZERO, 0.5f, 0, 0, ZERO};
 }
@@ -66,7 +71,9 @@ static V shadowThrough(Ray ray, float l, bool surface) {
 }
 V HookScene_shadowTransmittance_0(Ray ray, float l) { return shadowThrough(ray, l, true); }
 V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t,
-    bool surface) {
+    bool surface, float length, float) {
+    const V from = ray.origin - segment_start;
+    if (checking && !surface) segments++, misfits += fabsf(sqrtf(dotv(from, from)) - length) > 1e-6f;
     const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface).distance, l);
     const V through = shadowThrough(ray, l, surface);
     return V(through.x * expf(-extinction.x * inside), through.y * expf(-extinction.y * inside),
@@ -85,7 +92,8 @@ Vector<float, 4> HookScene_environmentCdf_0(Vector<uint32_t, 2> cell) {
 }
 static Medium camera_fog = {ZERO, ZERO};
 static bool varying = false;
-Medium HookScene_cameraMedium_0(uint32_t* filling) {
+Medium HookScene_cameraMedium_0(V direction, float distance, uint32_t* filling) {
+    handed_direction = direction, handed_distance = distance;
     *filling = varying ? 0 : 0xFFFFFFFFu;
     return camera_fog;
 }
@@ -121,7 +129,10 @@ static void furnace(const char* name, V camera, V aim, float angle, double truth
         Selection sel = {};
         sel.random_state = hash(3 * i + 3);
         sel.sums = summing;
+        segment_start = camera;
         walk_hook(dom, path, false, 1, &sel);
+        misfits += dotv(handed_direction, dir) < 1 - 1e-6f
+            || fabsf(handed_distance - hit.distance) > 1e-5f * hit.distance;
         const double y = sel.color.x + (seen ? sel.glow.x : 0);
         through += exp(-absorbs * hit.distance);
         sum += y, sum2 += y * y;
@@ -190,7 +201,9 @@ int main() {
     bounces = 0;
     camera_fog = {scaled(ONE, 10), scaled(ONE, 10)};
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
+    checking = true;
     furnace("sun in fog by its face", V(1 - 0.5e-4f, 0, 0), V(1 - 0.5e-4f, 0, -1), 0, 0.00757074921909657, failed);
+    checking = false;
     sun = true, varying = summing = false, camera_fog = {scaled(ONE, 0.5f), scaled(ONE, 0.5f)};
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
     const auto domain = [&](V dir) {
@@ -217,5 +230,8 @@ int main() {
     failed += !replayed;
     printf("replay in fog: %d of %d scattered paths there and back exactly%s\n", kept, scattered,
         replayed ? "" : "  FAILED");
+    failed += misfits > 0 || segments == 0;
+    printf("handed segments: %d misfits, %d medium vertices checked%s\n", misfits, segments,
+        misfits > 0 || segments == 0 ? "  FAILED" : "");
     return failed;
 }
