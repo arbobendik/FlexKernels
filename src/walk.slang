@@ -215,8 +215,8 @@ func leavesInFront(face: float3, dir: float3, side_n: float3, g: float3) -> bool
 
 #ifdef FK_FCPT_WALK
 // What flex-cuda-pt's shadow segments read of the vertex they leave: the extinction and varying medium's key on either
-// side of the faced normal, the side normal that picks one toward the light, and the vertex's depth and arrival lobe
-// for the occluders' Light Path inputs
+// side of the faced normal, the side normal that picks one toward the light, the vertex's depth and arrival lobe
+// for the occluders' Light Path inputs, and whether it is a surface's, as the hooks take it
 __extern_cpp public struct ShadowContext {
     __extern_cpp public float3 extinction_behind;
     __extern_cpp public float3 extinction_front;
@@ -224,15 +224,16 @@ __extern_cpp public struct ShadowContext {
     __extern_cpp public float3 side;
     __extern_cpp public uint depth;
     __extern_cpp public uint lobe;
+    __extern_cpp public bool surface;
 }
 func shadowContext(surface: Surface, turned: bool, side_n: float3, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint) -> ShadowContext {
     var faced: Surface = surface;
     faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
     let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction), filling, dir);
     // The face's sides as the faced normal sees them
-    var context: ShadowContext = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, side_n, depth, lobe);
+    var context: ShadowContext = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, side_n, depth, lobe, true);
     if (turned) {
-        context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, side_n, depth, lobe);
+        context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, side_n, depth, lobe, true);
     }
     return context;
 }
@@ -740,6 +741,8 @@ __extern_cpp public struct Light {
 // Target plumbing: the scene the walk, light sampling and the environment reach, each consumer's own. Where FlexLight's
 // functions of the same names exist, they are the hooks; the rest read FlexLight's buffers where its layout and
 // flex-cuda-pt's differ:
+// traverseInstanceBVH's and shadowTransmittanceIn's surface whether the ray leaves a surface, which the consumer starts
+// it past by its own margin, or a medium vertex, which it starts right at, so it meets an exit face nearer than that;
 // lightNode(n) the leaf texel of node n of the light BVH (x zero for inner nodes, two for point lights, y the light or
 // instance, z the triangle), lightSecond(n) its second child, light(i) point light i, triangleOffset(i) the first
 // prototype triangle of instance i, lightTrail(j) the texel of the trail of slot j (x, y its bits) and
@@ -754,9 +757,9 @@ __extern_cpp public struct Light {
 // currentDomain(p, dom) the primary hit of p this frame, the consumer's own, the passes' uniforms, the stores of the
 // reservoirs of each round, of last frame's uv and of the shifts and duplication map, and the color written
 public interface IScene {
-    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
+    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface);
     public float3 shadowTransmittance(Ray ray, float l);
-    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe);
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
     public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe);
     public uint layers(Hit hit);
@@ -829,16 +832,16 @@ public interface IScene {
 // buffer it stands for in its shader, and flex-cuda-pt's function of the name its adapter defines, in place of a call
 public struct HookScene : IScene {
     __target_intrinsic(wgsl, "traverseInstanceBVH($0, $1, $2)")
-    __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2)")
-    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len);
+    __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2, $3)")
+    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface);
     __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
     __target_intrinsic(cuda, "fcptShadowTransmittance($0, $1)")
     public float3 shadowTransmittance(Ray ray, float l);
     // Through the media from the start's side on, ratio tracking a varying one with the light pick's random state;
     // occluders shaded for a shadow ray a bounce past the vertex. flex-cuda-pt's alone
     __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
-    __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6)")
-    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe);
+    __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6, $7)")
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface);
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
@@ -1060,7 +1063,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
 #ifdef FK_FCPT_WALK
     // From the medium on the side the light is, from the vertex, as flex-cuda-pt's sampleLight
     let front: bool = dot(context.side, light_dir + geometry_offset * smooth_n) > 0.0f;
-    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe);
+    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe, context.surface);
 #else
     return scene.shadowTransmittance(light_ray, shadowLength(light_dir));
 #endif
@@ -1335,7 +1338,7 @@ uint extractBits(uint e, uint offset, uint count) {
         let light: TreeSample = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
             , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b,
-                arrivalLobe(b, prev.lobe))
+                arrivalLobe(b, prev.lobe), false)
 #endif
             );
         let sampled: bool = scatterSampled(replay, b, stop, varying);
@@ -1369,7 +1372,7 @@ uint extractBits(uint e, uint offset, uint count) {
         ray.unit_direction = isotropic(stream(r.seed, b));
         prev = scatteredVertex(is_inside);
         sky_pdf = prev.pdf;
-        hit = scene.traverseInstanceBVH(ray, true, POW32);
+        hit = scene.traverseInstanceBVH(ray, true, POW32, false);
     }
     return false;
 }
@@ -1855,7 +1858,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
         }
         // Only occluders in front of the reconnection vertex matter, passing through a point light no other
-        hit = scene.traverseInstanceBVH(ray, !point_light_lighting, select(POW32, distance(reconnection, ray.origin) * 1.001f, replay && b == stop && rc == RC_SURFACE));
+        hit = scene.traverseInstanceBVH(ray, !point_light_lighting, select(POW32, distance(reconnection, ray.origin) * 1.001f, replay && b == stop && rc == RC_SURFACE), true);
         // Reaching the reconnection vertex, it is shaded exactly where the stored path has it
         if (replay && b == stop && rc == RC_SURFACE && hit.instance_index == rc_hit.instance_index && hit.triangle_index == rc_hit.triangle_index) {
             hit.uv = rc_hit.uv;

@@ -12,7 +12,7 @@ using V = Vector<float, 3>;
 static V got_extinction(0, 0, 0);
 static uint32_t got_filling, got_state, got_depth, got_lobe;
 V HookScene_shadowTransmittanceIn_0(Ray, float, V extinction, uint32_t filling, uint32_t state, uint32_t depth,
-    uint32_t lobe) {
+    uint32_t lobe, bool) {
     got_extinction = extinction, got_filling = filling, got_state = state, got_depth = depth, got_lobe = lobe;
     return V(1, 1, 1);
 }
