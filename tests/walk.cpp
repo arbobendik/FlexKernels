@@ -143,6 +143,35 @@ int main() {
     furnace("white sheen, ReSTIR off", camera, center, 0.3f, 1, failed);
     summing = false;
     furnace("white sheen", camera, center, 0.3f, 1, failed);
+    {
+        // Paths leaving the sphere by its sheen lobe (walk.slang's PATH_LOBE_PREV at bit 15, LOBE_SHEEN_VELVET 4) that a
+        // neighbouring primary hit takes, shifted there and back up to the environment reconnection's rounding
+        const auto seen = [&](V dir) {
+            const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, dir}, true, 1e30f);
+            return Domain{camera, camera + scaled(dir, hit.distance), hit};
+        };
+        const Domain near = seen(V(0, 0, -1)), off = seen(V(sinf(0.02f), 0, -cosf(0.02f)));
+        int sheened = 0, back = 0;
+        for (int i = 0; i < 16384; i++) {
+            Reservoir path = {};
+            path.seed = hash(3 * i + 2);
+            Selection sel = {};
+            sel.random_state = hash(3 * i + 3);
+            walk_hook(near, path, false, 1, &sel);
+            const Reservoir r = finalize(sel, 1);
+            if (!(r.w > 0) || (r.path >> 15 & 7u) != 4u) continue;
+            const Shift to = shift_hook(off, r);
+            if (!(to.f.x > 0)) continue;
+            Reservoir moved = r;
+            moved.f = to.f;
+            const Shift home = shift_hook(near, moved);
+            sheened++, back += fabsf(home.f.x - r.f.x) <= 1e-4f * r.f.x;
+        }
+        const bool kept = sheened > 256 && back == sheened;
+        failed += !kept;
+        printf("replay of the sheen lobe: %d of %d paths there and back within 1e-4%s\n", back, sheened,
+            kept ? "" : "  FAILED");
+    }
     scene[0].layer[0] = lambert(1, 0);
     scene[0].coverage = 0.3f;
     furnace("white sphere covered at 0.3", camera, center, 0.3f, 1, failed);
@@ -183,5 +212,31 @@ int main() {
             furnace(name, center, V(0, 0, -1), 0, exp(-double(sigma)), failed);
         }
     }
+    sun = true, varying = summing = false, camera_fog = {scaled(ONE, 0.5f), scaled(ONE, 0.5f)};
+    scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
+    const auto domain = [&](V dir) {
+        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{center, dir}, true, 1e30f);
+        return Domain{center, center + scaled(dir, hit.distance), hit};
+    };
+    const Domain here = domain(V(0, 0, -1)), there = domain(V(sinf(0.1f), 0, -cosf(0.1f)));
+    int scattered = 0, kept = 0;
+    for (int i = 0; i < 4096; i++) {
+        Reservoir path = {};
+        path.seed = hash(3 * i + 2);
+        Selection sel = {};
+        sel.random_state = hash(3 * i + 3);
+        walk_hook(here, path, false, 1, &sel);
+        const Reservoir r = finalize(sel, 1);
+        const Shift to = shift_hook(there, r);
+        Reservoir moved = r;
+        moved.f = to.f;
+        const Shift back = shift_hook(here, moved);
+        scattered += r.w > 0;
+        kept += r.w > 0 && to.f.x > 0 && to.jac == 1 && back.jac == 1 && back.f.x == r.f.x && back.f.z == r.f.z;
+    }
+    const bool replayed = scattered > 256 && kept == scattered;
+    failed += !replayed;
+    printf("replay in fog: %d of %d scattered paths there and back exactly%s\n", kept, scattered,
+        replayed ? "" : "  FAILED");
     return failed;
 }
