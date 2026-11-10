@@ -17,7 +17,7 @@
 //   homogeneous or varying, ReSTIR on or off: a sun of irradiance 1 along -x scattered in on the way, (s / 4 pi)
 //   int_0^1 exp(-s (t + sqrt(1 - t^2))) dt, and walls emitting 1 inward seen through it as the walk's glow, exp(-s);
 // - paths of it that scattered on the camera's way, shifted into another pixel's domain and back: their integrand
-//   exactly, at Jacobian 1 both ways.
+//   exactly, at Jacobian 1 both ways; and with a bounce more, single and double scattering.
 // Printed: each furnace's reading against its value
 #include <stdio.h>
 #include <math.h>
@@ -208,6 +208,13 @@ int main() {
             furnace(name, center, V(0, 0, -1), 0, exp(-double(sigma)), failed);
         }
     }
+    // With a bounce more, single and double scattering, as light sampled at scattering vertices, a delta light the
+    // phase function never samples, keeps its whole weight: 0.0123111 + 0.001953, flexkernels' Monte Carlo the double
+    bounces = 1, sun = true, seen = false, varying = summing = false;
+    camera_fog = {scaled(ONE, 0.2f), scaled(ONE, 0.2f)};
+    scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
+    furnace("sun in fog 0.2, bounces 1", center, V(0, 0, -1), 0, 0.014264, failed);
+    bounces = 0;
     // Replay in the fog: paths the sun reaches after scattering on the camera's way, shifted into a pixel 0.1 off and
     // back, read their own integrand again at Jacobian 1 both ways, the shift the identity on their random numbers
     sun = true, varying = summing = false, camera_fog = {scaled(ONE, 0.5f), scaled(ONE, 0.5f)};
