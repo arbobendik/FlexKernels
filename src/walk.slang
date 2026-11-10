@@ -1114,7 +1114,13 @@ func emissionWeight<S: IScene>(scene: S, vertex: NEEVertex, hit: Hit, light_poin
 #endif
 
 #ifdef FK_RESTIR
+// Whether the environment is light sampled: a map with its luminance distribution
 func environmentMapped<S: IScene>(scene: S) -> bool {
+#ifdef FK_FCPT_WALK
+    if (!(scene.environmentCdfSize().x > 1u && scene.environmentCdfSize().y > 1u)) {
+        return false;
+    }
+#endif
     return scene.environmentMapSize().x > 1u && scene.environmentMapSize().y > 1u;
 }
 
