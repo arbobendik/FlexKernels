@@ -49,6 +49,9 @@ Surface HookScene_surfaceAtPath_0(Hit hit, V origin, uint32_t state, float, uint
 Surface HookScene_surfaceAt_0(Hit hit, V origin, uint32_t state) {
     return HookScene_surfaceAtPath_0(hit, origin, state, 0, 0, 1, 0, ZERO);
 }
+Surface HookScene_lightSurfaceAt_0(Hit hit, V point, uint32_t state, V, uint32_t, float) {
+    return HookScene_surfaceAt_0(hit, point, state);
+}
 uint32_t HookScene_layers_0(Hit hit) { return scene[hit.instance_index].layers; }
 // Sun: irradiance 1 along -x, a delta light 1e4 along +x of intensity 1e8
 static bool sun = false;
