@@ -204,15 +204,17 @@ __extern_cpp public struct ShadowContext {
     __extern_cpp public uint depth;
     __extern_cpp public uint lobe;
     __extern_cpp public bool surface;
+    __extern_cpp public float length;
+    __extern_cpp public float width;
 }
-func shadowContext(surface: Surface, turned: bool, side_n: float3, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint) -> ShadowContext {
+func shadowContext(surface: Surface, turned: bool, side_n: float3, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint, length: float, width: float) -> ShadowContext {
     var faced: Surface = surface;
     faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
     let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction), filling, dir);
     // The face's sides as the faced normal sees them
-    var context: ShadowContext = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, side_n, depth, lobe, true);
+    var context: ShadowContext = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, side_n, depth, lobe, true, length, width);
     if (turned) {
-        context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, side_n, depth, lobe, true);
+        context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, side_n, depth, lobe, true, length, width);
     }
     return context;
 }
@@ -683,12 +685,12 @@ __extern_cpp public struct Light {
 public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface);
     public float3 shadowTransmittance(Ray ray, float l);
-    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface);
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
     public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe);
     public uint layers(Hit hit);
     public float majorant(uint filling);
-    public Medium cameraMedium(out uint filling);
+    public Medium cameraMedium(float3 direction, float distance, out uint filling);
     public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe);
     public float3 hitPosition(Hit hit);
     public float3x3 worldTriangle(uint instance_index, uint triangle_index);
@@ -760,8 +762,8 @@ public struct HookScene : IScene {
     public float3 shadowTransmittance(Ray ray, float l);
     // Shadow ray transmittance through media and occluders
     __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
-    __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6, $7)")
-    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface);
+    __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6, $7, $8, $9)")
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width);
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
@@ -776,8 +778,8 @@ public struct HookScene : IScene {
     public float majorant(uint filling);
     // Medium the camera is in, its varying material key or UINT_MAX
     __target_intrinsic(wgsl, "Medium()")
-    __target_intrinsic(cuda, "fcptCameraMedium($0)")
-    public Medium cameraMedium(out uint filling);
+    __target_intrinsic(cuda, "fcptCameraMedium($0, $1, $2)")
+    public Medium cameraMedium(float3 direction, float distance, out uint filling);
     __target_intrinsic(wgsl, "0.0f")
     __target_intrinsic(cuda, "fcptTrackMedium($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
     public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe);
@@ -971,7 +973,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
 #ifdef FK_FCPT_WALK
     // Medium on the side of the light
     let front: bool = dot(context.side, light_dir + geometry_offset * smooth_n) > 0.0f;
-    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe, context.surface);
+    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe, context.surface, context.length, context.width);
 #else
     return scene.shadowTransmittance(light_ray, shadowLength(light_dir));
 #endif
@@ -1242,7 +1244,7 @@ uint extractBits(uint e, uint offset, uint count) {
         let light: TreeSample = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
             , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b,
-                arrivalLobe(b, prev.lobe), false)
+                arrivalLobe(b, prev.lobe), false, along, width)
 #endif
             );
         let sampled: bool = scatterSampled(replay, b, stop, varying);
@@ -1390,11 +1392,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     // Camera medium: scattering vertices count from b = 0, the camera at UINT_MAX
     var b: uint = UINT_MAX;
     if (mediaUsed()) {
-        let camera: Medium = scene.cameraMedium(filling);
-        scatter_in = camera.scatter;
-        extinction_in = camera.extinction;
         ray.origin = dom.x0;
         hit.distance = length(dom.x1 - dom.x0);
+        let camera: Medium = scene.cameraMedium(ray.unit_direction, hit.distance, filling);
+        scatter_in = camera.scatter;
+        extinction_in = camera.extinction;
         if (coneUsed()) {
             width = coneOf(dom).x;
         }
@@ -1499,7 +1501,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (k == end && end_type == END_NEE) {
                 let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
-                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe))
+                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width)
 #endif
                     );
                 if (!nee || !(rgb_to_greyscale(light.radiance) > 0.0f)) {
@@ -1527,7 +1529,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 // random numbers pick again (unit Jacobian)
                 let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
-                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe))
+                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width)
 #endif
                     );
                 if (!(rgb_to_greyscale(light.radiance) > 0.0f)) {
@@ -1563,7 +1565,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (nee) {
                 let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
-                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe))
+                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width)
 #endif
                     );
                 let f: float3 = throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state);
