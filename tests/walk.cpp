@@ -111,7 +111,14 @@ static uint32_t bounces = 64;
 uint32_t HookScene_maxBounces_0() { return bounces; }
 // The environment: 1 everywhere, or black where a furnace sets it, its 4 x 2 cells equally likely
 static float sky = 1;
-V HookScene_env_map_sample_0(V) { return scaled(ONE, sky); }
+// The environment's Light Path context where a furnace checks it: off a convex white sphere each path's escape leaves
+// its one vertex, of depth 0, by the diffuse lobe (0); the sky's light samples hand none (0 and LOBE_NONE, 3)
+static bool escapes_checked = false;
+static int escapes = 0, escape_misfits = 0;
+V HookScene_env_map_sample_0(V, uint32_t depth, uint32_t lobe) {
+    if (escapes_checked) escapes += depth == 0 && lobe == 0, escape_misfits += depth != 0 || lobe != 0 && lobe != 3;
+    return scaled(ONE, sky);
+}
 V HookScene_ambient_0() { return ONE; }
 Vector<uint32_t, 2> HookScene_environmentMapSize_0() { return Vector<uint32_t, 2>(4, 2); }
 Vector<uint32_t, 2> HookScene_environmentCdfSize_0() { return Vector<uint32_t, 2>(5, 2); }
@@ -182,7 +189,9 @@ int main() {
     const V camera(0, 0, 3), center(0, 0, 0);
     const Medium none = {ZERO, ZERO}, fog = {scaled(ONE, 2), scaled(ONE, 2)};
     scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
+    escapes_checked = true;
     furnace("white sphere", camera, center, 0.3f, 1, failed);
+    escapes_checked = false;
     summing = true;
     furnace("white sphere, ReSTIR off", camera, center, 0.3f, 1, failed);
     summing = false;
@@ -270,6 +279,9 @@ int main() {
     failed += !replayed;
     printf("replay in fog: %d of %d scattered paths there and back exactly%s\n", kept, scattered,
         replayed ? "" : "  FAILED");
+    failed += escapes != 1 << 17 || escape_misfits > 0;
+    printf("escape context: %d of %d escapes off the sphere's vertex, %d misfits%s\n", escapes, 1 << 17, escape_misfits,
+        escapes != 1 << 17 || escape_misfits > 0 ? "  FAILED" : "");
     // Every walk handed the camera ray's direction and distance, and each medium vertex its segment's length
     failed += misfits > 0 || segments == 0;
     printf("handed segments: %d misfits, %d medium vertices checked%s\n", misfits, segments,
