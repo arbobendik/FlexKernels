@@ -780,7 +780,7 @@ public interface IScene {
     public Light light(uint index);
     public uint triangleOffset(uint instance_index);
     public float3 calculatePointLightContrib(uint index);
-    public float3 env_map_sample(float3 dir);
+    public float3 env_map_sample(float3 dir, uint depth, uint lobe);
     public float4 environmentCdf(uint2 cell);
     public uint2 environmentCdfSize();
     public uint2 environmentMapSize();
@@ -908,8 +908,8 @@ public struct HookScene : IScene {
     __target_intrinsic(cuda, "fcptCalculatePointLightContrib($0)")
     public float3 calculatePointLightContrib(uint index);
     __target_intrinsic(wgsl, "env_map_sample($0)")
-    __target_intrinsic(cuda, "fcptEnvMapSample($0)")
-    public float3 env_map_sample(float3 dir);
+    __target_intrinsic(cuda, "fcptEnvMapSample($0, $1, $2)")
+    public float3 env_map_sample(float3 dir, uint depth, uint lobe);
     __target_intrinsic(wgsl, "textureLoad(environment_cdf, $0, 0)")
     __target_intrinsic(cuda, "fcptEnvironmentCdf($0)")
     public float4 environmentCdf(uint2 cell);
@@ -1234,7 +1234,8 @@ func searchCDF<S: IScene>(scene: S, start: uint2, step: uint2, count: uint, u: f
 func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, side_n: float3, is_inside: bool, dir: float3) -> float3 {
     let inside: bool = is_inside != wrongSide(is_inside, false, dir, side_n);
     let ray: Ray = Ray(origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, inside), dir);
-    return scene.env_map_sample(dir) * scene.shadowTransmittance(ray, POW32);
+    // Of no Light Path context: flex-cuda-pt samples no sky before its world has a luminance CDF
+    return scene.env_map_sample(dir, 0u, LOBE_NONE) * scene.shadowTransmittance(ray, POW32);
 }
 
 // Next event estimation toward the environment map, drawing a direction by its luminance. lobe_state is the random state of skyBSDF.
@@ -1274,9 +1275,18 @@ func escapeWeight<S: IScene>(scene: S, pdf: float, dir: float3) -> float {
     return pdf / (pdf + environmentPdf(scene, dir));
 }
 
-func environment<S: IScene>(scene: S, dir: float3) -> float3 {
+// Toward dir, for flex-cuda-pt's world shader from the depth and lobe of the vertex the ray left
+func environment<S: IScene>(scene: S, dir: float3
+#ifdef FK_FCPT_WALK
+    , depth: uint, lobe: uint
+#endif
+    ) -> float3 {
     if (scene.environmentMapSize().x > 1u && scene.environmentMapSize().y > 1u) {
-        return scene.env_map_sample(dir);
+#ifdef FK_FCPT_WALK
+        return scene.env_map_sample(dir, depth, lobe);
+#else
+        return scene.env_map_sample(dir, 0u, LOBE_NONE);
+#endif
     }
     // If no environment map is present, use ambient color
     return scene.ambient();
@@ -1392,7 +1402,11 @@ uint extractBits(uint e, uint offset, uint count) {
     if (hit.instance_index == UINT_MAX) {
         // BSDF sampled escapes share the environment with its next event estimation
         let weight: float = escapeWeight(scene, select(0.0f, sky_pdf, !nee_vertex.none), ray.unit_direction);
-        let f: float3 = throughput * environment(scene, ray.unit_direction);
+        let f: float3 = throughput * environment(scene, ray.unit_direction
+#ifdef FK_FCPT_WALK
+            , b, prev.lobe
+#endif
+            );
         if (replay) {
             if (b == stop && rc == RC_ENV) {
                 ended = Shift(f * weight / r.jac, density / r.jac);
