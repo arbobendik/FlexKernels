@@ -1339,7 +1339,10 @@ uint extractBits(uint e, uint offset, uint count) {
 #endif
             );
         let sampled: bool = scatterSampled(replay, b, stop, varying);
-        let f: float3 = select(float3(0.0f), throughput * light.radiance * (0.25f * INV_PI * powerHeuristic(light.density, select(0.0f, 0.25f * INV_PI, b < scene.maxBounces()))), sampled);
+        // A delta light, of no density, the phase function never samples: its light sample weighs fully
+        let competing: float = select(0.0f, 0.25f * INV_PI, b < scene.maxBounces() && light.density > 0.0f);
+        let f: float3 = select(float3(0.0f), throughput * light.radiance * (0.25f * INV_PI
+            * powerHeuristic(light.density, competing)), sampled);
         if (replay && b == stop) {
             if (rc == RC_LIGHT && rgb_to_greyscale(f) > 0.0f) {
                 ended = Shift(f, 1.0f);
