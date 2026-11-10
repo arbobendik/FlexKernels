@@ -212,6 +212,12 @@ int main() {
             furnace(name, center, V(0, 0, -1), 0, exp(-double(sigma)), failed);
         }
     }
+    // Single and double scattering: 0.0123111 + 0.001953, the double by Monte Carlo
+    bounces = 1, sun = true, seen = false, varying = summing = false;
+    camera_fog = {scaled(ONE, 0.2f), scaled(ONE, 0.2f)};
+    scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
+    furnace("sun in fog 0.2, bounces 1", center, V(0, 0, -1), 0, 0.014264, failed);
+    bounces = 0;
     sun = true, varying = summing = false, camera_fog = {scaled(ONE, 0.5f), scaled(ONE, 0.5f)};
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
     const auto domain = [&](V dir) {
