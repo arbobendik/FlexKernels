@@ -687,6 +687,7 @@ public interface IScene {
     public float3 shadowTransmittance(Ray ray, float l);
     public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
+    public Surface lightSurfaceAt(Hit hit, float3 point, uint init_random_state, float3 dir, uint depth, float length);
     public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe, float3 dir);
     public uint layers(Hit hit);
     public float majorant(uint filling);
@@ -767,6 +768,9 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
+    __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
+    __target_intrinsic(cuda, "fcptLightSurfaceAt($0, $1, $2, $3, $4, $5)")
+    public Surface lightSurfaceAt(Hit hit, float3 point, uint init_random_state, float3 dir, uint depth, float length);
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
     __target_intrinsic(cuda, "fcptSurfaceAtPath($0, $1, $2, $3, $4, $5, $6, $7)")
     public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe, float3 dir);
@@ -1043,7 +1047,12 @@ public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float
         } else if (!(dot(smooth_n, point - origin) > 0.0f)) {
             return sample;
         }
+#ifdef FK_FCPT_WALK
+        let surface: Surface = scene.lightSurfaceAt(Hit(uv, leaf.y, triangle_index, 0u, 0.0f), point, random_along.state,
+            normalize(point - start), context.depth, length(point - origin));
+#else
         let surface: Surface = scene.surfaceAt(Hit(uv, leaf.y, triangle_index, 0u, 0.0f), point, random_along.state);
+#endif
         sample.random_state = surface.random_state;
         sample.dir = normalize(point - start);
         sample.density = solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), point - start);
