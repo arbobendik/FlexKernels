@@ -42,7 +42,7 @@ jobs:
           - repository: arbobendik/FlexCudaPT
             key: FLEX_CUDA_PT_DEPLOY_KEY
             source: cuda
-            targets: cuda:src/shaders/flexkernels
+            targets: cuda:src/shaders/flexkernels cuda-restir:src/shaders/flexkernels-restir
           - repository: arbobendik/FlexLight
             key: FLEXLIGHT_DEPLOY_KEY
             source: wgsl
