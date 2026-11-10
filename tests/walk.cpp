@@ -62,7 +62,8 @@ LightBounds HookScene_lightBounds_0(uint32_t) {
 }
 Vector<uint32_t, 4> HookScene_lightTrail_0(uint32_t) { return Vector<uint32_t, 4>(0, 0, 0, 0); }
 uint32_t HookScene_lightSlot_0(Hit) { return 0; }
-bool HookScene_slotLeaf_0(uint32_t, uint32_t, Vector<uint32_t, 4>) { return false; }
+static bool slot_leaf = false;
+bool HookScene_slotLeaf_0(uint32_t, uint32_t, Vector<uint32_t, 4>) { return slot_leaf; }
 Light HookScene_light_0(uint32_t) { return Light{SUN, 0, ONE, 1e8f, 0}; }
 uint32_t HookScene_triangleOffset_0(uint32_t) { return 0; }
 Matrix<float, 3, 3> HookScene_worldTriangle_0(uint32_t, uint32_t) { return Matrix<float, 3, 3>(0.0f); }
@@ -287,6 +288,12 @@ int main() {
     failed += !replayed;
     printf("replay in fog: %d of %d scattered paths there and back exactly%s\n", kept, scattered,
         replayed ? "" : "  FAILED");
+    sun = slot_leaf = true;
+    const float unslotted = lightPdf_0(ZERO, ZERO, ZERO, 0xFFFFFFFFu, SUN), slotted = lightPdf_0(ZERO, ZERO, ZERO, 0, SUN);
+    sun = slot_leaf = false;
+    failed += unslotted != 0 || !(slotted > 0);
+    printf("light of no slot: density %g, the sun's %g%s\n", unslotted, slotted,
+        unslotted != 0 || !(slotted > 0) ? "  FAILED" : "");
     failed += shaded_misfits > 0;
     printf("shaded directions: %d misfits%s\n", shaded_misfits, shaded_misfits > 0 ? "  FAILED" : "");
     failed += escapes != 1 << 17 || escape_misfits > 0;
