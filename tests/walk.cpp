@@ -31,7 +31,7 @@ static const V ZERO(0, 0, 0), ONE(1, 1, 1);
 static float dotv(V a, V b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static V scaled(V a, float s) { return V(a.x * s, a.y * s, a.z * s); }
 struct Shape { V center; float radius; bool inward; Material layer[2]; unsigned layers; float coverage; bool encloses;
-    Medium volume; bool hidden = false; };
+    Medium volume; bool hidden = false; float tilt = 0, offset = 1e-4f; V axis = V(0, 0, 1); float cap = -2; };
 static std::vector<Shape> scene;
 static const Hit NO_HIT = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
 // The camera's medium: fog where a furnace sets it, else none; homogeneous, or varying of the same coefficients
@@ -52,7 +52,7 @@ static Material dielectric(float ior) {
 // Past a surface's margin of 1e-4 when the ray leaves one, else (a medium vertex's) from its start
 // The hit each straight pass leaves, as the walk hands it over, against the one it shaded last
 static Hit last_shaded = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
-static int skips = 0, skip_misfits = 0;
+static int skips = 0, skip_misfits = 0, face_skips = 0;
 // and the point it was shaded at, which the pass starts from, with no lift, off a layer of index 1
 static V last_point;
 static float last_ior = 1;
@@ -63,18 +63,28 @@ Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, 
             || left.distance != last_shaded.distance
             || ray.origin.x != last_point.x || ray.origin.y != last_point.y || ray.origin.z != last_point.z
             || last_ior != 1;
+    face_skips += left.instance_index != 0xFFFFFFFFu && !surface;  // From an opaque face, no margin, past its own
     Hit hit = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, max_len};
     const float near = surface ? 1e-4f : 0.0f;
     for (unsigned i = 0; i < scene.size(); i++) {
         if (viewed && scene[i].hidden) continue;
         const V oc = ray.origin - scene[i].center;
-        const float b = dotv(oc, ray.unit_direction), c = dotv(oc, oc) - scene[i].radius * scene[i].radius;
+        // In double: a start offsets 1e-4 over a sphere of radius 1000, below float's resolution of |oc|^2
+        const double ox = oc.x, oy = oc.y, oz = oc.z, r = scene[i].radius;
+        const double b = ox * ray.unit_direction.x + oy * ray.unit_direction.y + oz * ray.unit_direction.z,
+            c = (ox * ox + oy * oy + oz * oz) - r * r;
         if (b * b - c < 0) continue;
-        // Past the start's own shape where left names it, as past its own triangle: its far side alone, if ahead
+        // Past the start's own shape where left names it, as past its own triangle: its far side alone, if ahead; of a
+        // cap, the sphere's points within cap's cosine of its axis alone
         const bool own = left.instance_index == i;
-        const float s = sqrtf(b * b - c), t = -b - s > near && !own ? -b - s : -b + s;
-        if (own && !(t > 1e-4f * scene[i].radius)) continue;
-        if (t > near && t < hit.distance) hit.instance_index = i, hit.distance = t;
+        const double s = sqrt(b * b - c);
+        for (const float t : {float(-b - s), float(-b + s)}) {
+            const V on = ray.origin + scaled(ray.unit_direction, t) - scene[i].center;
+            if (!(t > near) || (own && !(t > 1e-4f * scene[i].radius))
+                || dotv(on, scene[i].axis) < scene[i].cap * scene[i].radius) continue;
+            if (t < hit.distance) hit.instance_index = i, hit.distance = t;
+            break;
+        }
     }
     return hit;
 }
@@ -88,7 +98,10 @@ Surface HookScene_surfaceAtPath_0(Hit hit, V origin, uint32_t state, float, uint
         && (dir.x != handed_direction.x || dir.y != handed_direction.y || dir.z != handed_direction.z);
     const Shape& s = scene[hit.instance_index];
     const V n = scaled(origin - s.center, (s.inward ? -1 : 1) / s.radius);
-    return Surface{n, n, 1e-4f, s.layer[layer], false, state, s.coverage, s.encloses, s.volume, 0xFFFFFFFFu};
+    // Its smooth normal tilted toward +x by tilt where a furnace sets it, its offset the consumer's start height
+    const V x = V(1, 0, 0) - scaled(n, n.x);
+    const V smooth = s.tilt == 0 ? n : scaled(n, cosf(s.tilt)) + scaled(x, sinf(s.tilt) / sqrtf(dotv(x, x)));
+    return Surface{smooth, n, s.offset, s.layer[layer], false, state, s.coverage, s.encloses, s.volume, 0xFFFFFFFFu};
 }
 Surface HookScene_surfaceAt_0(Hit hit, V origin, uint32_t state) {
     return HookScene_surfaceAtPath_0(hit, origin, state, 0, 0, 1, 0, ZERO);
@@ -150,8 +163,11 @@ static float sky = 1;
 // its one vertex, of depth 0, by the diffuse lobe (0); the sky's light samples hand none (0 and LOBE_NONE, 3)
 static bool escapes_checked = false;
 static int escapes = 0, escape_misfits = 0;
-V HookScene_env_map_sample_0(V, uint32_t depth, uint32_t lobe) {
+// Lighting only from below a plane of normal below where a furnace sets it
+static V below(0, 0, 0);
+V HookScene_env_map_sample_0(V dir, uint32_t depth, uint32_t lobe) {
     if (escapes_checked) escapes += depth == 0 && lobe == 0, escape_misfits += depth != 0 || lobe != 0 && lobe != 3;
+    if (dotv(below, below) > 0 && !(dotv(dir, below) < 0)) return ZERO;
     return scaled(ONE, sky);
 }
 V HookScene_ambient_0() { return ONE; }
@@ -466,6 +482,48 @@ int main() {
             failed);
     }
     summing = seen = false;
+    // flex-cuda-pt's start rule off opaque surfaces: a cap of a huge white sphere, locally a plane, its smooth normals
+    // tilted 60 degrees toward the sun, which lies 40 degrees below its face there, above the tilted normal (in the
+    // wedge); black sky, the sun alone, one bounce. Nothing lights the face: 0, its start lifted along the face by the
+    // offset (from no margin its shadow ray meets the face), or on it (no light below the face, its own triangle
+    // skipped)
+    bounces = 1, sky = 0, sun = true, camera_fog = none, seen = false;
+    {
+        const float R = 1000;
+        const V g(cosf(2.26893f), 0, sinf(2.26893f));  // 130 degrees from the sun's +x
+        for (const float offset : {1e-4f, 0.0f}) {
+            scene = {{scaled(g, -R), R, false, {lambert(1, 0)}, 1, 1, false, none, false, 1.0471976f, offset, g,
+                0.999f}};
+            furnace(offset > 0 ? "sun in the wedge, lifted" : "sun in the wedge, on the face", scaled(g, 5), ZERO,
+                0.01f, 0, failed);
+        }
+    }
+    // The same cap under a sky lighting it only from below its face: nothing reaches its top, by the sky's light
+    // samples (which see below the face only past it) or by bounces into the wedge (which meet the face again);
+    // sampled and unsampled
+    sun = false, sky = 1, bounces = 4;
+    {
+        const V g(cosf(2.26893f), 0, sinf(2.26893f));
+        below = g;
+        for (const bool sampled : {true, false}) {
+            cdf = sampled;
+            scene = {{scaled(g, -1000), 1000, false, {lambert(1, 0)}, 1, 1, false, none, false, 1.0471976f, 0, g,
+                0.999f}};
+            furnace(sampled ? "sky below the face" : "sky below the face, unsampled", scaled(g, 5), ZERO, 0.01f, 0,
+                failed);
+        }
+        cdf = true, below = ZERO;
+    }
+    // A white sphere starting its rays on its face, from no margin past its own triangle, under a sky of 1: 1, each
+    // such ray handing the hit it leaves
+    bounces = 64, sky = 1, sun = false, face_skips = 0;
+    scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none, false, 0, 0}};
+    furnace("white sphere from its face", camera, center, 0.3f, 1, failed);
+    summing = true;
+    furnace("white sphere from its face, ReSTIR off", camera, center, 0.3f, 1, failed);
+    summing = false;
+    failed += face_skips == 0;
+    printf("starts on the face: %d past their own hit%s\n", face_skips, face_skips == 0 ? "  FAILED" : "");
     // A light of no slot, as flex-cuda-pt's strands, has no light sampling density, where the sun's slot reaches its
     // leaf (a point: infinite)
     sun = slot_leaf = true;
