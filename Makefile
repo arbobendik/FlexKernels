@@ -13,9 +13,9 @@ REFERENCE ?= $(FLEX_CUDA_PT)/src/shaders
 FLEXLIGHT ?= ../FlexLight
 WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
-all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h \
+all: build/cuda/pathtracer.cuh \
 	build/wgsl/pathtracer.wgsl build/glsl/pathtracer.glsl build/cuda/pathtracer.slang-module \
-	build/cuda-restir/pathtracer.cuh build/cuda-restir/slang-cuda-prelude.h build/wgsl-restir/pathtracer.wgsl \
+	build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl \
 	build/cuda-restir/pathtracer.slang-module
 
 # ReSTIR variants
@@ -36,10 +36,6 @@ build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	sed -i 's|^__device__ SampleBSDF lobeBSDF(|__device__ __forceinline__ SampleBSDF lobeBSDF(|' $@
 	sed -i -E 's/^__device__ (float3  lobeThroughput|float lobeDensity|float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF|float3  sampleHalfVector)\(/__device__ __forceinline__ \1(/' $@
 	echo '#undef Matrix' >> $@
-
-build/cuda/slang-cuda-prelude.h build/cuda-restir/slang-cuda-prelude.h: $(SLANGC)
-	mkdir -p $(@D)
-	cp $(SLANG_PATH)/include/slang-cuda-prelude.h $@
 
 build/wgsl/pathtracer.wgsl build/wgsl-restir/pathtracer.wgsl: $(SOURCE) $(SLANGC)
 	mkdir -p $(@D)
@@ -106,8 +102,8 @@ build/coverage-cpu: tests/coverage.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir \
 		-DGENERATED='"build/cpp-restir/pathtracer.cpp"' $< -o $@
 
-build/parity-cuda: tests/parity.cpp build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h $(REFERENCE)/renderer.h
-	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda -I$(REFERENCE) $< -o $@
+build/parity-cuda: tests/parity.cpp build/cuda/pathtracer.cuh $(REFERENCE)/renderer.h
+	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda -I$(SLANG_PATH)/include -I$(REFERENCE) $< -o $@
 
 $(ACTIONLINT):
 	mkdir -p .deps
