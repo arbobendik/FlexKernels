@@ -262,10 +262,10 @@ int main() {
     camera_fog = none;
     scene = {{center, 1, true, {lambert(0.5f, 1)}, 1, 1, false, none}};
     furnace("inside walls of albedo 0.5", center, V(0, 0, 1), 3.14159265f, 1, failed);
-    // Its faces turned out, the camera inside: opaque walls face the ray, but emit only on the front of their faces,
-    // outward, and the sky beyond them is unreachable: 0 (flexkernels' probe)
+    // Its faces turned out, the camera inside: opaque walls face the ray and emit on both sides, as flex-cuda-pt's do,
+    // so it reads as with them turned in, while the walk takes no wall's inside for its own (flexkernels' row)
     scene = {{center, 1, false, {lambert(0.5f, 1)}, 1, 1, false, none}};
-    furnace("inside walls faced out", center, V(0, 0, 1), 3.14159265f, 0, failed);
+    furnace("inside walls faced out", center, V(0, 0, 1), 3.14159265f, 1, failed);
     // From the centre of a white fog sphere of radius 1 straight down, under a black sky, alone (bounces 0): the sun
     // scattered in along the ray, and walls emitting 1 inward seen through the fog, read with the walk's glow
     bounces = 0, sky = 0;
