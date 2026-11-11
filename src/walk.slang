@@ -749,7 +749,8 @@ __extern_cpp public struct Light {
 // traverseInstanceBVH's and shadowTransmittanceIn's surface whether the ray leaves a surface, which the consumer starts
 // it past by its own margin, or a medium vertex, which it starts right at, so it meets an exit face nearer than that;
 // traverseInstanceBVH's left the hit a ray leaves by passing straight through it, its distance the segment that reached
-// it, which flex-cuda-pt's traversal skips, else none (instance UINT_MAX);
+// it, which flex-cuda-pt's traversal skips, else none (instance UINT_MAX); its viewed whether the ray still sees straight
+// from the camera, where flex-cuda-pt's traversal passes surfaces hidden from the camera as its camera rays do;
 // lightNode(n) the leaf texel of node n of the light BVH (x zero for inner nodes, two for point lights, y the light or
 // instance, z the triangle), lightSecond(n) its second child, light(i) point light i, triangleOffset(i) the first
 // prototype triangle of instance i, lightTrail(j) the texel of the trail of slot j (x, y its bits) and
@@ -764,7 +765,7 @@ __extern_cpp public struct Light {
 // currentDomain(p, dom) the primary hit of p this frame, the consumer's own, the passes' uniforms, the stores of the
 // reservoirs of each round, of last frame's uv and of the shifts and duplication map, and the color written
 public interface IScene {
-    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface, Hit left);
+    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface, Hit left, bool viewed);
     public float3 shadowTransmittance(Ray ray, float l);
     public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
@@ -840,8 +841,8 @@ public interface IScene {
 // buffer it stands for in its shader, and flex-cuda-pt's function of the name its adapter defines, in place of a call
 public struct HookScene : IScene {
     __target_intrinsic(wgsl, "traverseInstanceBVH($0, $1, $2)")
-    __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2, $3, $4)")
-    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface, Hit left);
+    __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2, $3, $4, $5)")
+    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface, Hit left, bool viewed);
     __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
     __target_intrinsic(cuda, "fcptShadowTransmittance($0, $1)")
     public float3 shadowTransmittance(Ray ray, float l);
@@ -1415,7 +1416,7 @@ uint extractBits(uint e, uint offset, uint count) {
         ray.unit_direction = isotropic(stream(r.seed, b));
         prev = scatteredVertex(is_inside);
         sky_pdf = prev.pdf;
-        hit = scene.traverseInstanceBVH(ray, true, POW32, false, noHit());
+        hit = scene.traverseInstanceBVH(ray, true, POW32, false, noHit(), false);
     }
     return false;
 }
@@ -1523,6 +1524,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     // Replaying the densities of the reconnection, generating the product of Russian roulette survival probabilities
     var density: float = 1.0f;
     var is_inside: bool = false;
+#ifdef FK_FCPT_WALK
+    // Seen straight from the camera, as flex-cuda-pt's walk keeps it: past refractions at equal indices alone, which bend
+    // no ray, and no medium's scattering; where it holds, the trace passes surfaces hidden from the camera
+    var viewed: bool = true;
+#endif
     // Light sampling at the vertex the ray left, none at the camera
     var nee_vertex: NEEVertex = NEEVertex(true, 0.0f, float3(0.0f), float3(0.0f), float3(0.0f));
     var threshold: float = 0.0f;
@@ -1547,11 +1553,17 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             width = coneOf(dom).x;
         }
         var ended: Shift = {};
+#ifdef FK_FCPT_WALK
+        let unscattered: uint = b;
+#endif
         if (crossMedium(scene, r, replay, stop, rc, scale, chain, chain_throughput, is_inside, filling, b, ray, hit,
             throughput, density, weight, glowed, scatter_in, extinction_in, width, spread, prev, nee_vertex, sky_pdf,
             sel, ended)) {
             return ended;
         }
+#ifdef FK_FCPT_WALK
+        viewed = viewed && b == unscattered;  // A scattering vertex counts in b
+#endif
         if (arrive(scene, r, replay, stop, rc, end, end_type, scale, b, chain, chain_throughput, nee_vertex, prev,
             sky_pdf, density, hit, filling, scatter_in, extinction_in, weight, glowed, spread, ray, throughput, width,
             sel, ended)) {
@@ -1806,6 +1818,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             let delta: bool = lobe_index != LOBE_DIFFUSE && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y));
 #ifdef FK_FCPT_WALK
             straight = lobe_index == LOBE_REFRACT && material.ior == 1.0f;
+            // Camera status kept by a refraction at equal indices, which bends no ray (flex-cuda-pt's rule A); Cycles'
+            // rule would keep it across coverage gaps alone, this one expression
+            viewed = viewed && lobe_index == LOBE_REFRACT && eta.x == eta.y;
 #endif
             // Translucent surfaces are thin, as in the path tracer
             let through: bool = isTranslucent(material) && lobe_index == LOBE_DIFFUSE && dot(dir, surface.geometry_n) < 0.0f;
@@ -1925,9 +1940,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         // Only occluders in front of the reconnection vertex matter, passing through a point light no other
         hit = scene.traverseInstanceBVH(ray, !point_light_lighting, select(POW32, distance(reconnection, ray.origin) * 1.001f, replay && b == stop && rc == RC_SURFACE), true,
 #ifdef FK_FCPT_WALK
-            straight ? hit : noHit()
+            straight ? hit : noHit(), viewed
 #else
-            hit // Unread: FlexLight's traversal takes no skip
+            hit, false // Unread: FlexLight's traversal takes no skip and has no hidden surfaces
 #endif
             );
         // Reaching the reconnection vertex, it is shaded exactly where the stored path has it
@@ -1941,11 +1956,17 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         }
         if (mediaUsed()) {
             var ended: Shift = {};
+#ifdef FK_FCPT_WALK
+            let unscattered: uint = b;
+#endif
             if (crossMedium(scene, r, replay, stop, rc, scale, chain, chain_throughput, is_inside, filling, b, ray,
                 hit, throughput, density, weight, glowed, scatter_in, extinction_in, width, spread, prev, nee_vertex,
                 sky_pdf, sel, ended)) {
                 return ended;
             }
+#ifdef FK_FCPT_WALK
+            viewed = viewed && b == unscattered;
+#endif
         }
         var arrived_end: Shift = {};
         if (arrive(scene, r, replay, stop, rc, end, end_type, scale, b, chain, chain_throughput, nee_vertex, prev,

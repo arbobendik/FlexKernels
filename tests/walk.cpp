@@ -56,7 +56,7 @@ static int skips = 0, skip_misfits = 0;
 // and the point it was shaded at, which the pass starts from, with no lift, off a layer of index 1
 static V last_point;
 static float last_ior = 1;
-Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, Hit left) {
+Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, Hit left, bool) {
     if (left.instance_index != 0xFFFFFFFFu)
         skips++, skip_misfits += left.instance_index != last_shaded.instance_index
             || left.distance != last_shaded.distance
@@ -117,7 +117,7 @@ V HookScene_hitPosition_0(Hit) { return ZERO; }
 static V shadowThrough(Ray ray, float l, bool surface) {
     float share = 1;
     for (float along = 0;; surface = true) {
-        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, surface, NO_HIT);
+        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, surface, NO_HIT, false);
         if (hit.instance_index == 0xFFFFFFFFu) return scaled(ONE, share);
         const Material& m = scene[hit.instance_index].layer[0];
         if (!(m.transmission == 1 && m.ior == 1 && scene[hit.instance_index].layers == 1))
@@ -132,7 +132,7 @@ V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, ui
     bool surface, float length, float) {
     const V from = ray.origin - segment_start;
     if (checking && !surface) segments++, misfits += fabsf(sqrtf(dotv(from, from)) - length) > 1e-6f;
-    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface, NO_HIT).distance, l);
+    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface, NO_HIT, false).distance, l);
     const V through = shadowThrough(ray, l, surface);
     return V(through.x * expf(-extinction.x * inside), through.y * expf(-extinction.y * inside),
         through.z * expf(-extinction.z * inside));
@@ -198,7 +198,7 @@ static void furnace(const char* name, V camera, V aim, float angle, double truth
             1 / sqrtf(1 - dotv(t, w) * dotv(t, w)));
         const V b(w.y * a.z - w.z * a.y, w.z * a.x - w.x * a.z, w.x * a.y - w.y * a.x);
         const V dir = scaled(a, r * cosf(phi)) + scaled(b, r * sinf(phi)) + scaled(w, z);
-        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, dir}, true, 1e30f, true, NO_HIT);
+        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, dir}, true, 1e30f, true, NO_HIT, false);
         Domain dom = {camera, camera + scaled(dir, hit.distance), hit};
         Reservoir path = {};
         path.seed = hash(3 * i + 2);
@@ -303,7 +303,7 @@ int main() {
     sun = true, varying = summing = false, camera_fog = {scaled(ONE, 0.5f), scaled(ONE, 0.5f)};
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
     const auto domain = [&](V dir) {
-        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{center, dir}, true, 1e30f, true, NO_HIT);
+        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{center, dir}, true, 1e30f, true, NO_HIT, false);
         return Domain{center, center + scaled(dir, hit.distance), hit};
     };
     const Domain here = domain(V(0, 0, -1)), there = domain(V(sinf(0.1f), 0, -cosf(0.1f)));
