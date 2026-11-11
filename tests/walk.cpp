@@ -12,6 +12,7 @@ static V scaled(V a, float s) { return V(a.x * s, a.y * s, a.z * s); }
 struct Shape { V center; float radius; bool inward; Material layer[2]; unsigned layers; float coverage; bool encloses;
     Medium volume; };
 static std::vector<Shape> scene;
+static const Hit NO_HIT = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
 static Medium camera_fog = {ZERO, ZERO};
 static float handed_distance;
 static V segment_start;
@@ -24,7 +25,16 @@ static Material dielectric(float ior) {
     return Material{ONE, ZERO, 0, 0, 1, ior, ONE, ONE, 1, ZERO, ZERO, 0.5f, 0, 0, ZERO};
 }
 
-Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface) {
+static Hit last_shaded = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
+static int skips = 0, skip_misfits = 0;
+static V last_point;
+static float last_ior = 1;
+Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, Hit left) {
+    if (left.instance_index != 0xFFFFFFFFu)
+        skips++, skip_misfits += left.instance_index != last_shaded.instance_index
+            || left.distance != last_shaded.distance
+            || ray.origin.x != last_point.x || ray.origin.y != last_point.y || ray.origin.z != last_point.z
+            || last_ior != 1;
     Hit hit = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, max_len};
     const float near = surface ? 1e-4f : 0.0f;
     for (unsigned i = 0; i < scene.size(); i++) {
@@ -40,6 +50,7 @@ static V handed_direction;
 static int shaded_misfits = 0;
 Surface HookScene_surfaceAtPath_0(Hit hit, V origin, uint32_t state, float, uint32_t layer, uint32_t depth, uint32_t,
     V dir) {
+    last_shaded = hit, last_point = origin, last_ior = scene[hit.instance_index].layer[layer].ior;
     shaded_misfits += depth == 0 && camera_fog.extinction.x == 0
         && (dir.x != handed_direction.x || dir.y != handed_direction.y || dir.z != handed_direction.z);
     const Shape& s = scene[hit.instance_index];
@@ -72,7 +83,7 @@ V HookScene_calculatePointLightContrib_0(uint32_t) { return ZERO; }
 V HookScene_hitPosition_0(Hit) { return ZERO; }
 static V shadowThrough(Ray ray, float l, bool surface) {
     for (float along = 0;; surface = true) {
-        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, surface);
+        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, surface, NO_HIT);
         if (hit.instance_index == 0xFFFFFFFFu) return ONE;
         const Material& m = scene[hit.instance_index].layer[0];
         if (!(m.transmission == 1 && m.ior == 1 && scene[hit.instance_index].layers == 1)) return ZERO;
@@ -84,7 +95,7 @@ V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, ui
     bool surface, float length, float) {
     const V from = ray.origin - segment_start;
     if (checking && !surface) segments++, misfits += fabsf(sqrtf(dotv(from, from)) - length) > 1e-6f;
-    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface).distance, l);
+    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface, NO_HIT).distance, l);
     const V through = shadowThrough(ray, l, surface);
     return V(through.x * expf(-extinction.x * inside), through.y * expf(-extinction.y * inside),
         through.z * expf(-extinction.z * inside));
@@ -141,7 +152,7 @@ static void furnace(const char* name, V camera, V aim, float angle, double truth
             1 / sqrtf(1 - dotv(t, w) * dotv(t, w)));
         const V b(w.y * a.z - w.z * a.y, w.z * a.x - w.x * a.z, w.x * a.y - w.y * a.x);
         const V dir = scaled(a, r * cosf(phi)) + scaled(b, r * sinf(phi)) + scaled(w, z);
-        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, dir}, true, 1e30f, true);
+        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, dir}, true, 1e30f, true, NO_HIT);
         Domain dom = {camera, camera + scaled(dir, hit.distance), hit};
         Reservoir path = {};
         path.seed = hash(3 * i + 2);
@@ -236,6 +247,17 @@ int main() {
     checking = true;
     furnace("sun in fog by its face", V(1 - 0.5e-4f, 0, 0), V(1 - 0.5e-4f, 0, -1), 0, 0.00757074921909657, failed);
     checking = false;
+    // Black shell covered at 0.5 around an emitter of 1: 0 without a bounce, 0.5 with one
+    bounces = 0, sky = 0, sun = false, camera_fog = none;
+    scene = {{center, 2, false, {lambert(0, 0)}, 1, 0.5f, false, none}, {center, 1, false, {lambert(0, 1)}, 1, 1, false,
+        none}};
+    furnace("emitter through a cutout, no bounce", V(0, 0, 5), center, 0.1f, 0, failed);
+    bounces = 1, skips = 0;
+    furnace("emitter through a cutout", V(0, 0, 5), center, 0.1f, 0.5, failed);
+    failed += skips == 0 || skip_misfits > 0;
+    printf("straight passes: %d skipped, %d misfits%s\n", skips, skip_misfits,
+        skips == 0 || skip_misfits > 0 ? "  FAILED" : "");
+    bounces = 64, sky = 1;
     sun = slot_leaf = true;
     const float unslotted = lightPdf_0(ZERO, ZERO, ZERO, 0xFFFFFFFFu, SUN), slotted = lightPdf_0(ZERO, ZERO, ZERO, 0, SUN);
     sun = slot_leaf = false;
