@@ -266,6 +266,9 @@ int main() {
     // so it reads as with them turned in, while the walk takes no wall's inside for its own (flexkernels' row)
     scene = {{center, 1, false, {lambert(0.5f, 1)}, 1, 1, false, none}};
     furnace("inside walls faced out", center, V(0, 0, 1), 3.14159265f, 1, failed);
+    summing = true;
+    furnace("inside walls faced out, ReSTIR off", center, V(0, 0, 1), 3.14159265f, 1, failed);
+    summing = false;
     // From the centre of a white fog sphere of radius 1 straight down, under a black sky, alone (bounces 0): the sun
     // scattered in along the ray, and walls emitting 1 inward seen through the fog, read with the walk's glow
     bounces = 0, sky = 0;
@@ -445,6 +448,21 @@ int main() {
         printf("replay past a hidden emitter: %d of %d paths there and back exactly%s\n", back, lit,
             kept ? "" : "  FAILED");
     }
+    // A light shell, as flex-cuda-pt's sphere lights: clear at index 1, glowing L / 2 = 0.5 on each side, under a black
+    // sky; from outside a ray meets it twice, reading L = 1, and from inside once, reading 0.5, the walk taking the
+    // shell's far side as the camera's first hit's emission alike, from either side; ReSTIR on and off
+    bounces = 4, sky = 0, sun = false, camera_fog = none, seen = true;
+    for (int restir = 0; restir < 2; restir++) {
+        summing = !restir;
+        Material glow = dielectric(1);
+        glow.emissive = scaled(ONE, 0.5f);
+        scene = {{center, 1, false, {glow}, 1, 1, false, none}};
+        furnace(restir ? "light shell from outside" : "light shell from outside, ReSTIR off", V(0, 0, 5), center, 0, 1,
+            failed);
+        furnace(restir ? "light shell from inside" : "light shell from inside, ReSTIR off", center, V(0, 0, 1), 0, 0.5,
+            failed);
+    }
+    summing = seen = false;
     // A light of no slot, as flex-cuda-pt's strands, has no light sampling density, where the sun's slot reaches its
     // leaf (a point: infinite)
     sun = slot_leaf = true;
