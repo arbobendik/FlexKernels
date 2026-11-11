@@ -112,13 +112,17 @@ uint32_t HookScene_triangleOffset_0(uint32_t) { return 0; }
 Matrix<float, 3, 3> HookScene_worldTriangle_0(uint32_t, uint32_t) { return Matrix<float, 3, 3>(0.0f); }
 V HookScene_calculatePointLightContrib_0(uint32_t) { return ZERO; }
 V HookScene_hitPosition_0(Hit) { return ZERO; }
-// Shadows pass index-matched clear surfaces alone, through media by their extinction
+// Shadows pass index-matched clear surfaces, and the uncovered share of the others, as flex-cuda-pt's do, through
+// media by their extinction
 static V shadowThrough(Ray ray, float l, bool surface) {
+    float share = 1;
     for (float along = 0;; surface = true) {
         const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, surface, NO_HIT);
-        if (hit.instance_index == 0xFFFFFFFFu) return ONE;
+        if (hit.instance_index == 0xFFFFFFFFu) return scaled(ONE, share);
         const Material& m = scene[hit.instance_index].layer[0];
-        if (!(m.transmission == 1 && m.ior == 1 && scene[hit.instance_index].layers == 1)) return ZERO;
+        if (!(m.transmission == 1 && m.ior == 1 && scene[hit.instance_index].layers == 1))
+            share *= 1 - scene[hit.instance_index].coverage;
+        if (!(share > 0)) return ZERO;
         along += hit.distance, ray.origin = ray.origin + scaled(ray.unit_direction, hit.distance);
     }
 }
