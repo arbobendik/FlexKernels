@@ -249,6 +249,8 @@ int main() {
     camera_fog = none;
     scene = {{center, 1, true, {lambert(0.5f, 1)}, 1, 1, false, none}};
     furnace("inside walls of albedo 0.5", center, V(0, 0, 1), 3.14159265f, 1, failed);
+    scene = {{center, 1, false, {lambert(0.5f, 1)}, 1, 1, false, none}};
+    furnace("inside walls faced out", center, V(0, 0, 1), 3.14159265f, 0, failed);
     bounces = 0, sky = 0;
     for (const float sigma : {0.2f, 0.5f}) {
         // (sigma / 4 pi) int_0^1 exp(-sigma (s + sqrt(1 - s^2))) ds by Simpson's rule over s = sin t, and exp(-sigma)
@@ -317,6 +319,25 @@ int main() {
     printf("straight passes: %d skipped, %d misfits%s\n", skips, skip_misfits,
         skips == 0 || skip_misfits > 0 ? "  FAILED" : "");
     bounces = 64, sky = 1;
+    // 0.25 E[0.5^(2 sqrt(1 - (5 sin t)^2))] over the camera's cone, by scipy's quad
+    bounces = 64, sky = 1, sun = false, camera_fog = none;
+    for (const bool inward : {false, true}) {
+        const char* turn = inward ? ", turned in" : "";
+        char name[64];
+        Material ball = dielectric(1);
+        ball.absorption = scaled(ONE, 0.5f);
+        scene = {{center, 2, inward, {lambert(0, 0)}, 1, 0.5f, false, none}, {center, 1, false, {lambert(1, 0)}, 1, 1,
+            false, none}};
+        snprintf(name, sizeof name, "sphere in a cutout%s", turn);
+        furnace(name, V(0, 0, 5), center, 0.1f, 0.25, failed);
+        scene[1] = {center, 1, false, {ball}, 1, 1, true, none};
+        snprintf(name, sizeof name, "absorber in a cutout%s", turn);
+        furnace(name, V(0, 0, 5), center, 0.1f, 0.0685110023574737, failed);
+    }
+    Material ball = dielectric(1);
+    ball.absorption = scaled(ONE, 0.5f);
+    scene = {{center, 1, false, {ball}, 1, 0.5f, true, none}};
+    furnace("cutout absorber", V(0, 0, 5), center, 0.1f, 4 * 0.0685110023574737, failed);
     sun = slot_leaf = true;
     const float unslotted = lightPdf_0(ZERO, ZERO, ZERO, 0xFFFFFFFFu, SUN), slotted = lightPdf_0(ZERO, ZERO, ZERO, 0, SUN);
     sun = slot_leaf = false;
