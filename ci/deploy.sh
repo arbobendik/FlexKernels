@@ -5,6 +5,10 @@
 # that a broken kernel never reaches its main; they are pushed together. Run from FlexKernels checked out with full
 # history, as CI and the local rehearsal do. Each target is a source of build/ and the directory it is vendored to, the
 # first's VERSION the consumer's and its source how the consumer builds.
+# A change to a hook's signature or meaning lands through a paired consumer PR, vendoring this repository's PR run's
+# build artifact with the consumer's side of the hook, merged first; the FlexKernels PR then merges by fast-forward, so
+# this script finds the consumer current and pushes nothing. Vendor CI's files: a module's digest depends on the
+# toolchain's path.
 # Usage: ci/deploy.sh <consumer-dir> <cuda|wgsl|glsl>:<vendored-path>...
 set -euo pipefail
 consumer=$1
