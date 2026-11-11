@@ -1156,7 +1156,13 @@ public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float
         sample.random_state = surface.random_state;
         sample.dir = normalize(point - start);
         sample.density = solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), point - start);
+#ifdef FK_FCPT_WALK
+        // Emitting on both sides, as flex-cuda-pt's emitters and Cycles': a one-sided light is one by what it exports
+        // behind it
+        sample.radiance = select(surface.material.emissive, float3(0.0f), surface.skip) / sample.density;
+#else
         sample.radiance = select(surface.material.emissive * max(sign(dot(- sample.dir, surface.smooth_n)), 0.0f), float3(0.0f), surface.skip) / sample.density;
+#endif
         shadow = point + shadowLift(surface.smooth_n, surface.geometry_offset, start, point) - start;
     }
     let transmitted: float3 = lightTransmittance(scene, origin, lift_n, geometry_offset, shadow
@@ -1632,7 +1638,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         }
         let side_n: float3 = sideNormal(surface, ray.unit_direction);
         // Emission met, of the surface or a point light, weighted against light sampling at the vertex the ray left
+#ifdef FK_FCPT_WALK
+        var emission: float3 = material.emissive;  // On both sides, as the light sample takes it
+#else
         var emission: float3 = material.emissive * max(sign(dot(- ray.unit_direction, front_n)), 0.0f);
+#endif
         if (point_light_lighting) {
             emission = scene.calculatePointLightContrib(hit.instance_index);
         }
