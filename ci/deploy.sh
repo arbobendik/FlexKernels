@@ -31,7 +31,7 @@ for sha in $(git rev-list --reverse "$(cat "$consumer/${1#*:}/VERSION")..HEAD" -
         continue
     fi
     case ${1%%:*} in
-        cuda) make -C "$consumer" ;;
+        cuda*) make -C "$consumer" ;;
         wgsl) (cd "$consumer" && bash ./build-script) ;;
     esac
     GIT_COMMITTER_DATE=$(git log -1 --format=%cI "$sha") git -C "$consumer" commit -q -m "$(git log -1 --format=%B "$sha")" \
