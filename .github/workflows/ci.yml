@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-24.04
     # One deploy at a time per consumer
     concurrency:
-      group: deploy
+      group: deploy-${{ matrix.repository }}
       cancel-in-progress: false
     strategy:
       matrix:
