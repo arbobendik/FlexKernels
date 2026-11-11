@@ -252,6 +252,9 @@ int main() {
     furnace("inside walls of albedo 0.5", center, V(0, 0, 1), 3.14159265f, 1, failed);
     scene = {{center, 1, false, {lambert(0.5f, 1)}, 1, 1, false, none}};
     furnace("inside walls faced out", center, V(0, 0, 1), 3.14159265f, 1, failed);
+    summing = true;
+    furnace("inside walls faced out, ReSTIR off", center, V(0, 0, 1), 3.14159265f, 1, failed);
+    summing = false;
     bounces = 0, sky = 0;
     for (const float sigma : {0.2f, 0.5f}) {
         // (sigma / 4 pi) int_0^1 exp(-sigma (s + sqrt(1 - s^2))) ds by Simpson's rule over s = sin t, and exp(-sigma)
@@ -408,6 +411,19 @@ int main() {
         printf("replay past a hidden emitter: %d of %d paths there and back exactly%s\n", back, lit,
             kept ? "" : "  FAILED");
     }
+    // Light shell glowing L / 2 on each side: L = 1 from outside, 0.5 from inside
+    bounces = 4, sky = 0, sun = false, camera_fog = none, seen = true;
+    for (int restir = 0; restir < 2; restir++) {
+        summing = !restir;
+        Material glow = dielectric(1);
+        glow.emissive = scaled(ONE, 0.5f);
+        scene = {{center, 1, false, {glow}, 1, 1, false, none}};
+        furnace(restir ? "light shell from outside" : "light shell from outside, ReSTIR off", V(0, 0, 5), center, 0, 1,
+            failed);
+        furnace(restir ? "light shell from inside" : "light shell from inside, ReSTIR off", center, V(0, 0, 1), 0, 0.5,
+            failed);
+    }
+    summing = seen = false;
     sun = slot_leaf = true;
     const float unslotted = lightPdf_0(ZERO, ZERO, ZERO, 0xFFFFFFFFu, SUN), slotted = lightPdf_0(ZERO, ZERO, ZERO, 0, SUN);
     sun = slot_leaf = false;
