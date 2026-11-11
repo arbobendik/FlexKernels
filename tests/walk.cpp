@@ -223,7 +223,7 @@ int main() {
     scene = {{center, 1, true, {lambert(0.5f, 1)}, 1, 1, false, none}};
     furnace("inside walls of albedo 0.5", center, V(0, 0, 1), 3.14159265f, 1, failed);
     scene = {{center, 1, false, {lambert(0.5f, 1)}, 1, 1, false, none}};
-    furnace("inside walls faced out", center, V(0, 0, 1), 3.14159265f, 0, failed);
+    furnace("inside walls faced out", center, V(0, 0, 1), 3.14159265f, 1, failed);
     bounces = 0, sky = 0;
     for (const float sigma : {0.2f, 0.5f}) {
         // (sigma / 4 pi) int_0^1 exp(-sigma (s + sqrt(1 - s^2))) ds by Simpson's rule over s = sin t, and exp(-sigma)
