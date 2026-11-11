@@ -38,7 +38,8 @@ Surface HookScene_lightSurfaceAt_0(Hit hit, V point, uint32_t state, V dir, uint
         || (dir.x * to.x + dir.y * to.y + dir.z * to.z) < (1 - 1e-6f) * distance;
     return HookScene_surfaceAt_0(hit, point, state);
 }
-V HookScene_shadowTransmittanceIn_0(Ray, float, V, uint32_t filling, uint32_t, uint32_t, uint32_t, bool, float, float) {
+V HookScene_shadowTransmittanceIn_0(Ray, float, V, uint32_t filling, uint32_t, uint32_t, uint32_t, bool, float, float,
+    Hit) {
     hook_filling = filling;
     return V(1, 1, 1);
 }
@@ -63,7 +64,7 @@ int main() {
         double sum = 0, sum2 = 0;
         for (int i = 0; i < N; i++) {
             ShadowContext context = {V(0.1f, 0.1f, 0.1f), V(0.1f, 0.1f, 0.1f), Vector<uint32_t, 2>(9, 9), dir, 3, 0, false,
-                0, 0};
+                0, 0, false, V(0, 0, 0), {}};
             const TreeSample s = sampleLightTree_0(V(0, 0, 0), dir, dir, 0, true, hash(i), &context);
             sum += s.radiance.x, sum2 += double(s.radiance.x) * s.radiance.x;
         }
@@ -85,7 +86,7 @@ int main() {
         double sum = 0, sum2 = 0;
         for (int i = 0; i < N; i++) {
             ShadowContext context = {V(0.1f, 0.1f, 0.1f), V(0.1f, 0.1f, 0.1f), Vector<uint32_t, 2>(9, 9), DOWN, 3, 0,
-                false, 0, 0};
+                false, 0, 0, false, V(0, 0, 0), {}};
             const TreeSample s = sampleLightTree_0(from, DOWN, DOWN, 0, true, hash(i), &context);
             sum += s.radiance.x, sum2 += double(s.radiance.x) * s.radiance.x;
         }
