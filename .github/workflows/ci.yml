@@ -32,9 +32,10 @@ jobs:
     needs: build
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
-    # One deploy at a time, none cancelled: each passes on the commits since the consumer's last
+    # One deploy at a time per consumer, each passing on the commits since the consumer's last: GitHub keeps one running
+    # and one pending job per group, cancelling an older pending one, which the newer one's commits include
     concurrency:
-      group: deploy
+      group: deploy-${{ matrix.repository }}
       cancel-in-progress: false
     strategy:
       matrix:
