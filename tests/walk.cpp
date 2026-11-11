@@ -258,6 +258,10 @@ int main() {
     camera_fog = none;
     scene = {{center, 1, true, {lambert(0.5f, 1)}, 1, 1, false, none}};
     furnace("inside walls of albedo 0.5", center, V(0, 0, 1), 3.14159265f, 1, failed);
+    // Its faces turned out, the camera inside: opaque walls face the ray, but emit only on the front of their faces,
+    // outward, and the sky beyond them is unreachable: 0 (flexkernels' probe)
+    scene = {{center, 1, false, {lambert(0.5f, 1)}, 1, 1, false, none}};
+    furnace("inside walls faced out", center, V(0, 0, 1), 3.14159265f, 0, failed);
     // From the centre of a white fog sphere of radius 1 straight down, under a black sky, alone (bounces 0): the sun
     // scattered in along the ray, and walls emitting 1 inward seen through the fog, read with the walk's glow
     bounces = 0, sky = 0;
@@ -335,6 +339,30 @@ int main() {
     printf("straight passes: %d skipped, %d misfits%s\n", skips, skip_misfits,
         skips == 0 || skip_misfits > 0 ? "  FAILED" : "");
     bounces = 64, sky = 1;
+    // Inside a black shell covered at 0.5, under a sky of 1, either way the shell's mesh turns its faces: a white
+    // sphere, which half the camera rays reach and which sees half the sky through the shell, reads 0.25; an index-
+    // matched ball absorbing half per unit length keeps 0.5^chord between the shell's two passes, 0.25 E[0.5^(2 sqrt(1
+    // - (5 sin t)^2))] over the camera's cone by scipy's quad. And that ball covered at 0.5 itself, with no shell, its
+    // faces out: both its shares pass at index 1, so its inside stays its own, 4 times that (flexkernels' probe); its
+    // faces turned in would make it a body outside them, as flex-cuda-pt fills the back of faces
+    bounces = 64, sky = 1, sun = false, camera_fog = none;
+    for (const bool inward : {false, true}) {
+        const char* turn = inward ? ", turned in" : "";
+        char name[64];
+        Material ball = dielectric(1);
+        ball.absorption = scaled(ONE, 0.5f);
+        scene = {{center, 2, inward, {lambert(0, 0)}, 1, 0.5f, false, none}, {center, 1, false, {lambert(1, 0)}, 1, 1,
+            false, none}};
+        snprintf(name, sizeof name, "sphere in a cutout%s", turn);
+        furnace(name, V(0, 0, 5), center, 0.1f, 0.25, failed);
+        scene[1] = {center, 1, false, {ball}, 1, 1, true, none};
+        snprintf(name, sizeof name, "absorber in a cutout%s", turn);
+        furnace(name, V(0, 0, 5), center, 0.1f, 0.0685110023574737, failed);
+    }
+    Material ball = dielectric(1);
+    ball.absorption = scaled(ONE, 0.5f);
+    scene = {{center, 1, false, {ball}, 1, 0.5f, true, none}};
+    furnace("cutout absorber", V(0, 0, 5), center, 0.1f, 4 * 0.0685110023574737, failed);
     // A light of no slot, as flex-cuda-pt's strands, has no light sampling density, where the sun's slot reaches its
     // leaf (a point: infinite)
     sun = slot_leaf = true;
