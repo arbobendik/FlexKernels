@@ -9,7 +9,7 @@
 # build artifact with the consumer's side of the hook, merged first; the FlexKernels PR then merges by fast-forward, so
 # this script finds the consumer current and pushes nothing. Vendor CI's files: a module's digest depends on the
 # toolchain's path.
-# Usage: ci/deploy.sh <consumer-dir> <cuda|wgsl|glsl>:<vendored-path>...
+# Usage: ci/deploy.sh <consumer-dir> <cuda|cuda-restir|wgsl|glsl>:<vendored-path>...
 set -euo pipefail
 consumer=$1
 shift
@@ -42,7 +42,7 @@ for sha in $(git rev-list --reverse "$(cat "$consumer/${1#*:}/VERSION")..HEAD" -
         continue
     fi
     case ${1%%:*} in
-        cuda) make -C "$consumer" ;;
+        cuda*) make -C "$consumer" ;;
         wgsl) (cd "$consumer" && bash ./build-script) ;;
     esac
     GIT_COMMITTER_DATE=$(git log -1 --format=%cI "$sha") git -C "$consumer" commit -q -m "$(git log -1 --format=%B "$sha")" \
