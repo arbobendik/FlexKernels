@@ -33,6 +33,7 @@ static V scaled(V a, float s) { return V(a.x * s, a.y * s, a.z * s); }
 struct Shape { V center; float radius; bool inward; Material layer[2]; unsigned layers; float coverage; bool encloses;
     Medium volume; };
 static std::vector<Shape> scene;
+static const Hit NO_HIT = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
 // The camera's medium: fog where a furnace sets it, else none; homogeneous, or varying of the same coefficients
 static Medium camera_fog = {ZERO, ZERO};
 // Of the camera ray each walk starts with, its distance as handed, and of the shadow rays of medium vertices where a
@@ -49,7 +50,18 @@ static Material dielectric(float ior) {
 }
 
 // Past a surface's margin of 1e-4 when the ray leaves one, else (a medium vertex's) from its start
-Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface) {
+// The hit each straight pass leaves, as the walk hands it over, against the one it shaded last
+static Hit last_shaded = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
+static int skips = 0, skip_misfits = 0;
+// and the point it was shaded at, which the pass starts from, with no lift, off a layer of index 1
+static V last_point;
+static float last_ior = 1;
+Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, Hit left) {
+    if (left.instance_index != 0xFFFFFFFFu)
+        skips++, skip_misfits += left.instance_index != last_shaded.instance_index
+            || left.distance != last_shaded.distance
+            || ray.origin.x != last_point.x || ray.origin.y != last_point.y || ray.origin.z != last_point.z
+            || last_ior != 1;
     Hit hit = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, max_len};
     const float near = surface ? 1e-4f : 0.0f;
     for (unsigned i = 0; i < scene.size(); i++) {
@@ -66,6 +78,7 @@ static V handed_direction;
 static int shaded_misfits = 0;
 Surface HookScene_surfaceAtPath_0(Hit hit, V origin, uint32_t state, float, uint32_t layer, uint32_t depth, uint32_t,
     V dir) {
+    last_shaded = hit, last_point = origin, last_ior = scene[hit.instance_index].layer[layer].ior;
     shaded_misfits += depth == 0 && camera_fog.extinction.x == 0
         && (dir.x != handed_direction.x || dir.y != handed_direction.y || dir.z != handed_direction.z);
     const Shape& s = scene[hit.instance_index];
@@ -102,7 +115,7 @@ V HookScene_hitPosition_0(Hit) { return ZERO; }
 // Shadows pass index-matched clear surfaces alone, through media by their extinction
 static V shadowThrough(Ray ray, float l, bool surface) {
     for (float along = 0;; surface = true) {
-        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, surface);
+        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, surface, NO_HIT);
         if (hit.instance_index == 0xFFFFFFFFu) return ONE;
         const Material& m = scene[hit.instance_index].layer[0];
         if (!(m.transmission == 1 && m.ior == 1 && scene[hit.instance_index].layers == 1)) return ZERO;
@@ -115,7 +128,7 @@ V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, ui
     bool surface, float length, float) {
     const V from = ray.origin - segment_start;
     if (checking && !surface) segments++, misfits += fabsf(sqrtf(dotv(from, from)) - length) > 1e-6f;
-    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface).distance, l);
+    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface, NO_HIT).distance, l);
     const V through = shadowThrough(ray, l, surface);
     return V(through.x * expf(-extinction.x * inside), through.y * expf(-extinction.y * inside),
         through.z * expf(-extinction.z * inside));
@@ -181,7 +194,7 @@ static void furnace(const char* name, V camera, V aim, float angle, double truth
             1 / sqrtf(1 - dotv(t, w) * dotv(t, w)));
         const V b(w.y * a.z - w.z * a.y, w.z * a.x - w.x * a.z, w.x * a.y - w.y * a.x);
         const V dir = scaled(a, r * cosf(phi)) + scaled(b, r * sinf(phi)) + scaled(w, z);
-        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, dir}, true, 1e30f, true);
+        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, dir}, true, 1e30f, true, NO_HIT);
         Domain dom = {camera, camera + scaled(dir, hit.distance), hit};
         Reservoir path = {};
         path.seed = hash(3 * i + 2);
@@ -282,7 +295,7 @@ int main() {
     sun = true, varying = summing = false, camera_fog = {scaled(ONE, 0.5f), scaled(ONE, 0.5f)};
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
     const auto domain = [&](V dir) {
-        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{center, dir}, true, 1e30f, true);
+        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{center, dir}, true, 1e30f, true, NO_HIT);
         return Domain{center, center + scaled(dir, hit.distance), hit};
     };
     const Domain here = domain(V(0, 0, -1)), there = domain(V(sinf(0.1f), 0, -cosf(0.1f)));
@@ -305,6 +318,19 @@ int main() {
     failed += !replayed;
     printf("replay in fog: %d of %d scattered paths there and back exactly%s\n", kept, scattered,
         replayed ? "" : "  FAILED");
+    // Seen through a black shell covered at 0.5 around an emitter of 1, the pass through its uncovered half a vertex of
+    // its own: with no bounce the walk ends there, reading 0; with one it reaches the emitter, 0.5. Each such pass hands
+    // the trace the hit it leaves, which flex-cuda-pt's traversal skips
+    bounces = 0, sky = 0, sun = false, camera_fog = none;
+    scene = {{center, 2, false, {lambert(0, 0)}, 1, 0.5f, false, none}, {center, 1, false, {lambert(0, 1)}, 1, 1, false,
+        none}};
+    furnace("emitter through a cutout, no bounce", V(0, 0, 5), center, 0.1f, 0, failed);
+    bounces = 1, skips = 0;
+    furnace("emitter through a cutout", V(0, 0, 5), center, 0.1f, 0.5, failed);
+    failed += skips == 0 || skip_misfits > 0;
+    printf("straight passes: %d skipped, %d misfits%s\n", skips, skip_misfits,
+        skips == 0 || skip_misfits > 0 ? "  FAILED" : "");
+    bounces = 64, sky = 1;
     // A light of no slot, as flex-cuda-pt's strands, has no light sampling density, where the sun's slot reaches its
     // leaf (a point: infinite)
     sun = slot_leaf = true;
