@@ -1481,6 +1481,10 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (mediaUsed()) {
                 turned = facingSign(surface.material.transmission, surface.geometry_n, ray.unit_direction) < 0.0f;
             }
+#ifdef FK_FCPT_WALK
+            // Inside a transmitting surface when arriving behind its face
+            is_inside = surface.material.transmission > 0.0f && arrivesBehind(ray.unit_direction, surface.geometry_n);
+#endif
             surface = facingRay(surface, ray.unit_direction);
             if (layersUsed() && passed) {
                 is_inside = arrivesBehind(ray.unit_direction, surface.geometry_n);
