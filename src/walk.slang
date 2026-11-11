@@ -1580,6 +1580,12 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (mediaUsed()) {
                 turned = facingSign(surface.material.transmission, surface.geometry_n, ray.unit_direction) < 0.0f;
             }
+#ifdef FK_FCPT_WALK
+            // The side the ray travels on, per hit from its face, as flex-cuda-pt takes a hit's sides: inside a
+            // transmitting surface's body where it arrives behind the face, uncovered shares included, and inside none
+            // at an opaque one, which faces the ray
+            is_inside = surface.material.transmission > 0.0f && arrivesBehind(ray.unit_direction, surface.geometry_n);
+#endif
             surface = facingRay(surface, ray.unit_direction);
             if (layersUsed() && passed) {
                 is_inside = arrivesBehind(ray.unit_direction, surface.geometry_n);
