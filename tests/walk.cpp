@@ -70,7 +70,10 @@ Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, 
         const V oc = ray.origin - scene[i].center;
         const float b = dotv(oc, ray.unit_direction), c = dotv(oc, oc) - scene[i].radius * scene[i].radius;
         if (b * b - c < 0) continue;
-        const float s = sqrtf(b * b - c), t = -b - s > near ? -b - s : -b + s;
+        // Past the start's own shape where left names it, as past its own triangle: its far side alone, if ahead
+        const bool own = left.instance_index == i;
+        const float s = sqrtf(b * b - c), t = -b - s > near && !own ? -b - s : -b + s;
+        if (own && !(t > 1e-4f * scene[i].radius)) continue;
         if (t > near && t < hit.distance) hit.instance_index = i, hit.distance = t;
     }
     return hit;
@@ -116,10 +119,10 @@ V HookScene_calculatePointLightContrib_0(uint32_t) { return ZERO; }
 V HookScene_hitPosition_0(Hit) { return ZERO; }
 // Shadows pass index-matched clear surfaces, and the uncovered share of the others, as flex-cuda-pt's do, through
 // media by their extinction
-static V shadowThrough(Ray ray, float l, bool surface) {
+static V shadowThrough(Ray ray, float l, bool surface, Hit left = NO_HIT) {
     float share = 1;
-    for (float along = 0;; surface = true) {
-        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, surface, NO_HIT, false);
+    for (float along = 0;; surface = true, left = NO_HIT) {
+        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, surface, left, false);
         if (hit.instance_index == 0xFFFFFFFFu) return scaled(ONE, share);
         const Material& m = scene[hit.instance_index].layer[0];
         if (!(m.transmission == 1 && m.ior == 1 && scene[hit.instance_index].layers == 1))
@@ -131,11 +134,11 @@ static V shadowThrough(Ray ray, float l, bool surface) {
 V HookScene_shadowTransmittance_0(Ray ray, float l) { return shadowThrough(ray, l, true); }
 // the medium a shadow ray starts in filling it up to the first surface it meets
 V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t,
-    bool surface, float length, float) {
+    bool surface, float length, float, Hit left) {
     const V from = ray.origin - segment_start;
     if (checking && !surface) segments++, misfits += fabsf(sqrtf(dotv(from, from)) - length) > 1e-6f;
-    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface, NO_HIT, false).distance, l);
-    const V through = shadowThrough(ray, l, surface);
+    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface, left, false).distance, l);
+    const V through = shadowThrough(ray, l, surface, left);
     return V(through.x * expf(-extinction.x * inside), through.y * expf(-extinction.y * inside),
         through.z * expf(-extinction.z * inside));
 }
