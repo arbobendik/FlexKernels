@@ -1050,6 +1050,12 @@ public func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, star
 }
 
 #ifdef FK_FCPT_WALK
+#define AT_HAIR(at_hair, elsewhere) (hair ? (at_hair) : (elsewhere))
+#else
+#define AT_HAIR(at_hair, elsewhere) (elsewhere)
+#endif
+
+#ifdef FK_FCPT_WALK
 // throughput * PDF_hair = f * cos, radiance = L / PDF_light
 // w_light = PDF_light^2 / (PDF_light^2 + PDF_hair^2) = 1 / (1 + PDF_hair^2 / PDF_light^2)
 // Delta lights or no competing sample: w_light = 1
@@ -1555,7 +1561,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             // Light sampling at the reconnection vertex replays its random numbers, as the light may have moved
             if (k == end && end_type == END_NEE) {
-                let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
+                let light: TreeSample = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
                     , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
 #endif
@@ -1563,7 +1569,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 if (!nee || !(rgb_to_greyscale(light.radiance) > 0.0f)) {
                     return fail;
                 }
-                return Shift(throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state) / r.jac, density / r.jac);
+                return Shift(throughput * AT_HAIR(hairLight(scene, surface, ray.unit_direction, light, b < scene.maxBounces()), lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state)) / r.jac, density / r.jac);
             }
             if (k == end && end_type == END_SKY) {
                 if (!nee) {
@@ -1583,7 +1589,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (rc == RC_LIGHT && nee && !footprint) {
                 // Forced reconnection to the light vertex of next event estimation (Sec. 6.2.3), the point its replayed
                 // random numbers pick again (unit Jacobian)
-                let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
+                let light: TreeSample = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
                     , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
 #endif
@@ -1591,7 +1597,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 if (!(rgb_to_greyscale(light.radiance) > 0.0f)) {
                     return fail;
                 }
-                return Shift(throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state), 1.0f);
+                return Shift(throughput * AT_HAIR(hairLight(scene, surface, ray.unit_direction, light, b < scene.maxBounces()), lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state)), 1.0f);
             }
             if (rc == RC_NONE && end_type == END_POINT && point_light_lighting) {
                 return Shift(throughput * emission, 1.0f);
@@ -1619,12 +1625,12 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
 #endif
             if (nee) {
-                let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
+                let light: TreeSample = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
                     , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
 #endif
                     );
-                let f: float3 = throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state);
+                let f: float3 = throughput * AT_HAIR(hairLight(scene, surface, ray.unit_direction, light, b < scene.maxBounces()), lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state));
                 var candidate: Reservoir = chain;
                 if (chain_found) {
                     candidate.radiance = safeDivide(f, chain_throughput);
@@ -1639,7 +1645,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 }
                 offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
             }
-            if (nee && environmentMapped(scene) && b < scene.maxBounces()) {
+            // No sky sample at hair
+            if (nee && AT_HAIR(false, environmentMapped(scene)) && b < scene.maxBounces()) {
                 let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state);
                 let f: float3 = throughput * sky.color;
                 var candidate: Reservoir = chain;
@@ -1679,13 +1686,23 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     dir = normalize(reconnection - (ray.origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, is_inside != refracted)));
                 }
                 // The path tracer samples again or mirrors directions sampled to the wrong side of the face, which no density reaches
-                if (wrongSide(is_inside, refracted, dir, surface.geometry_n)) {
+                if (AT_HAIR(false, wrongSide(is_inside, refracted, dir, surface.geometry_n))) {
                     return fail;
                 }
             } else if (!arrived) {
-                var bsdf_sampled: SampleBSDF = sampleBSDF(ray.unit_direction, surface.smooth_n, material, eta.x, eta.y, surface.random_state, float2(0.0f));
+                var bsdf_sampled: SampleBSDF = AT_HAIR(scene.sampleHair(surface.hair, material.albedo, material.specular_tint, ray.unit_direction, surface.random_state),
+                    sampleBSDF(ray.unit_direction, surface.smooth_n, material, eta.x, eta.y, surface.random_state, float2(0.0f)));
+#ifdef FK_FCPT_WALK
+                if (hair && !(bsdf_sampled.pdf > 0.0f)) {
+                    // Hair's row past a pole: no direction
+                    if (replay) {
+                        return fail;
+                    }
+                    break;
+                }
+#endif
                 // Rays sampled to the wrong side of the face are sampled again or mirrored, as the path tracer's
-                wrong_side = wrongSide(is_inside, bsdf_sampled.refracted, bsdf_sampled.unit_direction, surface.geometry_n);
+                wrong_side = AT_HAIR(false, wrongSide(is_inside, bsdf_sampled.refracted, bsdf_sampled.unit_direction, surface.geometry_n));
                 if (wrong_side && material.transmission > 0.0f) {
                     let geometry_bsdf_sampled: SampleBSDF = sampleBSDF(bsdf_sampled.unit_direction, surface.geometry_n, material, eta.x, eta.y, bsdf_sampled.random_state, float2(0.0f));
                     bsdf_sampled.unit_direction = geometry_bsdf_sampled.unit_direction;
@@ -1703,63 +1720,71 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             // Connections evaluate the given direction
             if (connect || arrived) {
-                // The stored lobe toward dir by its half vector terms, those of sampleBSDF where drawn
-                let in_dir: float3 = ray.unit_direction;
-                let n_i: float3 = surface.smooth_n * sign(n_dot_v);
-                let n_i_dot_l: float = dot(n_i, dir);
-                let alpha: float = material.roughness * material.roughness;
-                let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
-                let sheen_profile: SheenProfile = sheenProfile(negate(in_dir), n_i, material);
-                var ggx_n: float3 = reflectedHalf(in_dir, dir);
-                if (lobe_index == LOBE_REFRACT) {
-                    ggx_n = refractedHalf(in_dir, dir, surface.smooth_n, eta.x, eta.y);
-                }
-                if (lobe_index == LOBE_DIFFUSE) {
-                    ggx_n = sampledHalf(in_dir, surface.smooth_n, material, surface.random_state, frame);
-                }
-                var lobe_terms: BSDFLobes = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta.x, eta.y,
-                    frame, sheen_profile);
-                lobe_terms.translucent_share = translucentShare(material);
-                var pdf: float = 0.0f;
-                var lobe_throughput: float3 = float3(0.0f);
-                switch (lobe_index) {
-                case LOBE_DIFFUSE:
-                    pdf = diffusePDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
-                    lobe_throughput = diffuseBSDF(dir, n_i, alpha, material, lobe_terms);
-                    break;
-                case LOBE_REFRACT:
-                    pdf = refractPDF(n_i_dot_l, dot(dir, ggx_n), abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
-                    lobe_throughput = refractBSDF(dir, n_i, alpha, material, lobe_terms);
-                    break;
-                case LOBE_SHEEN_VELVET:
-                    pdf = sheenVelvetPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
-                    lobe_throughput = sheenVelvetBSDF(dir, n_i, alpha, material, lobe_terms);
-                    break;
-                default:
-                    pdf = reflectPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
-                    lobe_throughput = reflectBSDF(dir, n_i, alpha, material, lobe_terms);
-                    break;
-                }
-                // Directions the lobe can't sample carry no throughput
-                if (pdf > 0.0f) {
-                    lobe = SampleBSDF(dir, lobe_throughput, surface.random_state, lobe_index == LOBE_REFRACT,
-                        lobe_index, pdf);
+#ifdef FK_FCPT_WALK
+                if (hair) {
+                    lobe = scene.connectHair(surface.hair, material.albedo, material.specular_tint, ray.unit_direction,
+                        dir);
+                } else
+#endif
+                {
+                    // The stored lobe toward dir by its half vector terms, those of sampleBSDF where drawn
+                    let in_dir: float3 = ray.unit_direction;
+                    let n_i: float3 = surface.smooth_n * sign(n_dot_v);
+                    let n_i_dot_l: float = dot(n_i, dir);
+                    let alpha: float = material.roughness * material.roughness;
+                    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
+                    let sheen_profile: SheenProfile = sheenProfile(negate(in_dir), n_i, material);
+                    var ggx_n: float3 = reflectedHalf(in_dir, dir);
+                    if (lobe_index == LOBE_REFRACT) {
+                        ggx_n = refractedHalf(in_dir, dir, surface.smooth_n, eta.x, eta.y);
+                    }
+                    if (lobe_index == LOBE_DIFFUSE) {
+                        ggx_n = sampledHalf(in_dir, surface.smooth_n, material, surface.random_state, frame);
+                    }
+                    var lobe_terms: BSDFLobes = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta.x, eta.y,
+                        frame, sheen_profile);
+                    lobe_terms.translucent_share = translucentShare(material);
+                    var pdf: float = 0.0f;
+                    var lobe_throughput: float3 = float3(0.0f);
+                    switch (lobe_index) {
+                    case LOBE_DIFFUSE:
+                        pdf = diffusePDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
+                        lobe_throughput = diffuseBSDF(dir, n_i, alpha, material, lobe_terms);
+                        break;
+                    case LOBE_REFRACT:
+                        pdf = refractPDF(n_i_dot_l, dot(dir, ggx_n), abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
+                        lobe_throughput = refractBSDF(dir, n_i, alpha, material, lobe_terms);
+                        break;
+                    case LOBE_SHEEN_VELVET:
+                        pdf = sheenVelvetPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
+                        lobe_throughput = sheenVelvetBSDF(dir, n_i, alpha, material, lobe_terms);
+                        break;
+                    default:
+                        pdf = reflectPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
+                        lobe_throughput = reflectBSDF(dir, n_i, alpha, material, lobe_terms);
+                        break;
+                    }
+                    // Directions the lobe can't sample carry no throughput
+                    if (pdf > 0.0f) {
+                        lobe = SampleBSDF(dir, lobe_throughput, surface.random_state, lobe_index == LOBE_REFRACT,
+                            lobe_index, pdf);
+                    }
                 }
             }
             // Delta lobes have no competing light sample, straight transmission keeps the preceding vertex's weights
             // Diffuse and sheen lobes are never delta
             let spread_out: bool = lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_SHEEN_VELVET;
-            let delta: bool = !spread_out && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y));
+            let delta: bool = AT_HAIR(false, !spread_out && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y)));
 #ifdef FK_FCPT_WALK
-            straight = lobe_index == LOBE_REFRACT && material.ior == 1.0f;
+            straight = !hair && lobe_index == LOBE_REFRACT && material.ior == 1.0f;
             // Camera status kept by a refraction at equal indices, which bends no ray
-            viewed = viewed && lobe_index == LOBE_REFRACT && eta.x == eta.y;
+            viewed = viewed && !hair && lobe_index == LOBE_REFRACT && eta.x == eta.y;
 #endif
             // Translucent surfaces are thin, as in the path tracer
             let through: bool = isTranslucent(material) && lobe_index == LOBE_DIFFUSE && dot(dir, surface.geometry_n) < 0.0f;
             if (nee && !delta && !wrong_side) {
-                nee_vertex = NEEVertex(false, lobe.pdf, ray.origin, select(surface.smooth_n, float3(0.0f), isTranslucent(material)), ray.origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, through));
-            } else if (lobe_index != LOBE_REFRACT || eta.x != eta.y) {
+                nee_vertex = NEEVertex(false, lobe.pdf, ray.origin, select(surface.smooth_n, float3(0.0f), AT_HAIR(true, isTranslucent(material))), ray.origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, through));
+            } else if (AT_HAIR(true, lobe_index != LOBE_REFRACT || eta.x != eta.y)) {
                 nee_vertex.none = true;
             }
             // Inverse ray footprint criterion for the density of the direction leaving this vertex (Eq. 5)
@@ -1808,6 +1833,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             prev = Vertex(rough, lobe_index, lobe.pdf, abs(dot(surface.geometry_n, dir)), is_inside);
             // Straight transmission keeps the preceding vertex's density against the sky
             sky_pdf = select(lobe.pdf, sky_pdf, lobe_index == LOBE_REFRACT && eta.x == eta.y);
+#ifdef FK_FCPT_WALK
+            sky_pdf = select(sky_pdf, 0.0f, hair);  // Hair's sky is unsampled
+#endif
             if (coneUsed()) {
                 // Omega = 1 / PDF ~= PI * theta^2
                 // => spread += 2 * theta = 2 * sqrt(1 / (PI * PDF)), at most PI; delta lobes keep it
@@ -1872,11 +1900,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
         }
         // Only occluders in front of the reconnection vertex matter, passing through a point light no other
-        hit = scene.traverseInstanceBVH(ray, !point_light_lighting, select(POW32, distance(reconnection, ray.origin) * 1.001f, replay && b == stop && rc == RC_SURFACE), true,
+        hit = scene.traverseInstanceBVH(ray, !point_light_lighting, select(POW32, distance(reconnection, ray.origin) * 1.001f, replay && b == stop && rc == RC_SURFACE),
 #ifdef FK_FCPT_WALK
-            straight ? hit : noHit(), viewed
+            !hair, straight || hair ? hit : noHit(), viewed  // A fiber's own segment skipped
 #else
-            hit, false
+            true, hit, false
 #endif
             );
         // Reaching the reconnection vertex, it is shaded exactly where the stored path has it
