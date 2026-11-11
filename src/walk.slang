@@ -1002,7 +1002,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
 // Triangle: uniform point, PDF = solidAngle(P(light))
 // Sphere: uniform in its cone, PDF = P(light) * sphereDensity
 // radiance = L * T / PDF; sided: light all around, origin lifted to the light's side of the face
-public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_n: float3, geometry_offset: float, sided: bool, init_random_state: uint
+[noinline] public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_n: float3, geometry_offset: float, sided: bool, init_random_state: uint
 #ifdef FK_FCPT_WALK
     , context: ShadowContext
 #endif
@@ -1204,7 +1204,7 @@ func searchCDF<S: IScene>(scene: S, start: uint2, step: uint2, count: uint, u: f
 }
 
 // Radiance the path tracer's ray from a vertex along dir receives from the environment map if it hits nothing on the way.
-func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, is_inside: bool, dir: float3) -> float3 {
+[noinline] func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, is_inside: bool, dir: float3) -> float3 {
     let inside: bool = is_inside != wrongSide(is_inside, false, dir, surface.geometry_n);
     let ray: Ray = Ray(origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, inside), dir);
     return scene.env_map_sample(dir, 0u, LOBE_NONE) * scene.shadowTransmittance(ray, POW32);
@@ -1264,7 +1264,7 @@ func escapeWeight<S: IScene>(scene: S, pdf: float, dir: float3) -> float {
 }
 
 // Environment toward dir, from the depth and lobe of the vertex the ray left
-func environment<S: IScene>(scene: S, dir: float3
+[noinline] func environment<S: IScene>(scene: S, dir: float3
 #ifdef FK_FCPT_WALK
     , depth: uint, lobe: uint
 #endif
