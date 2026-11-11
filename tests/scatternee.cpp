@@ -64,7 +64,7 @@ int main() {
         double sum = 0, sum2 = 0;
         for (int i = 0; i < N; i++) {
             ShadowContext context = {V(0.1f, 0.1f, 0.1f), V(0.1f, 0.1f, 0.1f), Vector<uint32_t, 2>(9, 9), dir, 3, 0, false,
-                0, 0, false, V(0, 0, 0), {}};
+                0, 0, false, V(0, 0, 0), {}, false};
             const TreeSample s = sampleLightTree_0(V(0, 0, 0), dir, dir, 0, true, hash(i), &context);
             sum += s.radiance.x, sum2 += double(s.radiance.x) * s.radiance.x;
         }
@@ -102,7 +102,7 @@ int main() {
         double sum = 0, sum2 = 0;
         for (int i = 0; i < N; i++) {
             ShadowContext context = {V(0.1f, 0.1f, 0.1f), V(0.1f, 0.1f, 0.1f), Vector<uint32_t, 2>(9, 9), DOWN, 3, 0,
-                false, 0, 0, false, V(0, 0, 0), {}};
+                false, 0, 0, false, V(0, 0, 0), {}, false};
             const TreeSample s = sampleLightTree_0(from, DOWN, DOWN, 0, true, hash(i), &context);
             sum += s.radiance.x, sum2 += double(s.radiance.x) * s.radiance.x;
         }

@@ -39,7 +39,7 @@ int main() {
                             {ONE, extinct}, FILLS};
                         Hit none = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
                         ShadowContext context = shadowContext_0(&faced, turned, side, carried, AIR, in, 5, 2, 0.75f,
-                            0.125f, false, ZERO, &none);
+                            0.125f, false, ZERO, &none, false);
                         lightTransmittance_0(ZERO, light, 0, light, &context, 77);
                         // flex-cuda-pt's, indexed by the faced normal
                         V ext[2] = {carried, carried};

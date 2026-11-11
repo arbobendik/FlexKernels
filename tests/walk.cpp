@@ -31,7 +31,8 @@ static const V ZERO(0, 0, 0), ONE(1, 1, 1);
 static float dotv(V a, V b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static V scaled(V a, float s) { return V(a.x * s, a.y * s, a.z * s); }
 struct Shape { V center; float radius; bool inward; Material layer[2]; unsigned layers; float coverage; bool encloses;
-    Medium volume; bool hidden = false; float tilt = 0, offset = 1e-4f; V axis = V(0, 0, 1); float cap = -2; };
+    Medium volume; bool hidden = false; float tilt = 0, offset = 1e-4f; V axis = V(0, 0, 1); float cap = -2;
+    bool hair = false; };
 static std::vector<Shape> scene;
 static const Hit NO_HIT = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
 // The camera's medium: fog where a furnace sets it, else none; homogeneous, or varying of the same coefficients
@@ -101,10 +102,28 @@ Surface HookScene_surfaceAtPath_0(Hit hit, V origin, uint32_t state, float, uint
     // Its smooth normal tilted toward +x by tilt where a furnace sets it, its offset the consumer's start height
     const V x = V(1, 0, 0) - scaled(n, n.x);
     const V smooth = s.tilt == 0 ? n : scaled(n, cosf(s.tilt)) + scaled(x, sinf(s.tilt) / sqrtf(dotv(x, x)));
-    return Surface{smooth, n, s.offset, s.layer[layer], false, state, s.coverage, s.encloses, s.volume, 0xFFFFFFFFu};
+    Surface surface = {smooth, n, s.offset, s.layer[layer], false, state, s.coverage, s.encloses, s.volume,
+        0xFFFFFFFFu};
+    if (s.hair) surface.hair = V(0, 0, 1), surface.geometry_offset = 0;  // A fiber along z, from its vertex
+    return surface;
 }
 Surface HookScene_surfaceAt_0(Hit hit, V origin, uint32_t state) {
     return HookScene_surfaceAtPath_0(hit, origin, state, 0, 0, 1, 0, ZERO);
+}
+// Hair as an isotropic fiber, a stand-in for flex-cuda-pt's baked far field: albedo times tint over the sphere, of
+// density 1 / (4 pi), its throughput the albedo; directions it samples uniform over the sphere
+static int hair_connects = 0;
+SampleBSDF HookScene_connectHair_0(V, V albedo, V tint, V in_dir, V out_dir) {
+    hair_connects++;  // Forward a refraction, as flex-cuda-pt labels hair's, else a reflection (2)
+    return SampleBSDF{out_dir, V(albedo.x * tint.x, albedo.y * tint.y, albedo.z * tint.z), 0, false,
+        dotv(out_dir, in_dir) > 0 ? 1u : 2u, 0.25f / 3.14159265f};
+}
+SampleBSDF HookScene_sampleHair_0(V hair, V albedo, V tint, V in_dir, uint32_t state) {
+    const Random u = pcg(state), v = pcg(u.state);
+    const float z = 1 - 2 * u.value, r = sqrtf(fmaxf(0, 1 - z * z)), phi = 6.2831853f * v.value;
+    SampleBSDF sampled = HookScene_connectHair_0(hair, albedo, tint, in_dir, V(r * cosf(phi), r * sinf(phi), z));
+    sampled.random_state = v.state;
+    return sampled;
 }
 // No emitting triangle: its lights are delta ones
 Surface HookScene_lightSurfaceAt_0(Hit hit, V point, uint32_t state, V, uint32_t, float) {
