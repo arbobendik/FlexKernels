@@ -121,6 +121,8 @@ __extern_cpp public struct Hit {
     __extern_cpp public uint is_point_light;
     __extern_cpp public float distance;
 }
+// No hit, as a miss reads
+[ForceInline] Hit noHit() { return Hit(float2(0.0f), UINT_MAX, 0u, 0u, 0.0f); }
 
 // Target plumbing: the triangle hit stored in a reservoir's rc, a uint4 (instance, triangle, uv), or flex-cuda-pt's
 // Hit, which its adapter reads, and writes through pointers to both; and a reservoir of zeros, flex-cuda-pt's
@@ -746,6 +748,8 @@ __extern_cpp public struct Light {
 // flex-cuda-pt's differ:
 // traverseInstanceBVH's and shadowTransmittanceIn's surface whether the ray leaves a surface, which the consumer starts
 // it past by its own margin, or a medium vertex, which it starts right at, so it meets an exit face nearer than that;
+// traverseInstanceBVH's left the hit a ray leaves by passing straight through it, its distance the segment that reached
+// it, which flex-cuda-pt's traversal skips, else none (instance UINT_MAX);
 // lightNode(n) the leaf texel of node n of the light BVH (x zero for inner nodes, two for point lights, y the light or
 // instance, z the triangle), lightSecond(n) its second child, light(i) point light i, triangleOffset(i) the first
 // prototype triangle of instance i, lightTrail(j) the texel of the trail of slot j (x, y its bits) and
@@ -760,7 +764,7 @@ __extern_cpp public struct Light {
 // currentDomain(p, dom) the primary hit of p this frame, the consumer's own, the passes' uniforms, the stores of the
 // reservoirs of each round, of last frame's uv and of the shifts and duplication map, and the color written
 public interface IScene {
-    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface);
+    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface, Hit left);
     public float3 shadowTransmittance(Ray ray, float l);
     public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
@@ -836,8 +840,8 @@ public interface IScene {
 // buffer it stands for in its shader, and flex-cuda-pt's function of the name its adapter defines, in place of a call
 public struct HookScene : IScene {
     __target_intrinsic(wgsl, "traverseInstanceBVH($0, $1, $2)")
-    __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2, $3)")
-    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface);
+    __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2, $3, $4)")
+    public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface, Hit left);
     __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
     __target_intrinsic(cuda, "fcptShadowTransmittance($0, $1)")
     public float3 shadowTransmittance(Ray ray, float l);
@@ -1411,7 +1415,7 @@ uint extractBits(uint e, uint offset, uint count) {
         ray.unit_direction = isotropic(stream(r.seed, b));
         prev = scatteredVertex(is_inside);
         sky_pdf = prev.pdf;
-        hit = scene.traverseInstanceBVH(ray, true, POW32, false);
+        hit = scene.traverseInstanceBVH(ray, true, POW32, false, noHit());
     }
     return false;
 }
@@ -1563,6 +1567,10 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         // Smooth normal the surface emits along, before it faces the ray
         var front_n: float3 = float3(0.0f);
         var scatter: bool = false;
+#ifdef FK_FCPT_WALK
+        // Leaving by passing straight through the hit, at index of refraction 1, as flex-cuda-pt's walk
+        var straight: bool = false;
+#endif
         var geometry_density: float = 0.0f;
         if (!point_light_lighting) {
             if (coneUsed() || layersUsed()) {
@@ -1790,6 +1798,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             // Delta lobes have no competing light sample, straight transmission keeps the preceding vertex's weights
             let delta: bool = lobe_index != LOBE_DIFFUSE && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y));
+#ifdef FK_FCPT_WALK
+            straight = lobe_index == LOBE_REFRACT && material.ior == 1.0f;
+#endif
             // Translucent surfaces are thin, as in the path tracer
             let through: bool = isTranslucent(material) && lobe_index == LOBE_DIFFUSE && dot(dir, surface.geometry_n) < 0.0f;
             if (nee && !delta && !wrong_side) {
@@ -1862,7 +1873,12 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             ray.unit_direction = dir;
             if (!(layersUsed() && passes)) {
+#ifdef FK_FCPT_WALK
+                // Straight through from the hit itself, the traversal skipping its triangle
+                ray.origin += select(surface.geometry_offset, 0.0f, straight) * select(surface.smooth_n, - surface.smooth_n, is_inside != through);
+#else
                 ray.origin += surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, is_inside != through);
+#endif
             }
         } else {
             prev.rough = false;
@@ -1901,7 +1917,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
         }
         // Only occluders in front of the reconnection vertex matter, passing through a point light no other
-        hit = scene.traverseInstanceBVH(ray, !point_light_lighting, select(POW32, distance(reconnection, ray.origin) * 1.001f, replay && b == stop && rc == RC_SURFACE), true);
+        hit = scene.traverseInstanceBVH(ray, !point_light_lighting, select(POW32, distance(reconnection, ray.origin) * 1.001f, replay && b == stop && rc == RC_SURFACE), true,
+#ifdef FK_FCPT_WALK
+            straight ? hit : noHit()
+#else
+            hit // Unread: FlexLight's traversal takes no skip
+#endif
+            );
         // Reaching the reconnection vertex, it is shaded exactly where the stored path has it
         if (replay && b == stop && rc == RC_SURFACE && hit.instance_index == rc_hit.instance_index && hit.triangle_index == rc_hit.triangle_index) {
             hit.uv = rc_hit.uv;
