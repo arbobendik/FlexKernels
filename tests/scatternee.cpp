@@ -74,6 +74,22 @@ int main() {
         printf("ray along (%g, %g, %g): %.5f +- %.5f of %.5f sr%s\n", dir.x, dir.y, dir.z, mean, se, omega,
             ok ? "" : "  FAILED");
     }
+    // A translucent sheet's opaque start facing away from the triangle, lit from behind: light sampled all around, from
+    // the vertex itself, unlifted toward a light behind its face, so its samples estimate the solid angle from there
+    {
+        double sum = 0, sum2 = 0;
+        for (int i = 0; i < N; i++) {
+            ShadowContext context = {V(0.1f, 0.1f, 0.1f), V(0.1f, 0.1f, 0.1f), Vector<uint32_t, 2>(9, 9), DOWN, 3, 0,
+                true, 0, 0, true, DOWN, {}};
+            context.faced = false;
+            const TreeSample s = sampleLightTree_0(V(0, 0, 0), DOWN, DOWN, 0.01f, true, hash(i), &context);
+            sum += s.radiance.x, sum2 += double(s.radiance.x) * s.radiance.x;
+        }
+        const double mean = sum / N, se = sqrt((sum2 / N - mean * mean) / N);
+        const bool ok = fabs(mean - omega) < 4 * se && emission_misfits == 0;
+        failed += !ok;
+        printf("translucent sheet lit from behind: %.5f +- %.5f of %.5f sr%s\n", mean, se, omega, ok ? "" : "  FAILED");
+    }
     // From behind the triangle, 1 above it: it emits on both sides, as flex-cuda-pt's emitters, so its samples estimate
     // the solid angle it spans from there
     {
