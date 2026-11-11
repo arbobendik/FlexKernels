@@ -9,7 +9,7 @@ static const V ZERO(0, 0, 0), ONE(1, 1, 1);
 static float dotv(V a, V b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static V scaled(V a, float s) { return V(a.x * s, a.y * s, a.z * s); }
 struct Shape { V center; float radius; bool inward; Material layer[2]; unsigned layers; float coverage; bool encloses;
-    Medium volume; bool hidden = false; bool hair = false; };
+    Medium volume; bool hidden = false; bool hair = false; float tilt = 0; };
 static std::vector<Shape> scene;
 static const Hit NO_HIT = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
 static Medium camera_fog = {ZERO, ZERO};
@@ -25,7 +25,7 @@ static Material dielectric(float ior) {
 }
 
 static Hit last_shaded = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
-static int skips = 0, skip_misfits = 0;
+static int skips = 0, skip_misfits = 0, own_skips = 0;
 static V last_point;
 static float last_ior = 1;
 Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, Hit left, bool viewed) {
@@ -34,6 +34,7 @@ Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, 
             || left.distance != last_shaded.distance
             || ray.origin.x != last_point.x || ray.origin.y != last_point.y || ray.origin.z != last_point.z
             || last_ior != 1;
+    own_skips += left.instance_index != 0xFFFFFFFFu && !surface;
     Hit hit = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, max_len};
     const float near = surface ? 1e-4f : 0.0f;
     for (unsigned i = 0; i < scene.size(); i++) {
@@ -41,7 +42,9 @@ Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, 
         const V oc = ray.origin - scene[i].center;
         const float b = dotv(oc, ray.unit_direction), c = dotv(oc, oc) - scene[i].radius * scene[i].radius;
         if (b * b - c < 0) continue;
-        const float s = sqrtf(b * b - c), t = -b - s > near ? -b - s : -b + s;
+        const bool own = left.instance_index == i;
+        const float s = sqrtf(b * b - c), t = -b - s > near && !own ? -b - s : -b + s;
+        if (own && !(t > 1e-4f * scene[i].radius)) continue;
         if (t > near && t < hit.distance) hit.instance_index = i, hit.distance = t;
     }
     return hit;
@@ -55,7 +58,10 @@ Surface HookScene_surfaceAtPath_0(Hit hit, V origin, uint32_t state, float, uint
         && (dir.x != handed_direction.x || dir.y != handed_direction.y || dir.z != handed_direction.z);
     const Shape& s = scene[hit.instance_index];
     const V n = scaled(origin - s.center, (s.inward ? -1 : 1) / s.radius);
-    Surface surface = {n, n, 1e-4f, s.layer[layer], false, state, s.coverage, s.encloses, s.volume, 0xFFFFFFFFu};
+    // Smooth normal tilted toward +x by tilt
+    const V x = V(1, 0, 0) - scaled(n, n.x);
+    const V smooth = s.tilt == 0 ? n : scaled(n, cosf(s.tilt)) + scaled(x, sinf(s.tilt) / sqrtf(dotv(x, x)));
+    Surface surface = {smooth, n, 1e-4f, s.layer[layer], false, state, s.coverage, s.encloses, s.volume, 0xFFFFFFFFu};
     if (s.hair) surface.hair = V(0, 0, 1), surface.geometry_offset = 0;
     return surface;
 }
@@ -97,10 +103,10 @@ Matrix<float, 3, 3> HookScene_worldTriangle_0(uint32_t, uint32_t) { return Matri
 V HookScene_calculatePointLightContrib_0(uint32_t) { return ZERO; }
 V HookScene_hitPosition_0(Hit) { return ZERO; }
 // Shadows pass index-matched clear surfaces and the uncovered share of others, media by exp(-extinction * d)
-static V shadowThrough(Ray ray, float l, bool surface) {
+static V shadowThrough(Ray ray, float l, bool surface, Hit left = NO_HIT) {
     float share = 1;
-    for (float along = 0;; surface = true) {
-        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, surface, NO_HIT, false);
+    for (float along = 0;; surface = true, left = NO_HIT) {
+        const Hit hit = HookScene_traverseInstanceBVH_0(ray, false, l - along, surface, left, false);
         if (hit.instance_index == 0xFFFFFFFFu) return scaled(ONE, share);
         const Material& m = scene[hit.instance_index].layer[0];
         if (!(m.transmission == 1 && m.ior == 1 && scene[hit.instance_index].layers == 1))
@@ -111,11 +117,11 @@ static V shadowThrough(Ray ray, float l, bool surface) {
 }
 V HookScene_shadowTransmittance_0(Ray ray, float l) { return shadowThrough(ray, l, true); }
 V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t,
-    bool surface, float length, float, Hit) {
+    bool surface, float length, float, Hit left) {
     const V from = ray.origin - segment_start;
     if (checking && !surface) segments++, misfits += fabsf(sqrtf(dotv(from, from)) - length) > 1e-6f;
-    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface, NO_HIT, false).distance, l);
-    const V through = shadowThrough(ray, l, surface);
+    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface, left, false).distance, l);
+    const V through = shadowThrough(ray, l, surface, left);
     return V(through.x * expf(-extinction.x * inside), through.y * expf(-extinction.y * inside),
         through.z * expf(-extinction.z * inside));
 }
@@ -405,6 +411,35 @@ int main() {
             failed);
     }
     summing = seen = false;
+    bounces = 64, sky = 1, sun = false, camera_fog = none, seen = false, own_skips = 0, hair_connects = 0, cdf = false;
+    scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
+    scene[0].hair = true;
+    furnace("white hair", camera, center, 0.3f, 1, failed);
+    summing = true;
+    furnace("white hair, ReSTIR off", camera, center, 0.3f, 1, failed);
+    summing = false;
+    cdf = true;
+    furnace("white hair, sky sampled", camera, center, 0.3f, 1, failed);
+    cdf = false;
+    failed += own_skips == 0 || hair_connects == 0;
+    printf("hair: %d rays past their own segment, %d connections%s\n", own_skips, hair_connects,
+        own_skips == 0 || hair_connects == 0 ? "  FAILED" : "");
+    // Hair lit by the sun all around: f E = 1 / (4 * PI)
+    bounces = 0, sky = 0, sun = true;
+    for (const float tilt : {0.0f, -2.0f}) {
+        const V p(0.70710678f, 0, 0.70710678f);
+        scene = {{ZERO, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
+        scene[0].hair = true, scene[0].tilt = tilt;
+        furnace(tilt == 0 ? "hair under the sun, its normal toward it" : "hair under the sun, its normal away",
+            scaled(p, 5), p, 0.001f, 0.25 / 3.14159265, failed);
+    }
+    bounces = 64, sun = false;
+    sky = 0;
+    scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}, {V(0, 0, -2.5f), 1, false, {lambert(0, 1)}, 1, 1,
+        false, none}};
+    scene[0].hair = true;
+    twins("hidden emitter past hair", camera, center, 0.1f, 1);
+    sky = 1, cdf = true;
     sun = slot_leaf = true;
     const float unslotted = lightPdf_0(ZERO, ZERO, ZERO, 0xFFFFFFFFu, SUN), slotted = lightPdf_0(ZERO, ZERO, ZERO, 0, SUN);
     sun = slot_leaf = false;
