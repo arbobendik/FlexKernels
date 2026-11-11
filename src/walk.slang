@@ -1212,6 +1212,13 @@ public func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, star
     return solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), light_point - start);
 }
 
+// at hair, of flex-cuda-pt's walk, the first, else the second; on other targets, which have no hair, the second alone
+#ifdef FK_FCPT_WALK
+#define AT_HAIR(at_hair, elsewhere) (hair ? (at_hair) : (elsewhere))
+#else
+#define AT_HAIR(at_hair, elsewhere) (elsewhere)
+#endif
+
 #ifdef FK_FCPT_WALK
 // Hair's light sample, as flex-cuda-pt's walk weighs it: its far field toward the light against sampling it, by the
 // power heuristic, where a direction it samples competes; a delta light, of no density, weighs fully
@@ -1695,7 +1702,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             // Light sampling at the reconnection vertex replays its random numbers, as the light may have moved
             if (k == end && end_type == END_NEE) {
-                let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
+                let light: TreeSample = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
                     , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
 #endif
@@ -1703,7 +1710,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 if (!nee || !(rgb_to_greyscale(light.radiance) > 0.0f)) {
                     return fail;
                 }
-                return Shift(throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state) / r.jac, density / r.jac);
+                return Shift(throughput * AT_HAIR(hairLight(scene, surface, ray.unit_direction, light, b < scene.maxBounces()), lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state)) / r.jac, density / r.jac);
             }
             if (k == end && end_type == END_SKY) {
                 if (!nee) {
@@ -1723,7 +1730,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (rc == RC_LIGHT && nee && !footprint) {
                 // Forced reconnection to the light vertex of next event estimation (Sec. 6.2.3), the point its replayed
                 // random numbers pick again (unit Jacobian)
-                let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
+                let light: TreeSample = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
                     , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
 #endif
@@ -1731,7 +1738,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 if (!(rgb_to_greyscale(light.radiance) > 0.0f)) {
                     return fail;
                 }
-                return Shift(throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state), 1.0f);
+                return Shift(throughput * AT_HAIR(hairLight(scene, surface, ray.unit_direction, light, b < scene.maxBounces()), lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state)), 1.0f);
             }
             if (rc == RC_NONE && end_type == END_POINT && point_light_lighting) {
                 return Shift(throughput * emission, 1.0f);
@@ -1759,12 +1766,12 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
 #endif
             if (nee) {
-                let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
+                let light: TreeSample = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
                     , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
 #endif
                     );
-                let f: float3 = throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state);
+                let f: float3 = throughput * AT_HAIR(hairLight(scene, surface, ray.unit_direction, light, b < scene.maxBounces()), lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state));
                 var candidate: Reservoir = chain;
                 if (chain_found) {
                     candidate.radiance = safeDivide(f, chain_throughput);
@@ -1779,7 +1786,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 }
                 offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
             }
-            if (nee && environmentMapped(scene) && b < scene.maxBounces()) {
+            // None from hair, as flex-cuda-pt's before it samples the sky: the sky's light samples weigh by surfaces' BSDFs, not fibers'
+            if (nee && AT_HAIR(false, environmentMapped(scene)) && b < scene.maxBounces()) {
                 let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state);
                 let f: float3 = throughput * sky.color;
                 var candidate: Reservoir = chain;
@@ -1819,13 +1827,23 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     dir = normalize(reconnection - (ray.origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, is_inside != refracted)));
                 }
                 // The path tracer samples again or mirrors directions sampled to the wrong side of the face, which no density reaches
-                if (wrongSide(is_inside, refracted, dir, surface.geometry_n)) {
+                if (AT_HAIR(false, wrongSide(is_inside, refracted, dir, surface.geometry_n))) {
                     return fail;
                 }
             } else if (!arrived) {
-                var bsdf_sampled: SampleBSDF = sampleBSDF(ray.unit_direction, surface.smooth_n, material, eta.x, eta.y, surface.random_state, float2(0.0f));
+                var bsdf_sampled: SampleBSDF = AT_HAIR(scene.sampleHair(surface.hair, material.albedo, material.specular_tint, ray.unit_direction, surface.random_state),
+                    sampleBSDF(ray.unit_direction, surface.smooth_n, material, eta.x, eta.y, surface.random_state, float2(0.0f)));
+#ifdef FK_FCPT_WALK
+                if (hair && !(bsdf_sampled.pdf > 0.0f)) {
+                    // Hair's row past a pole: no direction
+                    if (replay) {
+                        return fail;
+                    }
+                    break;
+                }
+#endif
                 // Rays sampled to the wrong side of the face are sampled again or mirrored, as the path tracer's
-                wrong_side = wrongSide(is_inside, bsdf_sampled.refracted, bsdf_sampled.unit_direction, surface.geometry_n);
+                wrong_side = AT_HAIR(false, wrongSide(is_inside, bsdf_sampled.refracted, bsdf_sampled.unit_direction, surface.geometry_n));
                 if (wrong_side && material.transmission > 0.0f) {
                     let geometry_bsdf_sampled: SampleBSDF = sampleBSDF(bsdf_sampled.unit_direction, surface.geometry_n, material, eta.x, eta.y, bsdf_sampled.random_state, float2(0.0f));
                     bsdf_sampled.unit_direction = geometry_bsdf_sampled.unit_direction;
@@ -1842,21 +1860,22 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             // Connections evaluate the given direction
             if (connect || arrived) {
-                lobe = connectBSDF(ray.unit_direction, dir, surface.smooth_n, material, eta.x, eta.y, lobe_index, surface.random_state);
+                lobe = AT_HAIR(scene.connectHair(surface.hair, material.albedo, material.specular_tint, ray.unit_direction, dir),
+                    connectBSDF(ray.unit_direction, dir, surface.smooth_n, material, eta.x, eta.y, lobe_index, surface.random_state));
             }
             // Delta lobes have no competing light sample, straight transmission keeps the preceding vertex's weights
-            let delta: bool = lobe_index != LOBE_DIFFUSE && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y));
+            let delta: bool = AT_HAIR(false, lobe_index != LOBE_DIFFUSE && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y)));
 #ifdef FK_FCPT_WALK
-            straight = lobe_index == LOBE_REFRACT && material.ior == 1.0f;
+            straight = !hair && lobe_index == LOBE_REFRACT && material.ior == 1.0f;
             // Camera status kept by a refraction at equal indices, which bends no ray (flex-cuda-pt's rule A); Cycles'
             // rule would keep it across coverage gaps alone, this one expression
-            viewed = viewed && lobe_index == LOBE_REFRACT && eta.x == eta.y;
+            viewed = viewed && !hair && lobe_index == LOBE_REFRACT && eta.x == eta.y;
 #endif
             // Translucent surfaces are thin, as in the path tracer
             let through: bool = isTranslucent(material) && lobe_index == LOBE_DIFFUSE && dot(dir, surface.geometry_n) < 0.0f;
             if (nee && !delta && !wrong_side) {
-                nee_vertex = NEEVertex(false, lobe.pdf, ray.origin, select(surface.smooth_n, float3(0.0f), isTranslucent(material)), ray.origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, through));
-            } else if (lobe_index != LOBE_REFRACT || eta.x != eta.y) {
+                nee_vertex = NEEVertex(false, lobe.pdf, ray.origin, select(surface.smooth_n, float3(0.0f), AT_HAIR(true, isTranslucent(material))), ray.origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, through));
+            } else if (AT_HAIR(true, lobe_index != LOBE_REFRACT || eta.x != eta.y)) {
                 nee_vertex.none = true;
             }
             // Inverse ray footprint criterion for the density of the direction leaving this vertex (Eq. 5)
@@ -1903,6 +1922,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             // Straight transmission keeps the preceding vertex's density against the sky, as it keeps its light
             // sample: an escape past it is the direction that vertex's light sampling weighed
             sky_pdf = select(lobe.pdf, sky_pdf, lobe_index == LOBE_REFRACT && eta.x == eta.y);
+#ifdef FK_FCPT_WALK
+            sky_pdf = select(sky_pdf, 0.0f, hair);  // Escapes past hair, its sky unsampled, take the full weight
+#endif
             if (coneUsed()) {
                 spread = widened(spread, lobe.pdf, delta);
             }
@@ -1922,7 +1944,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             ray.unit_direction = dir;
             if (!(layersUsed() && passes)) {
 #ifdef FK_FCPT_WALK
-                // Straight through from the hit itself, the traversal skipping its triangle
+                // Straight through from the hit itself, the traversal skipping its triangle; a fiber, of no offset, from
+                // its vertex past its own segment
                 ray.origin += select(surface.geometry_offset, 0.0f, straight) * select(surface.smooth_n, - surface.smooth_n, is_inside != through);
 #else
                 ray.origin += surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, is_inside != through);
@@ -1965,11 +1988,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
         }
         // Only occluders in front of the reconnection vertex matter, passing through a point light no other
-        hit = scene.traverseInstanceBVH(ray, !point_light_lighting, select(POW32, distance(reconnection, ray.origin) * 1.001f, replay && b == stop && rc == RC_SURFACE), true,
+        hit = scene.traverseInstanceBVH(ray, !point_light_lighting, select(POW32, distance(reconnection, ray.origin) * 1.001f, replay && b == stop && rc == RC_SURFACE),
 #ifdef FK_FCPT_WALK
-            straight ? hit : noHit(), viewed
+            !hair, straight || hair ? hit : noHit(), viewed  // A fiber's own segment skipped, from no margin
 #else
-            hit, false // Unread: FlexLight's traversal takes no skip and has no hidden surfaces
+            true, hit, false // Unread: FlexLight's traversal takes no skip and has no hidden surfaces
 #endif
             );
         // Reaching the reconnection vertex, it is shaded exactly where the stored path has it
