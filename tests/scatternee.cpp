@@ -30,10 +30,12 @@ Surface HookScene_surfaceAt_0(Hit, V, uint32_t state) {
 // A sample's emission shaded seen from the point at the origin, the light unlifted: along the point's own direction, at
 // the vertex's depth (3), its distance; the samples handed otherwise counted
 static int emission_misfits = 0;
+static V from(0, 0, 0);
 Surface HookScene_lightSurfaceAt_0(Hit hit, V point, uint32_t state, V dir, uint32_t depth, float length) {
-    const float distance = sqrtf(point.x * point.x + point.y * point.y + point.z * point.z);
+    const V to(point.x - from.x, point.y - from.y, point.z - from.z);
+    const float distance = sqrtf(to.x * to.x + to.y * to.y + to.z * to.z);
     emission_misfits += depth != 3 || fabsf(length - distance) > 1e-6f * distance
-        || (dir.x * point.x + dir.y * point.y + dir.z * point.z) < (1 - 1e-6f) * distance;
+        || (dir.x * to.x + dir.y * to.y + dir.z * to.z) < (1 - 1e-6f) * distance;
     return HookScene_surfaceAt_0(hit, point, state);
 }
 V HookScene_shadowTransmittanceIn_0(Ray, float, V, uint32_t filling, uint32_t, uint32_t, uint32_t, bool, float, float) {
@@ -70,6 +72,28 @@ int main() {
         failed += !ok;
         printf("ray along (%g, %g, %g): %.5f +- %.5f of %.5f sr%s\n", dir.x, dir.y, dir.z, mean, se, omega,
             ok ? "" : "  FAILED");
+    }
+    // From behind the triangle, 1 above it: it emits on both sides, as flex-cuda-pt's emitters, so its samples estimate
+    // the solid angle it spans from there
+    {
+        from = V(0, 0, 2);
+        const V a(A.x, A.y, A.z - 2), b(B.x, B.y, B.z - 2), c(C.x, C.y, C.z - 2);
+        const double triple = a.x * (b.y * c.z - b.z * c.y) - a.y * (b.x * c.z - b.z * c.x)
+            + a.z * (b.x * c.y - b.y * c.x);
+        const double behind = 2 * atan2(fabs(triple), len(a) * len(b) * len(c) + dotd(a, b) * len(c)
+            + dotd(a, c) * len(b) + dotd(b, c) * len(a));
+        double sum = 0, sum2 = 0;
+        for (int i = 0; i < N; i++) {
+            ShadowContext context = {V(0.1f, 0.1f, 0.1f), V(0.1f, 0.1f, 0.1f), Vector<uint32_t, 2>(9, 9), DOWN, 3, 0,
+                false, 0, 0};
+            const TreeSample s = sampleLightTree_0(from, DOWN, DOWN, 0, true, hash(i), &context);
+            sum += s.radiance.x, sum2 += double(s.radiance.x) * s.radiance.x;
+        }
+        const double mean = sum / N, se = sqrt((sum2 / N - mean * mean) / N);
+        const bool ok = fabs(mean - behind) < 4 * se && emission_misfits == 0;
+        failed += !ok;
+        printf("from behind the light: %.5f +- %.5f of %.5f sr%s\n", mean, se, behind, ok ? "" : "  FAILED");
+        from = V(0, 0, 0);
     }
     // Escapes after a scattering vertex, and after a vertex of the phase function's density, which would split them
     double least = 1, split = 1;
