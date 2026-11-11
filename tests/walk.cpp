@@ -31,7 +31,7 @@ static const V ZERO(0, 0, 0), ONE(1, 1, 1);
 static float dotv(V a, V b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static V scaled(V a, float s) { return V(a.x * s, a.y * s, a.z * s); }
 struct Shape { V center; float radius; bool inward; Material layer[2]; unsigned layers; float coverage; bool encloses;
-    Medium volume; };
+    Medium volume; bool hidden = false; };
 static std::vector<Shape> scene;
 static const Hit NO_HIT = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
 // The camera's medium: fog where a furnace sets it, else none; homogeneous, or varying of the same coefficients
@@ -56,7 +56,8 @@ static int skips = 0, skip_misfits = 0;
 // and the point it was shaded at, which the pass starts from, with no lift, off a layer of index 1
 static V last_point;
 static float last_ior = 1;
-Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, Hit left, bool) {
+// Past shapes hidden from the camera while the ray sees straight from it, as flex-cuda-pt's traversal passes them
+Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, Hit left, bool viewed) {
     if (left.instance_index != 0xFFFFFFFFu)
         skips++, skip_misfits += left.instance_index != last_shaded.instance_index
             || left.distance != last_shaded.distance
@@ -65,6 +66,7 @@ Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, 
     Hit hit = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, max_len};
     const float near = surface ? 1e-4f : 0.0f;
     for (unsigned i = 0; i < scene.size(); i++) {
+        if (viewed && scene[i].hidden) continue;
         const V oc = ray.origin - scene[i].center;
         const float b = dotv(oc, ray.unit_direction), c = dotv(oc, oc) - scene[i].radius * scene[i].radius;
         if (b * b - c < 0) continue;
@@ -187,7 +189,8 @@ float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t* state, V
 
 // Mean and standard error of what paths from the camera bring back, toward the sphere aim, within angle of it
 static bool summing = false, seen = false;
-static void furnace(const char* name, V camera, V aim, float angle, double truth, int& failed, float absorbs = 0) {
+// Unchecked where truth is NAN; the mean returned
+static double furnace(const char* name, V camera, V aim, float angle, double truth, int& failed, float absorbs = 0) {
     const int N = 1 << 17;
     double sum = 0, sum2 = 0, through = 0;
     for (int i = 0; i < N; i++) {
@@ -198,7 +201,7 @@ static void furnace(const char* name, V camera, V aim, float angle, double truth
             1 / sqrtf(1 - dotv(t, w) * dotv(t, w)));
         const V b(w.y * a.z - w.z * a.y, w.z * a.x - w.x * a.z, w.x * a.y - w.y * a.x);
         const V dir = scaled(a, r * cosf(phi)) + scaled(b, r * sinf(phi)) + scaled(w, z);
-        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, dir}, true, 1e30f, true, NO_HIT, false);
+        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, dir}, true, 1e30f, true, NO_HIT, true);
         Domain dom = {camera, camera + scaled(dir, hit.distance), hit};
         Reservoir path = {};
         path.seed = hash(3 * i + 2);
@@ -216,9 +219,10 @@ static void furnace(const char* name, V camera, V aim, float angle, double truth
     }
     const double mean = sum / N, se = sqrt(fmax(sum2 / N - mean * mean, 0) / N);
     truth *= through / N;
-    const bool ok = fabs(mean - truth) < fmax(4 * se, 1e-4) && se < 0.01;
+    const bool ok = truth != truth || (fabs(mean - truth) < fmax(4 * se, 1e-4) && se < 0.01);
     failed += !ok;
     printf("%-28s %.5f +- %.5f of %.5f%s\n", name, mean, se, truth, ok ? "" : "  FAILED");
+    return mean;
 }
 
 int main() {
@@ -363,6 +367,84 @@ int main() {
     ball.absorption = scaled(ONE, 0.5f);
     scene = {{center, 1, false, {ball}, 1, 0.5f, true, none}};
     furnace("cutout absorber", V(0, 0, 5), center, 0.1f, 4 * 0.0685110023574737, failed);
+    // Hidden from the camera, as flex-cuda-pt's veil test: an emitter of 1 inside each of these, seen straight through
+    // it under a black sky, reads 0 hidden, the camera's rays passing it while they see straight, and visible 1, 1, 1
+    // and e^-0.6: a clear shell of index 1, a cutout shell (coverage 0), a box of a medium of density 0, and one
+    // absorbing over the 0.6 between its face and the emitter's; ReSTIR off and on
+    bounces = 4, sky = 0, sun = false, camera_fog = none;
+    for (int restir = 0; restir < 2; restir++) {
+        summing = !restir;
+        for (int k = 0; k < 4; k++)
+            for (int hide = 0; hide < 2; hide++) {
+                const Shape front = k == 1 ? Shape{center, 2, false, {lambert(0, 0)}, 1, 0, false, none}
+                    : Shape{center, k == 3 ? 1.6f : 2, false, {dielectric(1)}, 1, 1, k >= 2,
+                        k == 3 ? Medium{ZERO, ONE} : none};
+                scene = {front, {center, 1, false, {lambert(0, 1)}, 1, 1, false, none, hide == 1}};
+                const char* kinds[] = {"glass", "cutout", "void box", "absorbing box"};
+                char name[64];
+                snprintf(name, sizeof name, "%s %s%s", hide ? "hidden" : "seen", kinds[k],
+                    restir ? "" : ", ReSTIR off");
+                furnace(name, V(0, 0, 5), center, 0, hide ? 0 : k == 3 ? exp(-0.6) : 1, failed);
+            }
+    }
+    summing = false;
+    // Hidden only while seen straight: an emitter lights a white sphere the camera sees, or, inside a clear shell of
+    // index 1, fog the camera looks through, exactly as when it isn't hidden, the camera never seeing it straight
+    const auto twins = [&](const char* name, V camera, V aim, float angle, unsigned emitter) {
+        scene[emitter].hidden = false;
+        const double seen = furnace("  seen", camera, aim, angle, NAN, failed);
+        scene[emitter].hidden = true;
+        const double hidden = furnace("  hidden", camera, aim, angle, NAN, failed);
+        failed += hidden != seen || !(seen > 0);
+        printf("%s: hidden %.5f, seen %.5f%s\n", name, hidden, seen, hidden != seen || !(seen > 0) ? "  FAILED" : "");
+    };
+    scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}, {V(0, 2.2f, 0), 1, false, {lambert(0, 1)}, 1, 1,
+        false, none}};
+    twins("hidden emitter after a bounce", V(0, 0, 5), center, 0.1f, 1);
+    camera_fog = {scaled(ONE, 0.3f), scaled(ONE, 0.3f)};
+    scene = {{center, 10, true, {lambert(0, 0)}, 1, 1, false, none}, {V(0, 3, 0), 1, false, {lambert(0, 1)}, 1, 1,
+        false, none}, {V(0, 3, 0), 1.5f, false, {dielectric(1)}, 1, 1, false, none}};
+    twins("hidden emitter after fog", center, V(0, 0, 1), 0.1f, 1);
+    camera_fog = none;
+    // And through glass of index 1.5, which bends the camera's rays; and from fog inside a clear shell, entered by a
+    // straight pass, onto an emitter outside it off the camera's rays (flexkernels' rows)
+    scene = {{center, 2, false, {dielectric(1.5f)}, 1, 1, false, none}, {center, 1, false, {lambert(0, 1)}, 1, 1, false,
+        none}};
+    twins("hidden emitter through glass 1.5", V(0, 0, 5), center, 0.1f, 1);
+    scene = {{center, 2, false, {dielectric(1)}, 1, 1, true, {scaled(ONE, 0.3f), scaled(ONE, 0.3f)}},
+        {V(0, 3.5f, 0), 1, false, {lambert(0, 1)}, 1, 1, false, none}};
+    twins("hidden emitter past fog in a clear shell", V(0, 0, 5), center, 0.1f, 1);
+    // Replay past a hidden emitter: paths through a clear shell, past it, to an emitter behind it, shifted into a
+    // pixel 0.02 off and back, read their own integrand again at Jacobian 1 both ways, with no state for it
+    scene = {{center, 2, false, {dielectric(1)}, 1, 1, false, none}, {center, 0.5f, false, {lambert(0, 1)}, 1, 1, false,
+        none, true}, {V(0, 0, -1.3f), 0.5f, false, {lambert(0, 1)}, 1, 1, false, none}};
+    {
+        const V eye(0, 0, 5);
+        const auto seen = [&](V dir) {
+            const Hit hit = HookScene_traverseInstanceBVH_0(Ray{eye, dir}, true, 1e30f, true, NO_HIT, true);
+            return Domain{eye, eye + scaled(dir, hit.distance), hit};
+        };
+        const Domain near = seen(V(0, 0, -1)), off = seen(V(sinf(0.02f), 0, -cosf(0.02f)));
+        int lit = 0, back = 0;
+        for (int i = 0; i < 4096; i++) {
+            Reservoir path = {};
+            path.seed = hash(3 * i + 2);
+            Selection sel = {};
+            sel.random_state = hash(3 * i + 3);
+            walk_hook(near, path, false, 1, &sel);
+            const Reservoir r = finalize(sel, 1);
+            const Shift to = shift_hook(off, r);
+            Reservoir moved = r;
+            moved.f = to.f;
+            const Shift home = shift_hook(near, moved);
+            lit += r.w > 0;
+            back += r.w > 0 && to.f.x > 0 && to.jac == 1 && home.jac == 1 && home.f.x == r.f.x && home.f.z == r.f.z;
+        }
+        const bool kept = lit > 256 && back == lit;
+        failed += !kept;
+        printf("replay past a hidden emitter: %d of %d paths there and back exactly%s\n", back, lit,
+            kept ? "" : "  FAILED");
+    }
     // A light of no slot, as flex-cuda-pt's strands, has no light sampling density, where the sun's slot reaches its
     // leaf (a point: infinite)
     sun = slot_leaf = true;
