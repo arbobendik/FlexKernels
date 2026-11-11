@@ -47,6 +47,8 @@ build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	sed -i 's|^__device__ SampleBSDF connectBSDF(|__device__ __forceinline__ SampleBSDF connectBSDF(|' $@
 	# The rest of the BSDF's path consumers inline, so that no lobe's code flips nvcc's choice
 	sed -i -E 's/^__device__ (float3  lobeThroughput|float lobeDensity|float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF|float3  sampleMaterialHalfVector)\(/__device__ __forceinline__ \1(/' $@
+	# The walk's light sample and its BSDF, called once per surface vertex, where their struct arguments stay in registers
+	sed -i -E 's/^static __device__ (TreeSample sampleLightTree_0|float3  lightBSDF_0)\(/static __device__ __forceinline__ \1(/' $@
 	echo '#undef Matrix' >> $@
 
 build/wgsl/pathtracer.wgsl build/wgsl-restir/pathtracer.wgsl: $(SOURCE) $(SLANGC)
