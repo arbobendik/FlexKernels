@@ -543,6 +543,41 @@ int main() {
     summing = false;
     failed += face_skips == 0;
     printf("starts on the face: %d past their own hit%s\n", face_skips, face_skips == 0 ? "  FAILED" : "");
+    // Hair, a white sphere of isotropic fiber under a sky of 1, returns all it receives, ReSTIR on and off; each of its
+    // rays, bounced or light sampled, leaves from its vertex past its own segment. The sky unsampled, as flex-cuda-pt's
+    // (its light samples at hair come once flex-cuda-pt samples the sky)
+    bounces = 64, sky = 1, sun = false, camera_fog = none, seen = false, face_skips = 0, hair_connects = 0, cdf = false;
+    scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
+    scene[0].hair = true;
+    furnace("white hair", camera, center, 0.3f, 1, failed);
+    summing = true;
+    furnace("white hair, ReSTIR off", camera, center, 0.3f, 1, failed);
+    summing = false;
+    // The sky light sampled too, a light both sampled and met: hair's light samples weighed against its escapes
+    cdf = true;
+    furnace("white hair, sky sampled", camera, center, 0.3f, 1, failed);
+    cdf = false;
+    failed += face_skips == 0 || hair_connects == 0;
+    printf("hair: %d rays past their own segment, %d connections%s\n", face_skips, hair_connects,
+        face_skips == 0 || hair_connects == 0 ? "  FAILED" : "");
+    // Hair lit by the sun all around it, as flex-cuda-pt samples light at strands: its light samples through its far
+    // field, f E = 1 / 4 pi, whichever way its smooth normal points (toward the sun, or 2 radians away)
+    bounces = 0, sky = 0, sun = true;
+    for (const float tilt : {0.0f, -2.0f}) {
+        const V p(0.70710678f, 0, 0.70710678f);
+        scene = {{ZERO, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
+        scene[0].hair = true, scene[0].tilt = tilt;
+        furnace(tilt == 0 ? "hair under the sun, its normal toward it" : "hair under the sun, its normal away",
+            scaled(p, 5), p, 0.001f, 0.25 / 3.14159265, failed);
+    }
+    bounces = 64, sun = false;
+    // Hidden only while seen straight: a hidden emitter seen past hair, which scatters every ray, reads as when seen
+    sky = 0;
+    scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}, {V(0, 0, -2.5f), 1, false, {lambert(0, 1)}, 1, 1,
+        false, none}};
+    scene[0].hair = true;
+    twins("hidden emitter past hair", camera, center, 0.1f, 1);
+    sky = 1, cdf = true;
     // A light of no slot, as flex-cuda-pt's strands, has no light sampling density, where the sun's slot reaches its
     // leaf (a point: infinite)
     sun = slot_leaf = true;
