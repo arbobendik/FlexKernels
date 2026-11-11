@@ -1102,6 +1102,9 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
         }
         let offset: float = select(0.0f, geometry_offset, up);
         let shadow: float3 = to_light - offset * context.lift;
+        if (!context.faced && !(dot(context.side, shadow) * dot(context.side, to_light) > 0.0f)) {
+            return float3(0.0f);  // Of a translucent surface, as flex-cuda-pt's: the lifted start on the light's side
+        }
         return scene.shadowTransmittanceIn(Ray(origin + offset * context.lift, normalize(shadow)), shadowLength(shadow), select(context.extinction_behind, context.extinction_front, up), select(context.fillings.x, context.fillings.y, up), random_state, context.depth, context.lobe, false, context.length, context.width, offset > 0.0f ? noHit() : context.own);
     }
 #endif
