@@ -14,9 +14,9 @@ REFERENCE ?= $(FLEX_CUDA_PT)/src/shaders
 FLEXLIGHT ?= ../FlexLight
 WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
-all: build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h \
+all: build/cuda/pathtracer.cuh \
 	build/wgsl/pathtracer.wgsl build/glsl/pathtracer.glsl build/cuda/pathtracer.slang-module \
-	build/cuda-restir/pathtracer.cuh build/cuda-restir/slang-cuda-prelude.h build/wgsl-restir/pathtracer.wgsl \
+	build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl \
 	build/cuda-restir/pathtracer.slang-module
 
 # The ReSTIR variants, which ReSTIR's consumers take in place of the outputs above: walk.slang's declarations and its
@@ -33,9 +33,9 @@ build/cuda/pathtracer.slang-module: MODULEFLAGS = -DFK_HAIR=1
 build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR_PASSES=1
 build/restir-passes/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1
 
-# The prelude is included next to the header instead of from the Slang installation, its Matrix template, which the
-# generated code takes for FlexLight's mat3x3, renamed SlangMatrix across the header so that it leaves the name to the
-# consumer's
+# The prelude is included by name, from the consumer's include path to its Slang installation instead of this build's,
+# its Matrix template, which the generated code takes for FlexLight's mat3x3, renamed SlangMatrix across the header so
+# that it leaves the name to the consumer's
 build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	mkdir -p $(@D)
 	$(SLANGC) $(SLANGFLAGS) $< -target cuda -o $@
@@ -48,10 +48,6 @@ build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	# The rest of the BSDF's path consumers inline, so that no lobe's code flips nvcc's choice
 	sed -i -E 's/^__device__ (float3  lobeThroughput|float lobeDensity|float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF|float3  sampleMaterialHalfVector)\(/__device__ __forceinline__ \1(/' $@
 	echo '#undef Matrix' >> $@
-
-build/cuda/slang-cuda-prelude.h build/cuda-restir/slang-cuda-prelude.h: $(SLANGC)
-	mkdir -p $(@D)
-	cp $(SLANG_PATH)/include/slang-cuda-prelude.h $@
 
 build/wgsl/pathtracer.wgsl build/wgsl-restir/pathtracer.wgsl: $(SOURCE) $(SLANGC)
 	mkdir -p $(@D)
@@ -125,8 +121,8 @@ build/coverage-cpu: tests/coverage.cpp build/cpp-restir/pathtracer.cpp
 		-DGENERATED='"build/cpp-restir/pathtracer.cpp"' $< -o $@
 
 # With flex-cuda-pt's structs the header leaves to it
-build/parity-cuda: tests/parity.cpp build/cuda/pathtracer.cuh build/cuda/slang-cuda-prelude.h $(REFERENCE)/renderer.h
-	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda -I$(REFERENCE) $< -o $@
+build/parity-cuda: tests/parity.cpp build/cuda/pathtracer.cuh $(REFERENCE)/renderer.h
+	$(NVCC) -std=c++20 -O2 -x cu -Ibuild/cuda -I$(SLANG_PATH)/include -I$(REFERENCE) $< -o $@
 
 $(ACTIONLINT):
 	mkdir -p .deps
