@@ -15,13 +15,19 @@ struct TestScene : IScene {
         return Hit(ray.origin.xy, ray.unit_direction.x > 0.0f ? 0u : UINT_MAX, uint(consider_point_lights) + uint(surface) + left.triangle_index + uint(viewed), 0u, max_len * 0.5f);
     }
     float3 shadowTransmittance(Ray ray, float l) { return float3(l > ray.origin.x ? 0.0f : 1.0f, 1.0f, 0.5f); }
-    float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width) {
+    float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left) {
         return shadowTransmittance(ray, l) * exp(- extinction * l * length)
             * float(filling + random_state + depth + lobe + uint(surface)) * width;
     }
     Surface surfaceAt(Hit hit, float3 origin, uint init_random_state) {
         return Surface(normalize(origin), float3(0.0f, 0.0f, 1.0f), 1e-4f, Material(origin, float3(hit.uv, 0.0f), 0.5f,
             0.0f, hit.distance, 1.5f, origin), hit.is_point_light != 0u, init_random_state + 1u);
+    }
+    SampleBSDF connectHair(float3 hair, float3 albedo, float3 tint, float3 in_dir, float3 out_dir) {
+        return SampleBSDF(out_dir, albedo * tint, 0u, false, 0u, dot(hair, in_dir));
+    }
+    SampleBSDF sampleHair(float3 hair, float3 albedo, float3 tint, float3 in_dir, uint random_state) {
+        return SampleBSDF(normalize(hair + in_dir), albedo * tint, random_state, false, 1u, 0.5f);
     }
     Surface lightSurfaceAt(Hit hit, float3 point, uint init_random_state, float3 dir, uint depth, float length) {
         return surfaceAt(hit, point + dir * length, init_random_state + depth);

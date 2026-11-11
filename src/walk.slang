@@ -230,15 +230,18 @@ __extern_cpp public struct ShadowContext {
     __extern_cpp public bool surface;
     __extern_cpp public float length;
     __extern_cpp public float width;
+    // Of hair's vertex, whose shadow rays leave from it past its own segment, any side lit
+    __extern_cpp public Hit own;
+    __extern_cpp public bool fiber;
 }
-func shadowContext(surface: Surface, turned: bool, side_n: float3, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint, length: float, width: float) -> ShadowContext {
+func shadowContext(surface: Surface, turned: bool, side_n: float3, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint, length: float, width: float, own: Hit, fiber: bool) -> ShadowContext {
     var faced: Surface = surface;
     faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
     let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction), filling, dir);
     // The face's sides as the faced normal sees them
-    var context: ShadowContext = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, side_n, depth, lobe, true, length, width);
+    var context: ShadowContext = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, side_n, depth, lobe, true, length, width, own, fiber);
     if (turned) {
-        context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, side_n, depth, lobe, true, length, width);
+        context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, side_n, depth, lobe, true, length, width, own, fiber);
     }
     return context;
 }
@@ -656,6 +659,8 @@ __extern_cpp public struct Surface {
     __extern_cpp public bool encloses = false;
     __extern_cpp public Medium volume;
     __extern_cpp public uint fills = UINT_MAX;
+    // flex-cuda-pt's hair: its fiber's tangent, of the length of its table's level plus one, else none
+    __extern_cpp public float3 hair = float3(0.0f);
 #endif
 }
 
@@ -741,7 +746,8 @@ __extern_cpp public struct Light {
 // traverseInstanceBVH's and shadowTransmittanceIn's surface whether the ray leaves a surface, which the consumer starts
 // it past by its own margin, or a medium vertex, which it starts right at, so it meets an exit face nearer than that;
 // traverseInstanceBVH's left the hit a ray leaves by passing straight through it, its distance the segment that reached
-// it, which flex-cuda-pt's traversal skips, else none (instance UINT_MAX); its viewed whether the ray still sees straight
+// it, which flex-cuda-pt's traversal skips, else none (instance UINT_MAX); shadowTransmittanceIn's left the hit its
+// shadow ray skips, a fiber's own segment, else none; its viewed whether the ray still sees straight
 // from the camera, where flex-cuda-pt's traversal passes surfaces hidden from the camera as its camera rays do;
 // lightNode(n) the leaf texel of node n of the light BVH (x zero for inner nodes, two for point lights, y the light or
 // instance, z the triangle), lightSecond(n) its second child, light(i) point light i, triangleOffset(i) the first
@@ -759,8 +765,10 @@ __extern_cpp public struct Light {
 public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface, Hit left, bool viewed);
     public float3 shadowTransmittance(Ray ray, float l);
-    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width);
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
+    public SampleBSDF connectHair(float3 hair, float3 albedo, float3 tint, float3 in_dir, float3 out_dir);
+    public SampleBSDF sampleHair(float3 hair, float3 albedo, float3 tint, float3 in_dir, uint random_state);
     public Surface lightSurfaceAt(Hit hit, float3 point, uint init_random_state, float3 dir, uint depth, float length);
     public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe, float3 dir);
     public uint layers(Hit hit);
@@ -842,11 +850,19 @@ public struct HookScene : IScene {
     // occluders shaded for a shadow ray a bounce past the vertex, the medium for the length and cone width of the
     // segment reaching it. flex-cuda-pt's alone
     __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
-    __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6, $7, $8, $9)")
-    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width);
+    __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left);
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
+    // flex-cuda-pt's hair, by its fiber's baked far field of hair, its albedo and its R lobe's tint: toward out_dir, its
+    // f over its density as throughput and its density over the light's cosine as pdf; and a direction it samples
+    __target_intrinsic(wgsl, "SampleBSDF()")
+    __target_intrinsic(cuda, "fcptConnectHair($0, $1, $2, $3, $4)")
+    public SampleBSDF connectHair(float3 hair, float3 albedo, float3 tint, float3 in_dir, float3 out_dir);
+    __target_intrinsic(wgsl, "SampleBSDF()")
+    __target_intrinsic(cuda, "fcptSampleHair($0, $1, $2, $3, $4)")
+    public SampleBSDF sampleHair(float3 hair, float3 albedo, float3 tint, float3 in_dir, uint random_state);
     // A light sample's surface as flex-cuda-pt shades its emission: seen along dir from the start, of the depth of the
     // vertex sampling it, at length from that vertex. flex-cuda-pt's alone
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
@@ -1070,7 +1086,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
 #ifdef FK_FCPT_WALK
     // From the medium on the side the light is, from the vertex, as flex-cuda-pt's sampleLight
     let front: bool = dot(context.side, light_dir + geometry_offset * smooth_n) > 0.0f;
-    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe, context.surface, context.length, context.width);
+    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe, context.surface && !context.fiber, context.length, context.width, context.fiber ? context.own : noHit());
 #else
     return scene.shadowTransmittance(light_ray, shadowLength(light_dir));
 #endif
@@ -1195,6 +1211,15 @@ public func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, star
     let t: float3x3 = scene.worldTriangle(leaf.y, scene.triangleOffset(leaf.y) + leaf.z);
     return solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), light_point - start);
 }
+
+#ifdef FK_FCPT_WALK
+// Hair's light sample, as flex-cuda-pt's walk weighs it: its far field toward the light against sampling it, by the
+// power heuristic, where a direction it samples competes; a delta light, of no density, weighs fully
+func hairLight<S: IScene>(scene: S, surface: Surface, in_dir: float3, light: TreeSample, competing: bool) -> float3 {
+    let l: SampleBSDF = scene.connectHair(surface.hair, surface.material.albedo, surface.material.specular_tint, in_dir, light.dir);
+    return l.throughput * l.pdf / select(1.0f, 1.0f + l.pdf * l.pdf / (light.density * light.density), competing && light.density > 0.0f) * light.radiance;
+}
+#endif
 
 // BSDF times the radiance of a light sample, weighted per lobe against sampling the BSDF where a direction it samples
 // competes, by the power heuristic, delta lights never competing
@@ -1380,7 +1405,8 @@ uint extractBits(uint e, uint offset, uint count) {
         let light: TreeSample = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
             , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b,
-                arrivalLobe(b, prev.lobe), false, along, width)
+                arrivalLobe(b, prev.lobe), false, along, width,
+                noHit(), false)
 #endif
             );
         let sampled: bool = scatterSampled(replay, b, stop, varying);
@@ -1628,6 +1654,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         if (layersUsed() && (passed || layer != 0u)) {
             nee = false;
         }
+#ifdef FK_FCPT_WALK
+        let hair: bool = dot(surface.hair, surface.hair) > 0.0f;  // A strand's fiber: no side of it wrong, none opaque
+#endif
         // Emission met, of the surface or a point light, weighted against light sampling at the vertex the ray left
 #ifdef FK_FCPT_WALK
         var emission: float3 = material.emissive;  // On both sides, as the light sample takes it
@@ -1668,7 +1697,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (k == end && end_type == END_NEE) {
                 let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
-                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width)
+                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
 #endif
                     );
                 if (!nee || !(rgb_to_greyscale(light.radiance) > 0.0f)) {
@@ -1696,7 +1725,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 // random numbers pick again (unit Jacobian)
                 let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
-                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width)
+                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
 #endif
                     );
                 if (!(rgb_to_greyscale(light.radiance) > 0.0f)) {
@@ -1732,7 +1761,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (nee) {
                 let light: TreeSample = sampleLightTree(scene, ray.origin, surface.smooth_n, surface.geometry_n, surface.geometry_offset, isTranslucent(material), stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
-                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width)
+                    , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
 #endif
                     );
                 let f: float3 = throughput * lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state);

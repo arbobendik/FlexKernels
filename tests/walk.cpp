@@ -31,7 +31,7 @@ static const V ZERO(0, 0, 0), ONE(1, 1, 1);
 static float dotv(V a, V b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static V scaled(V a, float s) { return V(a.x * s, a.y * s, a.z * s); }
 struct Shape { V center; float radius; bool inward; Material layer[2]; unsigned layers; float coverage; bool encloses;
-    Medium volume; bool hidden = false; };
+    Medium volume; bool hidden = false; bool hair = false; };
 static std::vector<Shape> scene;
 static const Hit NO_HIT = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
 // The camera's medium: fog where a furnace sets it, else none; homogeneous, or varying of the same coefficients
@@ -85,10 +85,27 @@ Surface HookScene_surfaceAtPath_0(Hit hit, V origin, uint32_t state, float, uint
         && (dir.x != handed_direction.x || dir.y != handed_direction.y || dir.z != handed_direction.z);
     const Shape& s = scene[hit.instance_index];
     const V n = scaled(origin - s.center, (s.inward ? -1 : 1) / s.radius);
-    return Surface{n, n, 1e-4f, s.layer[layer], false, state, s.coverage, s.encloses, s.volume, 0xFFFFFFFFu};
+    Surface surface = {n, n, 1e-4f, s.layer[layer], false, state, s.coverage, s.encloses, s.volume, 0xFFFFFFFFu};
+    if (s.hair) surface.hair = V(0, 0, 1), surface.geometry_offset = 0;  // A fiber along z, from its vertex
+    return surface;
 }
 Surface HookScene_surfaceAt_0(Hit hit, V origin, uint32_t state) {
     return HookScene_surfaceAtPath_0(hit, origin, state, 0, 0, 1, 0, ZERO);
+}
+// Hair as an isotropic fiber, a stand-in for flex-cuda-pt's baked far field: albedo times tint over the sphere, of
+// density 1 / (4 pi), its throughput the albedo; directions it samples uniform over the sphere
+static int hair_connects = 0;
+SampleBSDF HookScene_connectHair_0(V, V albedo, V tint, V in_dir, V out_dir) {
+    hair_connects++;  // Forward a refraction, as flex-cuda-pt labels hair's, else a reflection (2)
+    return SampleBSDF{out_dir, V(albedo.x * tint.x, albedo.y * tint.y, albedo.z * tint.z), 0, false,
+        dotv(out_dir, in_dir) > 0 ? 1u : 2u, 0.25f / 3.14159265f};
+}
+SampleBSDF HookScene_sampleHair_0(V hair, V albedo, V tint, V in_dir, uint32_t state) {
+    const Random u = pcg(state), v = pcg(u.state);
+    const float z = 1 - 2 * u.value, r = sqrtf(fmaxf(0, 1 - z * z)), phi = 6.2831853f * v.value;
+    SampleBSDF sampled = HookScene_connectHair_0(hair, albedo, tint, in_dir, V(r * cosf(phi), r * sinf(phi), z));
+    sampled.random_state = v.state;
+    return sampled;
 }
 // No emitting triangle: its lights are delta ones
 Surface HookScene_lightSurfaceAt_0(Hit hit, V point, uint32_t state, V, uint32_t, float) {
@@ -131,7 +148,7 @@ static V shadowThrough(Ray ray, float l, bool surface) {
 V HookScene_shadowTransmittance_0(Ray ray, float l) { return shadowThrough(ray, l, true); }
 // the medium a shadow ray starts in filling it up to the first surface it meets
 V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t,
-    bool surface, float length, float) {
+    bool surface, float length, float, Hit) {
     const V from = ray.origin - segment_start;
     if (checking && !surface) segments++, misfits += fabsf(sqrtf(dotv(from, from)) - length) > 1e-6f;
     const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface, NO_HIT, false).distance, l);
