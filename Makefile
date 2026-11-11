@@ -38,6 +38,7 @@ build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	sed -i -E 's/^__device__ (SampleBSDF [a-zA-Z]+Sample|float [a-zA-Z]+PDF)\(/__device__ __forceinline__ \1(/' $@
 	sed -i -E 's/^__device__ (float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF)\(/__device__ __forceinline__ \1(/' $@
 	sed -i -E 's/^__device__ (float3  sampleHalfVector|float3  misWeighted)\(/__device__ __forceinline__ \1(/' $@
+	sed -i -E 's/^static __device__ (TreeSample sampleLightTree_0|float3  lightBSDF_0)\(/static __device__ __forceinline__ \1(/' $@
 	echo '#undef Matrix' >> $@
 
 build/wgsl/pathtracer.wgsl build/wgsl-restir/pathtracer.wgsl: $(SOURCE) $(SLANGC)
