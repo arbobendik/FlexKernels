@@ -40,6 +40,7 @@ build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	sed -i -E 's/^__device__ (float3  sampleHalfVector)\(/__device__ __forceinline__ \1(/' $@
 	sed -i 's/^static __device__ __noinline__ /static __device__ /' $@
 	sed -i -E 's/^static __device__ (TreeSample sampleLightTree_0|float3  lightBSDF_0|float3  skyLobes_0)\(/static __device__ __forceinline__ \1(/' $@
+	case $@ in *-restir/*) sed -i 's/^__device__ float childShare(/__device__ __forceinline__ float childShare(/' $@;; esac
 	echo '#undef Matrix' >> $@
 
 build/wgsl/pathtracer.wgsl build/wgsl-restir/pathtracer.wgsl: $(SOURCE) $(SLANGC)
