@@ -1385,19 +1385,24 @@ func searchCDF<S: IScene>(scene: S, start: uint2, step: uint2, count: uint, u: f
 [noinline] func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, side_n: float3, is_inside: bool, dir: float3) -> float3 {
 #ifdef FK_FCPT_WALK
     // Off an opaque surface the sky only above its face, which meets every ray below it, from the start lifted along
-    // the face as the walk's others
+    // the face as the walk's others; the world shaded by one call, from either start
+    var ray: Ray;
     if (!(surface.material.transmission > 0.0f) && !isTranslucent(surface.material)) {
         if (!(dot(surface.geometry_n, dir) > 0.0f)) {
             return float3(0.0f);
         }
-        let lifted: Ray = Ray(origin + surface.geometry_n * dot(surface.geometry_n, surface.smooth_n) * surface.geometry_offset, dir);
-        return scene.env_map_sample(dir, 0u, LOBE_NONE) * scene.shadowTransmittance(lifted, POW32);
+        ray = Ray(origin + surface.geometry_n * dot(surface.geometry_n, surface.smooth_n) * surface.geometry_offset, dir);
+    } else {
+        let inside: bool = is_inside != wrongSide(is_inside, false, dir, side_n);
+        ray = Ray(origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, inside), dir);
     }
-#endif
+    return scene.env_map_sample(dir, 0u, LOBE_NONE) * scene.shadowTransmittance(ray, POW32);
+#else
     let inside: bool = is_inside != wrongSide(is_inside, false, dir, side_n);
     let ray: Ray = Ray(origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, inside), dir);
     // Of no Light Path context: flex-cuda-pt samples no sky before its world has a luminance CDF
     return scene.env_map_sample(dir, 0u, LOBE_NONE) * scene.shadowTransmittance(ray, POW32);
+#endif
 }
 
 // Next event estimation toward the environment map, drawing a direction by its luminance. lobe_state is the random state of skyBSDF.
