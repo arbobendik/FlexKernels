@@ -1313,14 +1313,18 @@ uint extractBits(uint e, uint offset, uint count) {
             width += spread * along;
             spread += PI;
         }
-        let light: TreeSample = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
+        // Light sampled at the scattering vertex, all around
+        let sampled: bool = scatterSampled(replay, b, stop, varying);
+        var light: TreeSample = TreeSample(float3(0.0f), float3(0.0f), 0.0f, 0u);
+        if (sampled) {
+            light = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
-            , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b,
-                arrivalLobe(b, prev.lobe), false, along, width,
+                , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b,
+                    arrivalLobe(b, prev.lobe), false, along, width,
                 noHit(), false)
 #endif
-            );
-        let sampled: bool = scatterSampled(replay, b, stop, varying);
+                );
+        }
         // radiance = L * T / PDF_light
         // f = throughput * p(mu) * radiance * w_light, w_light = powerHeuristic(PDF_light, p(mu))
         // Delta lights and the last bounce: no competing phase sample, w_light = 1
