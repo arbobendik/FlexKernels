@@ -205,8 +205,13 @@ Medium HookScene_cameraMedium_0(V direction, float distance, uint32_t* filling) 
     *filling = varying ? 0 : 0xFFFFFFFFu;
     return camera_fog;
 }
-// The varying camera fog, tracked under its extinction: each tentative collision real, scattering by its albedo
-float HookScene_majorant_0(uint32_t) { return camera_fog.extinction.x; }
+// The varying camera fog, tracked under its extinction: each tentative collision real, scattering by its albedo; asked
+// of no medium (UINT_MAX) counted
+static int majorants_of_none = 0;
+float HookScene_majorant_0(uint32_t filling) {
+    majorants_of_none += filling == 0xFFFFFFFFu;
+    return camera_fog.extinction.x;
+}
 // Of each walk, the camera's own segment flagged as the camera's, its first tracked, and none after it
 static int tracked = 0, tracked_misfits = 0, walk_tracks = 0;
 float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t* state, V* weight, V*, V* scatter, V* extinction,
@@ -570,5 +575,8 @@ int main() {
     failed += misfits > 0 || segments == 0;
     printf("handed segments: %d misfits, %d medium vertices checked%s\n", misfits, segments,
         misfits > 0 || segments == 0 ? "  FAILED" : "");
+    // A majorant asked of varying media alone, over every walk above
+    failed += majorants_of_none != 0;
+    printf("majorants asked of no medium: %d%s\n", majorants_of_none, majorants_of_none != 0 ? "  FAILED" : "");
     return failed;
 }
