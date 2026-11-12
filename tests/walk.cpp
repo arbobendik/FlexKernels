@@ -166,7 +166,7 @@ static V shadowThrough(Ray ray, float l, bool surface, Hit left = NO_HIT) {
 V HookScene_shadowTransmittance_0(Ray ray, float l) { return shadowThrough(ray, l, true); }
 // the medium a shadow ray starts in filling it up to the first surface it meets
 V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t,
-    bool surface, float length, float, Hit left) {
+    bool surface, float length, float, Hit left, Hit) {
     const V from = ray.origin - segment_start;
     if (checking && !surface) segments++, misfits += fabsf(sqrtf(dotv(from, from)) - length) > 1e-6f;
     const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface, left, false).distance, l);

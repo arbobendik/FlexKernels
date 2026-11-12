@@ -761,7 +761,8 @@ __extern_cpp public struct Light {
 // traverseInstanceBVH's and shadowTransmittanceIn's surface whether the consumer starts the ray past its own margin, as
 // off a surface transmitting light, or right at its start, as off a medium vertex or an opaque surface, so it meets a
 // face nearer than that; their left the hit the ray leaves, skipped, where it passes straight through it (its distance
-// the segment that reached it) or, from no margin, starts on its face, else none (instance UINT_MAX); its viewed whether the ray still sees straight
+// the segment that reached it) or, from no margin, starts on its face, else none (instance UINT_MAX); shadowTransmittanceIn's
+// light the emitting triangle its shadow ray goes toward, none of a point light; its viewed whether the ray still sees straight
 // from the camera, where flex-cuda-pt's traversal passes surfaces hidden from the camera as its camera rays do;
 // lightNode(n) the leaf texel of node n of the light BVH (x zero for inner nodes, two for point lights, y the light or
 // instance, z the triangle), lightSecond(n) its second child, light(i) point light i, triangleOffset(i) the first
@@ -779,7 +780,7 @@ __extern_cpp public struct Light {
 public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface, Hit left, bool viewed);
     public float3 shadowTransmittance(Ray ray, float l);
-    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left);
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left, Hit light);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
     public SampleBSDF connectHair(float3 hair, float3 albedo, float3 tint, float3 in_dir, float3 out_dir);
     public SampleBSDF sampleHair(float3 hair, float3 albedo, float3 tint, float3 in_dir, uint random_state);
@@ -864,8 +865,8 @@ public struct HookScene : IScene {
     // occluders shaded for a shadow ray a bounce past the vertex, the medium for the length and cone width of the
     // segment reaching it. flex-cuda-pt's alone
     __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
-    __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
-    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left);
+    __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left, Hit light);
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
@@ -1086,7 +1087,7 @@ public struct HookScene : IScene {
 // segment: short of its end, which an emitting triangle's sample lifts off it toward the start
 func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_offset: float, light_dir: float3
 #ifdef FK_FCPT_WALK
-    , context: ShadowContext, random_state: uint
+    , context: ShadowContext, random_state: uint, light: Hit
 #endif
     ) -> float3 {
     let unit_light_dir: float3 = normalize(light_dir);
@@ -1105,7 +1106,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
         if (!context.faced && !(dot(context.side, shadow) * dot(context.side, to_light) > 0.0f)) {
             return float3(0.0f);  // Of a translucent surface, as flex-cuda-pt's: the lifted start on the light's side
         }
-        return scene.shadowTransmittanceIn(Ray(origin + offset * context.lift, normalize(shadow)), shadowLength(shadow), select(context.extinction_behind, context.extinction_front, up), select(context.fillings.x, context.fillings.y, up), random_state, context.depth, context.lobe, false, context.length, context.width, offset > 0.0f ? noHit() : context.own);
+        return scene.shadowTransmittanceIn(Ray(origin + offset * context.lift, normalize(shadow)), shadowLength(shadow), select(context.extinction_behind, context.extinction_front, up), select(context.fillings.x, context.fillings.y, up), random_state, context.depth, context.lobe, false, context.length, context.width, offset > 0.0f ? noHit() : context.own, light);
     }
 #endif
     // Compute quick exit criterion to potentially skip expensive shadow test
@@ -1118,7 +1119,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
 #ifdef FK_FCPT_WALK
     // From the medium on the side the light is, from the vertex, as flex-cuda-pt's sampleLight
     let front: bool = dot(context.side, light_dir + geometry_offset * smooth_n) > 0.0f;
-    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe, context.surface && !context.fiber, context.length, context.width, context.fiber ? context.own : noHit());
+    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe, context.surface && !context.fiber, context.length, context.width, context.fiber ? context.own : noHit(), light);
 #else
     return scene.shadowTransmittance(light_ray, shadowLength(light_dir));
 #endif
@@ -1164,6 +1165,12 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
     let leaf: uint4 = scene.lightNode(n);
     // Vector from start to the end of the shadow ray, as lightTransmittance() casts it from there
     var shadow: float3;
+#ifdef FK_FCPT_WALK
+    // The emitting triangle's point sampled, whose emission is shaded once light is found to pass; none of a point light
+    var emitter: Hit = noHit();
+    var emitter_point: float3 = float3(0.0f);
+    var emitter_normal: float3 = float3(0.0f);
+#endif
     if (leaf.x == 2u) {
         let light: Light = scene.light(leaf.y);
         if (sided && !opaque_start) {
@@ -1212,30 +1219,41 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
         else if (!(dot(smooth_n, point - start) > 0.0f)) {
             return sample;
         }
-        // Emission at the point as the path tracer shades it, toward its smooth normal, the shadow ray ending in front of it
 #ifdef FK_FCPT_WALK
-        let surface: Surface = scene.lightSurfaceAt(Hit(uv, leaf.y, triangle_index, 0u, 0.0f), point, random_along.state,
-            normalize(point - start), context.depth, length(point - origin));
+        // Of flex-cuda-pt's, the shadow ray ends at the point itself, as its sampleLight's, where the sample's density
+        // and emission are taken; the emission is shaded below, once light passes
+        emitter = Hit(uv, leaf.y, triangle_index, 0u, 0.0f);
+        emitter_point = point;
+        emitter_normal = cross(t[1] - t[0], t[2] - t[0]);
+        sample.dir = normalize(point - start);
+        shadow = point - start;
 #else
+        // Emission at the point as the path tracer shades it, toward its smooth normal, the shadow ray ending in front of it
         let surface: Surface = scene.surfaceAt(Hit(uv, leaf.y, triangle_index, 0u, 0.0f), point, random_along.state);
-#endif
         sample.random_state = surface.random_state;
         sample.dir = normalize(point - start);
         sample.density = solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), point - start);
-#ifdef FK_FCPT_WALK
-        // Emitting on both sides, as flex-cuda-pt's emitters and Cycles': a one-sided light is one by what it exports
-        // behind it
-        sample.radiance = select(surface.material.emissive, float3(0.0f), surface.skip) / sample.density;
-#else
         sample.radiance = select(surface.material.emissive * max(sign(dot(- sample.dir, surface.smooth_n)), 0.0f), float3(0.0f), surface.skip) / sample.density;
-#endif
         shadow = point + shadowLift(surface.smooth_n, surface.geometry_offset, start, point) - start;
+#endif
     }
     let transmitted: float3 = lightTransmittance(scene, origin, lift_n, geometry_offset, shadow
 #ifdef FK_FCPT_WALK
-        , context, random_along.state
+        , context, random_along.state, emitter
 #endif
         );
+#ifdef FK_FCPT_WALK
+    // The emitting triangle's emission where light passes, as flex-cuda-pt shades it, seen from the start, of the depth of
+    // the vertex sampling it; on both sides, as its emitters and Cycles': a one-sided light is one by what it exports
+    // behind it; its density, as flex-cuda-pt's sampleLight takes it, where light passes alone
+    if (emitter.instance_index != UINT_MAX && !all(transmitted == float3(0.0f))) {
+        sample.density = solidAngle(probability, emitter_normal, emitter_point - start);
+        let surface: Surface = scene.lightSurfaceAt(emitter, emitter_point, random_along.state,
+            sample.dir, context.depth, length(emitter_point - origin));
+        sample.random_state = surface.random_state;
+        sample.radiance = select(surface.material.emissive, float3(0.0f), surface.skip) / sample.density;
+    }
+#endif
     sample.radiance = select(sample.radiance * transmitted, float3(0.0f), all(transmitted == float3(0.0f)));
     return sample;
 }

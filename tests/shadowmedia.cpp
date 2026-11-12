@@ -15,7 +15,7 @@ static uint32_t got_filling, got_state, got_depth, got_lobe;
 static float got_length, got_width;
 static bool got_surface;
 V HookScene_shadowTransmittanceIn_0(Ray, float, V extinction, uint32_t filling, uint32_t state, uint32_t depth,
-    uint32_t lobe, bool surface, float length, float width, Hit) {
+    uint32_t lobe, bool surface, float length, float width, Hit, Hit) {
     got_extinction = extinction, got_filling = filling, got_state = state, got_depth = depth, got_lobe = lobe;
     got_surface = surface, got_length = length, got_width = width;
     return V(1, 1, 1);
@@ -40,7 +40,7 @@ int main() {
                         Hit none = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
                         ShadowContext context = shadowContext_0(&faced, turned, side, carried, AIR, in, 5, 2, 0.75f,
                             0.125f, false, ZERO, &none, false);
-                        lightTransmittance_0(ZERO, light, 0, light, &context, 77);
+                        lightTransmittance_0(ZERO, light, 0, light, &context, 77, &none);
                         // flex-cuda-pt's, indexed by the faced normal
                         V ext[2] = {carried, carried};
                         unsigned fill[2] = {AIR, AIR};
