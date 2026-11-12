@@ -2,7 +2,9 @@
 // renderer.cu's walk calls sampleLight there with no normal, no lift and both sides in the medium (66d4e7e, lines
 // 1590-1593). A triangle emitting 1 toward the point is the whole scene; the samples' radiance over their density
 // estimates the solid angle the triangle spans, within four standard errors, whichever way the ray reaching the point
-// went, the light ahead of it or behind; and the shadow hook gets the medium the point is in. An escape after a
+// went, the light ahead of it or behind; and the shadow hook gets the medium the point is in. The shadow ray ends at
+// the sampled point itself, as renderer.cu's sampleLight's, though the emitter lifts its shading by an offset, and an
+// occluded sample shades no emission. An escape after a
 // scattering vertex takes the whole sky under an environment map, as no scattering vertex samples the sky. Printed:
 // each reading against the closed solid angle (Van Oosterom and Strackee), and the escapes' weights
 #include <stdio.h>
@@ -28,20 +30,30 @@ Surface HookScene_surfaceAt_0(Hit, V, uint32_t state) {
         0xFFFFFFFFu};
 }
 // A sample's emission shaded seen from the point at the origin, the light unlifted: along the point's own direction, at
-// the vertex's depth (3), its distance; the samples handed otherwise counted
-static int emission_misfits = 0;
+// the vertex's depth (3), its distance; the samples handed otherwise counted, and all shaded. The emitter's surface
+// lifts by a geometry offset of 0.25, as a curved or transparent one's does
+static int emission_misfits = 0, emission_shades = 0;
 static V from(0, 0, 0);
 Surface HookScene_lightSurfaceAt_0(Hit hit, V point, uint32_t state, V dir, uint32_t depth, float length) {
     const V to(point.x - from.x, point.y - from.y, point.z - from.z);
     const float distance = sqrtf(to.x * to.x + to.y * to.y + to.z * to.z);
     emission_misfits += depth != 3 || fabsf(length - distance) > 1e-6f * distance
         || (dir.x * to.x + dir.y * to.y + dir.z * to.z) < (1 - 1e-6f) * distance;
-    return HookScene_surfaceAt_0(hit, point, state);
+    emission_shades++;
+    Surface surface = HookScene_surfaceAt_0(hit, point, state);
+    surface.geometry_offset = 0.25f;
+    return surface;
 }
-V HookScene_shadowTransmittanceIn_0(Ray, float, V, uint32_t filling, uint32_t, uint32_t, uint32_t, bool, float, float,
-    Hit, Hit) {
+// Each shadow ray's end, short of the triangle's plane z = 1 by the relative 1e-4 shadowLength keeps, its farthest
+// distance from there taken; blocked where a check sets it
+static float end_off = 0;
+static bool blocked = false;
+V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V, uint32_t filling, uint32_t, uint32_t, uint32_t, bool, float,
+    float, Hit, Hit) {
     hook_filling = filling;
-    return V(1, 1, 1);
+    const float end = ray.origin.z + ray.unit_direction.z * l, due = from.z + (1 - from.z) * (1 - 1e-4f);
+    end_off = fmaxf(end_off, fabsf(end - due));
+    return blocked ? V(0, 0, 0) : V(1, 1, 1);
 }
 
 // A 4 x 2 environment map, its CDF uniform over its cells, which the escape weight reads
@@ -111,6 +123,26 @@ int main() {
         failed += !ok;
         printf("from behind the light: %.5f +- %.5f of %.5f sr%s\n", mean, se, behind, ok ? "" : "  FAILED");
         from = V(0, 0, 0);
+    }
+    // Shadow rays end at the sampled point, not lifted off the emitter by its offset, which would put them 0.25 off
+    {
+        const bool ok = end_off < 1e-5f;
+        failed += !ok;
+        printf("shadow rays end at the sampled point: farthest %.2g off, 0.25 if lifted%s\n", end_off, ok ? "" : "  FAILED");
+    }
+    // Occluded samples shade no emission, nor radiance arrives
+    {
+        blocked = true, emission_shades = 0;
+        double sum = 0;
+        for (int i = 0; i < 4096; i++) {
+            ShadowContext context = {V(0.1f, 0.1f, 0.1f), V(0.1f, 0.1f, 0.1f), Vector<uint32_t, 2>(9, 9), DOWN, 3, 0,
+                false, 0, 0, false, V(0, 0, 0), {}, false};
+            sum += sampleLightTree_0(from, DOWN, DOWN, 0, true, hash(i), &context).radiance.x;
+        }
+        const bool ok = emission_shades == 0 && sum == 0;
+        failed += !ok;
+        printf("occluded samples: %d of 4096 shade emission, radiance %g%s\n", emission_shades, sum, ok ? "" : "  FAILED");
+        blocked = false;
     }
     // Escapes after a scattering vertex, and after a vertex of the phase function's density, which would split them
     double least = 1, split = 1;
