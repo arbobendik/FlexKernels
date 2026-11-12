@@ -164,11 +164,13 @@ static V shadowThrough(Ray ray, float l, bool surface, Hit left = NO_HIT) {
     }
 }
 V HookScene_shadowTransmittance_0(Ray ray, float l) { return shadowThrough(ray, l, true); }
-// the medium a shadow ray starts in filling it up to the first surface it meets
+// the medium a shadow ray starts in filling it up to the first surface it meets; each counted, for a shift's
+static int shift_shadows = 0;
 V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t,
     bool surface, float length, float, Hit left, Hit) {
     const V from = ray.origin - segment_start;
     if (checking && !surface) segments++, misfits += fabsf(sqrtf(dotv(from, from)) - length) > 1e-6f;
+    shift_shadows++;
     const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface, left, false).distance, l);
     const V through = shadowThrough(ray, l, surface, left);
     return V(through.x * expf(-extinction.x * inside), through.y * expf(-extinction.y * inside),
@@ -373,6 +375,25 @@ int main() {
     failed += !replayed;
     printf("replay in fog: %d of %d scattered paths there and back exactly%s\n", kept, scattered,
         replayed ? "" : "  FAILED");
+    // With bounces, a shift samples light at the fog's vertices only where it reconnects to the light, at its stop: one
+    // shadow ray at most, those of the vertices before it never read
+    bounces = 8;
+    int most = 0, shifts = 0;
+    for (int i = 0; i < 4096; i++) {
+        Reservoir path = {};
+        path.seed = hash(3 * i + 2);
+        Selection sel = {};
+        sel.random_state = hash(3 * i + 3);
+        walk_hook(here, path, false, 1, &sel);
+        const Reservoir r = finalize(sel, 1);
+        if (!(r.w > 0)) continue;
+        shift_shadows = 0, shifts++;
+        shift_hook(there, r);
+        most = shift_shadows > most ? shift_shadows : most;
+    }
+    failed += most > 1 || shifts < 256;
+    printf("replay in fog, 8 bounces: at most %d shadow rays in each of %d shifts%s\n", most, shifts,
+        most > 1 || shifts < 256 ? "  FAILED" : "");
     // Seen through a black shell covered at 0.5 around an emitter of 1, the pass through its uncovered half a vertex of
     // its own: with no bounce the walk ends there, reading 0; with one it reaches the emitter, 0.5. Each such pass hands
     // the trace the hit it leaves, which flex-cuda-pt's traversal skips
