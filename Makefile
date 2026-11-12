@@ -51,6 +51,8 @@ build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	sed -i 's/^static __device__ __noinline__ /static __device__ /' $@
 	# The walk's light sample and its BSDF, called once per surface vertex, where their struct arguments stay in registers
 	sed -i -E 's/^static __device__ (TreeSample sampleLightTree_0|float3  lightBSDF_0)\(/static __device__ __forceinline__ \1(/' $@
+	# The light pdf's share of each child down a trail, a call per level of every emission met where it stays out of line
+	sed -i 's/^__device__ float childShare(/__device__ __forceinline__ float childShare(/' $@
 	echo '#undef Matrix' >> $@
 
 build/wgsl/pathtracer.wgsl build/wgsl-restir/pathtracer.wgsl: $(SOURCE) $(SLANGC)
