@@ -1414,15 +1414,19 @@ uint extractBits(uint e, uint offset, uint count) {
             spread += PI;
         }
         // Light sampled there, without a surface: from the vertex itself, all around, through the medium on both
-        // its sides, against the isotropic phase function by the power heuristic, as flex-cuda-pt's walk
-        let light: TreeSample = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
+        // its sides, against the isotropic phase function by the power heuristic, as flex-cuda-pt's walk; only where
+        // its contribution is read, as flex-cuda-pt's walk samples it
+        let sampled: bool = scatterSampled(replay, b, stop, varying);
+        var light: TreeSample = TreeSample(float3(0.0f), float3(0.0f), 0.0f, 0u);
+        if (sampled) {
+            light = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
 #ifdef FK_FCPT_WALK
-            , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b,
-                arrivalLobe(b, prev.lobe), false, along, width,
+                , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b,
+                    arrivalLobe(b, prev.lobe), false, along, width,
                 noHit(), false)
 #endif
-            );
-        let sampled: bool = scatterSampled(replay, b, stop, varying);
+                );
+        }
         // A delta light, of no density, the phase function never samples: its light sample weighs fully
         let competing: float = select(0.0f, 0.25f * INV_PI, b < scene.maxBounces() && light.density > 0.0f);
         let f: float3 = select(float3(0.0f), throughput * light.radiance * (0.25f * INV_PI
