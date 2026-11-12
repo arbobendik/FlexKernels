@@ -1279,7 +1279,8 @@ uint extractBits(uint e, uint offset, uint count) {
     ended = Shift(float3(0.0f), 0.0f);
     // Free flight by the mean scattering coefficient, or tracking under a varying medium's majorant
     let varying: bool = filling != UINT_MAX;
-    let sigma: float = select((scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, scene.majorant(filling), varying);
+    // sigma: majorant of a varying medium, else mean scattering
+    let sigma: float = varying ? scene.majorant(filling) : (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f;
     if (replay && b == stop && rc == RC_SURFACE && sigma > 0.0f) {
         return true;
     }
