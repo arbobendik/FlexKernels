@@ -1378,7 +1378,8 @@ uint extractBits(uint e, uint offset, uint count) {
     // varying one's tracking under its majorant does, at vertices leaving by the isotropic phase function,
     // which ReSTIR neither reconnects at nor across
     let varying: bool = filling != UINT_MAX;
-    let sigma: float = select((scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, scene.majorant(filling), varying);
+    // A varying medium's majorant asked of it alone, none of no medium
+    let sigma: float = varying ? scene.majorant(filling) : (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f;
     if (replay && b == stop && rc == RC_SURFACE && sigma > 0.0f) {
         return true;
     }
