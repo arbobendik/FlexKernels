@@ -74,16 +74,20 @@ Surface HookScene_surfaceAtPath_0(Hit hit, V origin, uint32_t state, float, uint
 Surface HookScene_surfaceAt_0(Hit hit, V origin, uint32_t state) {
     return HookScene_surfaceAtPath_0(hit, origin, state, 0, 0, 1, 0, ZERO);
 }
-static int hair_connects = 0;
+// Hair as an isotropic fiber: f = albedo * tint / (4 * PI), PDF = 1 / (4 * PI)
+static int hair_connects = 0, light_connects = 0;
+static bool hair_sampling = false;
 SampleBSDF HookScene_connectHair_0(V, V albedo, V tint, V in_dir, V out_dir) {
-    hair_connects++;
+    hair_connects++, light_connects += !hair_sampling;
     return SampleBSDF{out_dir, V(albedo.x * tint.x, albedo.y * tint.y, albedo.z * tint.z), 0, false,
         dotv(out_dir, in_dir) > 0 ? 1u : 2u, 0.25f / 3.14159265f};
 }
 SampleBSDF HookScene_sampleHair_0(V hair, V albedo, V tint, V in_dir, uint32_t state) {
     const Random u = pcg(state), v = pcg(u.state);
     const float z = 1 - 2 * u.value, r = sqrtf(fmaxf(0, 1 - z * z)), phi = 6.2831853f * v.value;
+    hair_sampling = true;
     SampleBSDF sampled = HookScene_connectHair_0(hair, albedo, tint, in_dir, V(r * cosf(phi), r * sinf(phi), z));
+    hair_sampling = false;
     sampled.random_state = v.state;
     return sampled;
 }
@@ -374,6 +378,9 @@ int main() {
     summing = true;
     furnace("white hair, ReSTIR off", camera, center, 0.3f, 1, failed);
     summing = false;
+    failed += light_connects != 0;
+    printf("hair under no light: %d light samples connected%s\n", light_connects,
+        light_connects != 0 ? "  FAILED" : "");
     cdf = true;
     furnace("white hair, sky sampled", camera, center, 0.3f, 1, failed);
     cdf = false;
