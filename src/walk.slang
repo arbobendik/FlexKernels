@@ -1549,32 +1549,35 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), stream(r.seed, b + STREAM_NEE)
                 );
 #endif
+            // BSDF only for samples bringing light
+            if (any(light.radiance != float3(0.0f))) {
 #ifdef FK_FCPT_WALK
-            if (hair) {
-                lit = hairLight(scene, surface, ray.unit_direction, light, b < scene.maxBounces());
-            } else
+                if (hair) {
+                    lit = hairLight(scene, surface, ray.unit_direction, light, b < scene.maxBounces());
+                } else
 #endif
-            {
-                var throughputs: float3[4];
-                var pdfs: float[4];
-                let f: float3 = BSDF(ray.unit_direction, light.dir, surface.smooth_n, material, eta.x, eta.y,
-                    dot(surface.geometry_n, - ray.unit_direction) * dot(surface.geometry_n, light.dir) <= 0.0f,
-                    surface.random_state, ~0u, throughputs, pdfs);
-                // radiance = L / PDF_light
-                // Per lobe: w_power = PDF_light^2 / (PDF_light^2 + PDF_lobe^2)
-                // => throughput * PDF_lobe / PDF_light * w_power
-                //    = throughput * PDF_lobe / (PDF_light * (1 + (PDF_lobe / PDF_light)^2))
-                // Delta lights or no competing BSDF sample: w_power = 1
-                if (!(b < scene.maxBounces()) || light.density == 0.0f) {
-                    lit = f * light.radiance;
-                } else {
-                    for (var i: uint = 0u; i < 4u; i++) {
-                        if (pdfs[i] > 0.0f) {
-                            let ratio: float = pdfs[i] / light.density;
-                            lit += throughputs[i] * pdfs[i] / (light.density * (1.0f + ratio * ratio));
+                {
+                    var throughputs: float3[4];
+                    var pdfs: float[4];
+                    let f: float3 = BSDF(ray.unit_direction, light.dir, surface.smooth_n, material, eta.x, eta.y,
+                        dot(surface.geometry_n, - ray.unit_direction) * dot(surface.geometry_n, light.dir) <= 0.0f,
+                        surface.random_state, ~0u, throughputs, pdfs);
+                    // radiance = L / PDF_light
+                    // Per lobe: w_power = PDF_light^2 / (PDF_light^2 + PDF_lobe^2)
+                    // => throughput * PDF_lobe / PDF_light * w_power
+                    //    = throughput * PDF_lobe / (PDF_light * (1 + (PDF_lobe / PDF_light)^2))
+                    // Delta lights or no competing BSDF sample: w_power = 1
+                    if (!(b < scene.maxBounces()) || light.density == 0.0f) {
+                        lit = f * light.radiance;
+                    } else {
+                        for (var i: uint = 0u; i < 4u; i++) {
+                            if (pdfs[i] > 0.0f) {
+                                let ratio: float = pdfs[i] / light.density;
+                                lit += throughputs[i] * pdfs[i] / (light.density * (1.0f + ratio * ratio));
+                            }
                         }
+                        lit = lit * light.radiance * light.density;
                     }
-                    lit = lit * light.radiance * light.density;
                 }
             }
         }
