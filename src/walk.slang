@@ -1092,6 +1092,12 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
     ) -> float3 {
     let unit_light_dir: float3 = normalize(light_dir);
 #ifdef FK_FCPT_WALK
+    // The shadow ray of either start, cast by one call below, so the walk inlines the shadow hook once per light sample
+    var ray: Ray = Ray(origin, unit_light_dir);
+    var l: float = 0.0f;
+    var front: bool = false;
+    var surface: bool = false;
+    var skip: Hit = noHit();
     if (context.opaque) {
         // Off a surface transmitting no light, as flex-cuda-pt's sampleLight: of a normal, a light only above it and its
         // face, and above the lift where the start stays on the face; the start lifted along lift toward a light above
@@ -1106,9 +1112,24 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
         if (!context.faced && !(dot(context.side, shadow) * dot(context.side, to_light) > 0.0f)) {
             return float3(0.0f);  // Of a translucent surface, as flex-cuda-pt's: the lifted start on the light's side
         }
-        return scene.shadowTransmittanceIn(Ray(origin + offset * context.lift, normalize(shadow)), shadowLength(shadow), select(context.extinction_behind, context.extinction_front, up), select(context.fillings.x, context.fillings.y, up), random_state, context.depth, context.lobe, false, context.length, context.width, offset > 0.0f ? noHit() : context.own, light);
+        ray = Ray(origin + offset * context.lift, normalize(shadow));
+        l = shadowLength(shadow);
+        front = up;
+        skip = offset > 0.0f ? noHit() : context.own;
+    } else {
+        // Compute quick exit criterion to potentially skip expensive shadow test
+        if (dot(smooth_n, unit_light_dir) < 0.0f) {
+            return float3(0.0f);
+        }
+        // From the medium on the side the light is, from the vertex, as flex-cuda-pt's sampleLight
+        ray = Ray(origin + geometry_offset * smooth_n, unit_light_dir);
+        l = shadowLength(light_dir);
+        front = dot(context.side, light_dir + geometry_offset * smooth_n) > 0.0f;
+        surface = context.surface && !context.fiber;
+        skip = context.fiber ? context.own : noHit();
     }
-#endif
+    return scene.shadowTransmittanceIn(ray, l, select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe, surface, context.length, context.width, skip, light);
+#else
     // Compute quick exit criterion to potentially skip expensive shadow test
     if (dot(smooth_n, unit_light_dir) < 0.0f) {
         return float3(0.0f);
@@ -1116,11 +1137,6 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
     // Apply geometry offset
     let offset_target: float3 = origin + geometry_offset * smooth_n;
     let light_ray: Ray = Ray(offset_target, unit_light_dir);
-#ifdef FK_FCPT_WALK
-    // From the medium on the side the light is, from the vertex, as flex-cuda-pt's sampleLight
-    let front: bool = dot(context.side, light_dir + geometry_offset * smooth_n) > 0.0f;
-    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe, context.surface && !context.fiber, context.length, context.width, context.fiber ? context.own : noHit(), light);
-#else
     return scene.shadowTransmittance(light_ray, shadowLength(light_dir));
 #endif
 }
