@@ -54,17 +54,24 @@ static Material dielectric(float ior) {
 // The hit each straight pass leaves, as the walk hands it over, against the one it shaded last
 static Hit last_shaded = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
 static int skips = 0, skip_misfits = 0, face_skips = 0;
+// Rays starting past x = -0.9, where a row counts them
+static int starts_past = 0;
+// Where a row sets its radius, a sphere light of intensity 1 at light_at, which rays considering point lights meet and
+// light sampling picks in place of the sun
+static float light_radius = 0;
+static V light_at(1e4f, 0, 0);
 // and the point it was shaded at, which the pass starts from, with no lift, off a layer of index 1
 static V last_point;
 static float last_ior = 1;
 // Past shapes hidden from the camera while the ray sees straight from it, as flex-cuda-pt's traversal passes them
-Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, Hit left, bool viewed) {
+Hit HookScene_traverseInstanceBVH_0(Ray ray, bool lights, float max_len, bool surface, Hit left, bool viewed) {
     if (left.instance_index != 0xFFFFFFFFu)
         skips++, skip_misfits += left.instance_index != last_shaded.instance_index
             || left.distance != last_shaded.distance
             || ray.origin.x != last_point.x || ray.origin.y != last_point.y || ray.origin.z != last_point.z
             || last_ior != 1;
     face_skips += left.instance_index != 0xFFFFFFFFu && !surface;  // From an opaque face, no margin, past its own
+    starts_past += ray.origin.x > -0.9f;
     Hit hit = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, max_len};
     const float near = surface ? 1e-4f : 0.0f;
     for (unsigned i = 0; i < scene.size(); i++) {
@@ -87,6 +94,11 @@ Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, 
             break;
         }
     }
+    const V ol = ray.origin - light_at;
+    const float lb = dotv(ol, ray.unit_direction), lc = dotv(ol, ol) - light_radius * light_radius;
+    const float lt = -lb - sqrtf(fmaxf(lb * lb - lc, 0));
+    if (lights && light_radius > 0 && lb * lb - lc >= 0 && lt > near && lt < hit.distance)
+        hit = {Vector<float, 2>(0, 0), 0, 0, 1, lt};
     return hit;
 }
 // The ray's direction each surface is shaded by: at the first hit, outside fog, the camera ray's own, bit for bit
@@ -142,17 +154,17 @@ static const V SUN(1e4f, 0, 0);
 Vector<uint32_t, 4> HookScene_lightNode_0(uint32_t) { return Vector<uint32_t, 4>(sun ? 2 : 1, 0, 0, 0); }
 uint32_t HookScene_lightSecond_0(uint32_t) { return 0; }
 LightBounds HookScene_lightBounds_0(uint32_t) {
-    return sun ? LightBounds{SUN, SUN, V(1, 0, 0), 1, -1} : LightBounds{ZERO, ZERO, V(0, 0, 1), 0, 1};
+    return sun ? LightBounds{light_at - scaled(ONE, light_radius), light_at + scaled(ONE, light_radius), V(1, 0, 0), 1, -1} : LightBounds{ZERO, ZERO, V(0, 0, 1), 0, 1};
 }
 Vector<uint32_t, 4> HookScene_lightTrail_0(uint32_t) { return Vector<uint32_t, 4>(0, 0, 0, 0); }
 uint32_t HookScene_lightSlot_0(Hit) { return 0; }
 // Each slot the leaf it reaches where a check sets it
 static bool slot_leaf = false;
 bool HookScene_slotLeaf_0(uint32_t, uint32_t, Vector<uint32_t, 4>) { return slot_leaf; }
-Light HookScene_light_0(uint32_t) { return Light{SUN, 0, ONE, 1e8f, 0}; }
+Light HookScene_light_0(uint32_t) { return Light{light_at, 0, ONE, light_radius > 0 ? 1 : 1e8f, light_radius}; }
 uint32_t HookScene_triangleOffset_0(uint32_t) { return 0; }
 Matrix<float, 3, 3> HookScene_worldTriangle_0(uint32_t, uint32_t) { return Matrix<float, 3, 3>(0.0f); }
-V HookScene_calculatePointLightContrib_0(uint32_t) { return ZERO; }
+V HookScene_calculatePointLightContrib_0(uint32_t) { return scaled(ONE, 1 / (3.14159265f * light_radius * light_radius)); }
 V HookScene_hitPosition_0(Hit) { return ZERO; }
 // Shadows pass index-matched clear surfaces, and the uncovered share of the others, as flex-cuda-pt's do, through
 // media by their extinction
@@ -617,6 +629,42 @@ int main() {
         const Vector<float, 2> eta = vertexEta_0(&glass, 1);
         const double reach = 1e4 + 1 - 1e-4, f = BSDF(through, through, face, face, glass, eta.x, eta.y, 0).x;
         furnace("rough glass lit from behind", V(-5, 0, 0), V(-1, 0, 0), 0, f * 1e8 / (reach * reach), failed);
+        // Its start lifted 0.5 toward the sun, past a black dish 0.1 behind it: as flex-cuda-pt's traced lift, the
+        // start stays on the vertex, whose shadow ray the dish meets, so no sun reaches it
+        scene.push_back({ZERO, 0.9f, false, {lambert(0, 0)}, 1, 1, false, none});
+        scene[1].axis = V(-1, 0, 0), scene[1].cap = 0.95f, scene[0].offset = 0.5f;
+        furnace("rough glass lifted past a dish behind it", V(-5, 0, 0), V(-1, 0, 0), 0, 0, failed);
+        // Nor does a bounce off it start past the dish, under a sky of 1, through it or back
+        sun = false, sky = 1, bounces = 1, starts_past = 0;
+        furnace("rough glass lifted past a dish behind it, bounced", V(-5, 0, 0), V(-1, 0, 0), 0, NAN, failed);
+        failed += starts_past != 0;
+        printf("starts past the dish: %d%s\n", starts_past, starts_past != 0 ? "  FAILED" : "");
+        // The dish gone, a sphere light of radius 0.2 at the center instead, 0.5 behind the start lifted toward it: met
+        // by bounces and sampled, weighed against each other, the cap reads the light's radiance 1 / (pi r^2) times its
+        // BSDF over the light's cone seen from that start, by 1 << 20 directions uniform in it
+        scene.pop_back();
+        sun = slot_leaf = true, sky = 0, light_radius = 0.2f, light_at = ZERO;
+        const double cos_max = sqrt(1 - 0.2 * 0.2 / (0.5 * 0.5));
+        double cone = 0;
+        for (int i = 0; i < 1 << 20; i++) {
+            const double z = 1 - (i + 0.5) / (1 << 20) * (1 - cos_max), r = sqrt(1 - z * z), phi = 2.39996323 * i;
+            cone += BSDF(through, V(z, r * cos(phi), r * sin(phi)), face, face, glass, eta.x, eta.y, 0).x;
+        }
+        cone *= 2 * 3.14159265 * (1 - cos_max) / (1 << 20) / (3.14159265 * 0.2 * 0.2);
+        // Plus g, what bounces alone carry there at weight 1: sampleBSDF's directions to the wrong side of the face,
+        // sampled again off the face, into the cone, of 1 << 22 samples
+        double g = 0;
+        for (int i = 0; i < 1 << 22; i++) {
+            const SampleBSDF s = sampleBSDF(through, face, glass, eta.x, eta.y, hash(i), Vector<float, 2>(0, 0));
+            if (s.refracted == (dotv(s.unit_direction, face) > 0)) {
+                const SampleBSDF t = sampleBSDF(s.unit_direction, face, glass, eta.x, eta.y, s.random_state,
+                    Vector<float, 2>(0, 0));
+                if (t.unit_direction.x >= cos_max) g += t.throughput.x;
+            }
+        }
+        cone += g / (1 << 22) / (3.14159265 * 0.2 * 0.2);
+        furnace("rough glass lifted toward a light behind it", V(-5, 0, 0), V(-1, 0, 0), 0, cone, failed);
+        slot_leaf = false, light_radius = 0, light_at = SUN;
     }
     bounces = 64, sun = false;
     // Hidden only while seen straight: a hidden emitter seen past hair, which scatters every ray, reads as when seen
