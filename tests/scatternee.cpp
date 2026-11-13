@@ -21,6 +21,8 @@ LightBounds HookScene_lightBounds_0(uint32_t) {
     return LightBounds{V(-0.5f, -0.4f, 1), V(0.7f, 0.6f, 1), DOWN, 1, 1};
 }
 uint32_t HookScene_triangleOffset_0(uint32_t) { return 0; }
+// Nothing within a start's lift, the emitter a unit away
+Hit HookScene_traverseInstanceBVH_0(Ray, bool, float, bool, Hit, bool) { return Hit{Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0}; }
 Matrix<float, 3, 3> HookScene_worldTriangle_0(uint32_t, uint32_t) {
     return Matrix<float, 3, 3>(A.x, A.y, A.z, B.x, B.y, B.z, C.x, C.y, C.z);
 }
