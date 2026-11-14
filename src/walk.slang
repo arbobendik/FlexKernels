@@ -1170,7 +1170,7 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
 
 // Per lobe against the BSDF sampled escape of PDF pdf: w_balance = pdf / (pdf + PDF_lobe)
 // => throughput * PDF_lobe / pdf * w_balance = throughput * PDF_lobe / (PDF_lobe + pdf)
-func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
+[CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
     var throughputs: float3[4];
     var pdfs: float[4];
     BSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y,
