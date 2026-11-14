@@ -39,7 +39,7 @@ Surface HookScene_lightSurfaceAt_0(Hit hit, V point, uint32_t state, V dir, uint
     return HookScene_surfaceAt_0(hit, point, state);
 }
 V HookScene_shadowTransmittanceIn_0(Ray, float, V, uint32_t filling, uint32_t, uint32_t, uint32_t, bool, float, float,
-    Hit) {
+    Hit, Hit) {
     hook_filling = filling;
     return V(1, 1, 1);
 }

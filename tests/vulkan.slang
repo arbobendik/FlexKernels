@@ -15,7 +15,7 @@ struct TestScene : IScene {
         return Hit(ray.origin.xy, ray.unit_direction.x > 0.0f ? 0u : UINT_MAX, uint(consider_point_lights) + uint(surface) + left.triangle_index + uint(viewed), 0u, max_len * 0.5f);
     }
     float3 shadowTransmittance(Ray ray, float l) { return float3(l > ray.origin.x ? 0.0f : 1.0f, 1.0f, 0.5f); }
-    float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left) {
+    float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left, Hit light) {
         return shadowTransmittance(ray, l) * exp(- extinction * l * length)
             * float(filling + random_state + depth + lobe + uint(surface)) * width;
     }
