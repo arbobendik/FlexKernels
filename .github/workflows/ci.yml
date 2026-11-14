@@ -47,7 +47,8 @@ jobs:
           - repository: arbobendik/FlexLight
             key: FLEXLIGHT_DEPLOY_KEY
             source: wgsl
-            targets: wgsl:src/flexlight/webgpu/shaders/flexkernels glsl:src/flexlight/webgl2/shaders/flexkernels
+            targets: wgsl-restir:src/flexlight/webgpu/shaders/flexkernels-restir
+              wgsl:src/flexlight/webgpu/shaders/flexkernels glsl:src/flexlight/webgl2/shaders/flexkernels
     steps:
       - uses: actions/checkout@v7
         with:
