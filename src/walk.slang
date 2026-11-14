@@ -1342,7 +1342,7 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
 
 // BSDF times cosine toward an environment sample over its density, each lobe weighted against the BSDF sampled escape by the
 // balance heuristic. Lobes sampling can't produce toward dir are left to rays sampled to the wrong side, sampled again or mirrored.
-func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
+[CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
     let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
     return neeBSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y, refracted, pdf, false, random_state);
 }
