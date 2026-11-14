@@ -1269,7 +1269,7 @@ func skyLobes(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_ins
 }
 
 // skyLobes' sum
-func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
+[CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
     var terms: float3[4];
     var pdfs: float[4];
     return skyLobes(in_dir, dir, surface, eta, is_inside, pdf, random_state, terms, pdfs);
