@@ -201,17 +201,17 @@ __extern_cpp public struct ShadowContext {
     __extern_cpp public Hit own;
     __extern_cpp public bool fiber;
 }
-func shadowContext(surface: Surface, turned: bool, side_n: float3, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint, length: float, width: float, own: Hit, fiber: bool) -> ShadowContext {
+func shadowContext(surface: Surface, turned: bool, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint, length: float, width: float, own: Hit, fiber: bool) -> ShadowContext {
     // A face bounding no volume: the same medium on both sides
-    var context: ShadowContext = ShadowContext(extinction, extinction, uint2(filling), side_n, depth, lobe, true, length, width, own, fiber);
+    var context: ShadowContext = ShadowContext(extinction, extinction, uint2(filling), surface.geometry_n, depth, lobe, true, length, width, own, fiber);
     if (surface.encloses) {
         var faced: Surface = surface;
         faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
         let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction), filling, dir);
         // The face's sides as the faced normal sees them
-        context = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, side_n, depth, lobe, true, length, width, own, fiber);
+        context = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, surface.geometry_n, depth, lobe, true, length, width, own, fiber);
         if (turned) {
-            context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, side_n, depth, lobe, true, length, width, own, fiber);
+            context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, surface.geometry_n, depth, lobe, true, length, width, own, fiber);
         }
     }
     return context;
@@ -1564,7 +1564,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         if (samples_light) {
 #ifdef FK_FCPT_WALK
             light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, sided, stream(r.seed, b + STREAM_NEE)
-                , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
+                , shadowContext(surface, turned, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
                 );
 #else
             light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), stream(r.seed, b + STREAM_NEE)
