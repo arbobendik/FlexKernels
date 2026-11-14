@@ -31,7 +31,7 @@ static const V ZERO(0, 0, 0), ONE(1, 1, 1);
 static float dotv(V a, V b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static V scaled(V a, float s) { return V(a.x * s, a.y * s, a.z * s); }
 struct Shape { V center; float radius; bool inward; Material layer[2]; unsigned layers; float coverage; bool encloses;
-    Medium volume; bool hidden = false; bool hair = false; float tilt = 0; };
+    Medium volume; bool hidden = false; bool hair = false; float tilt = 0; V axis = V(0, 0, 1); float cap = -2; };
 static std::vector<Shape> scene;
 static const Hit NO_HIT = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};
 // The camera's medium: fog where a furnace sets it, else none; homogeneous, or varying of the same coefficients
@@ -71,11 +71,17 @@ Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, 
         const V oc = ray.origin - scene[i].center;
         const float b = dotv(oc, ray.unit_direction), c = dotv(oc, oc) - scene[i].radius * scene[i].radius;
         if (b * b - c < 0) continue;
-        // Past the start's own shape where left names it, as past its own segment: its far side alone, if ahead
+        // Past the start's own shape where left names it, as past its own segment: its far side alone, if ahead; of a
+        // cap, the sphere's points within cap's cosine of its axis alone
         const bool own = left.instance_index == i;
-        const float s = sqrtf(b * b - c), t = -b - s > near && !own ? -b - s : -b + s;
-        if (own && !(t > 1e-4f * scene[i].radius)) continue;
-        if (t > near && t < hit.distance) hit.instance_index = i, hit.distance = t;
+        const float s = sqrtf(b * b - c);
+        for (const float t : {-b - s, -b + s}) {
+            const V on = ray.origin + scaled(ray.unit_direction, t) - scene[i].center;
+            if (!(t > near) || (own && !(t > 1e-4f * scene[i].radius))
+                || dotv(on, scene[i].axis) < scene[i].cap * scene[i].radius) continue;
+            if (t < hit.distance) hit.instance_index = i, hit.distance = t;
+            break;
+        }
     }
     return hit;
 }
@@ -513,6 +519,19 @@ int main() {
         scene[0].hair = true, scene[0].tilt = tilt;
         furnace(tilt == 0 ? "hair under the sun, its normal toward it" : "hair under the sun, its normal away",
             scaled(p, 5), p, 0.001f, 0.25 / 3.14159265, failed);
+    }
+    // A rough glass cap of one layer facing away from the sun, lit from behind its face: light sampled all around, as
+    // flex-cuda-pt samples it off a surface of one layer transmitting light, it reads its BSDF straight through times
+    // the sun's irradiance at it, 1e8 over its distance squared from the start lifted 1e-4 toward the sun
+    {
+        Material glass = dielectric(1.5f);
+        glass.roughness = 0.6f;
+        scene = {{ZERO, 1, false, {glass}, 1, 1, false, none}};
+        scene[0].axis = V(-1, 0, 0), scene[0].cap = 0.95f;
+        const V through(1, 0, 0), face(-1, 0, 0);
+        const Vector<float, 2> eta = vertexEta_0(&glass, 1);
+        const double reach = 1e4 + 1 - 1e-4, f = BSDF(through, through, face, face, glass, eta.x, eta.y, 0).x;
+        furnace("rough glass lit from behind", V(-5, 0, 0), V(-1, 0, 0), 0, f * 1e8 / (reach * reach), failed);
     }
     bounces = 64, sun = false;
     // Hidden only while seen straight: a hidden emitter seen past hair, which scatters every ray, reads as when seen
