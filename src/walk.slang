@@ -1522,7 +1522,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     let primary: uint = b + 1u;
     for (b = primary; ; b++) {
         let point_light_lighting: bool = hit.is_point_light == 1u;
-        var surface: Surface = {};
+        var surface: Surface = Surface();
         // Smooth normal the surface emits along, before it faces the ray
         var front_n: float3 = float3(0.0f);
         var scatter: bool = false;
@@ -1736,7 +1736,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             var refracted: bool = lobe_index == LOBE_REFRACT;
             var wrong_side: bool = false;
             // Sample leaving this vertex, without density when sampled to the wrong side of the face
-            var lobe: SampleBSDF = {};
+            var lobe: SampleBSDF = SampleBSDF();
             if (connect) {
                 if (is_inside != (extractBits(r.path, PATH_INSIDE, 1u) == 1u)) {
                     return fail;
