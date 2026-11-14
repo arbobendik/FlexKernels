@@ -39,12 +39,15 @@ Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, 
     const float near = surface ? 1e-4f : 0.0f;
     for (unsigned i = 0; i < scene.size(); i++) {
         if (viewed && scene[i].hidden) continue;
-        const V oc = ray.origin - scene[i].center;
-        const float b = dotv(oc, ray.unit_direction), c = dotv(oc, oc) - scene[i].radius * scene[i].radius;
+        // In double: |oc|^2 of a radius 1000 sphere loses a 1e-4 offset in float
+        const double ox = double(ray.origin.x) - scene[i].center.x, oy = double(ray.origin.y) - scene[i].center.y,
+            oz = double(ray.origin.z) - scene[i].center.z, r = scene[i].radius;
+        const double b = ox * ray.unit_direction.x + oy * ray.unit_direction.y + oz * ray.unit_direction.z,
+            c = (ox * ox + oy * oy + oz * oz) - r * r;
         if (b * b - c < 0) continue;
         const bool own = left.instance_index == i;
-        const float s = sqrtf(b * b - c);
-        for (const float t : {-b - s, -b + s}) {
+        const double s = sqrt(b * b - c);
+        for (const float t : {float(-b - s), float(-b + s)}) {
             const V on = ray.origin + scaled(ray.unit_direction, t) - scene[i].center;
             if (!(t > near) || (own && !(t > 1e-4f * scene[i].radius))
                 || dotv(on, scene[i].axis) < scene[i].cap * scene[i].radius) continue;
@@ -141,9 +144,10 @@ uint32_t HookScene_maxBounces_0() { return bounces; }
 static float sky = 1;
 static bool escapes_checked = false;
 static int escapes = 0, escape_misfits = 0;
-V HookScene_env_map_sample_0(V, uint32_t depth, uint32_t lobe) {
+static V below(0, 0, 0);
+V HookScene_env_map_sample_0(V dir, uint32_t depth, uint32_t lobe) {
     if (escapes_checked) escapes += depth == 0 && lobe == 0, escape_misfits += depth != 0 || lobe != 0 && lobe != 3;
-    return scaled(ONE, sky);
+    return scaled(ONE, dotv(below, below) > 0 && !(dotv(dir, below) < 0) ? 0 : sky);
 }
 V HookScene_ambient_0() { return ONE; }
 Vector<uint32_t, 2> HookScene_environmentMapSize_0() { return Vector<uint32_t, 2>(4, 2); }
@@ -444,6 +448,28 @@ int main() {
             failed);
     }
     summing = seen = false;
+    // Light from below a face never reaches it: 0
+    for (const float degrees : {0.0f, 15.0f, 30.0f, 50.0f, 60.0f, 75.0f}) {
+        const float tilt = degrees / 57.29578f;
+        const V g(-sinf(tilt / 2), 0, cosf(tilt / 2));
+        char name[64];
+        scene = {{scaled(g, -1000), 1000, false, {lambert(1, 0)}, 1, 1, false, none}};
+        scene[0].tilt = tilt, scene[0].axis = g, scene[0].cap = 0.999f;
+        bounces = 1, sky = 0, sun = true;
+        snprintf(name, sizeof name, "sun in the wedge, %g deg", degrees);
+        furnace(name, scaled(g, 5), ZERO, 0.01f, 0, failed);
+        sun = false, sky = 1, bounces = 4, below = g;
+        for (const bool sampled : {true, false}) {
+            cdf = sampled;
+            snprintf(name, sizeof name, "sky below the face, %g deg%s", degrees, sampled ? "" : ", unsampled");
+            furnace(name, scaled(g, 5), ZERO, 0.01f, 0, failed);
+        }
+        below = ZERO, cdf = true, bounces = 64;
+    }
+    sky = 1;
+    scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
+    scene[0].tilt = 1.2566371f;
+    furnace("white sphere, smooth normals tilted 72 deg", camera, center, 0.3f, 1, failed);
     bounces = 64, sky = 1, sun = false, camera_fog = none, seen = false, own_skips = 0, hair_connects = 0, cdf = false;
     scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
     scene[0].hair = true;
