@@ -748,6 +748,12 @@ func vertexEta(material: Material, n_dot_v: float) -> float2 {
     let opaque: bool = !(surface.material.transmission > 0.0f) && !isTranslucent(surface.material);
     return select(surface.geometry_n, surface.smooth_n, opaque && dot(surface.smooth_n, - in_dir) > 0.0f);
 }
+// Of flex-cuda-pt's walk, by the smooth normal's side, the first; of FlexLight's, by the face, the second, as its walk
+#ifdef FK_FCPT_WALK
+#define BY_SIDE(smooth_side, face) (smooth_side)
+#else
+#define BY_SIDE(smooth_side, face) (face)
+#endif
 
 // Whether the path tracer considers dir to point towards the incorrect side of the surface
 func wrongSide(is_inside: bool, refracted: bool, dir: float3, geometry_n: float3) -> bool {
@@ -1266,7 +1272,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
             }
         }
 #endif
-        else if (!(dot(smooth_n, point - start) > 0.0f)) {
+        else if (!(dot(smooth_n, BY_SIDE(point - start, point - origin)) > 0.0f)) {
             return sample;
         }
 #ifdef FK_FCPT_WALK
@@ -1332,7 +1338,7 @@ public func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, star
         n = select(n + 1u, second, (trail.x & 1u) == 1u);
         trail = uint2((trail.x >> 1u) | (trail.y << 31u), trail.y >> 1u);
     }
-    if (!scene.slotLeaf(n, j, trail_texel) || !(importance(scene.lightBounds(n), origin, smooth_n) > 0.0f) || (dot(smooth_n, smooth_n) > 0.0f && !(dot(smooth_n, light_point - start) > 0.0f))) {
+    if (!scene.slotLeaf(n, j, trail_texel) || !(importance(scene.lightBounds(n), origin, smooth_n) > 0.0f) || (dot(smooth_n, smooth_n) > 0.0f && !(dot(smooth_n, BY_SIDE(light_point - start, light_point - origin)) > 0.0f))) {
         return 0.0f;
     }
     let leaf: uint4 = scene.lightNode(n);
@@ -1819,7 +1825,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         if (layersUsed() && (passed || layer != 0u)) {
             nee = false;
         }
-        let side_n: float3 = sideNormal(surface, ray.unit_direction);
+        let side_n: float3 = BY_SIDE(sideNormal(surface, ray.unit_direction), surface.geometry_n);
 #ifdef FK_FCPT_WALK
         // Off an opaque surface, as flex-cuda-pt's walk: along the face normal by the smooth surface's height over it,
         // the consumer's offset, so starts don't slide past walls meeting the face
@@ -2076,7 +2082,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             let inverse_footprint: bool = withinInverseFootprint(lobe.pdf, lobe_index == LOBE_DIFFUSE, prev.cos, hit.distance, threshold);
             // Directions between the face and the smooth normal (the terminator's) are judged by a side the incoming
             // direction decides, which shifts change, so no reconnection is made along them
-            let wedge: bool = dot(dir, surface.smooth_n) * dot(dir, surface.geometry_n) < 0.0f;
+            let wedge: bool = BY_SIDE(dot(dir, surface.smooth_n) * dot(dir, surface.geometry_n) < 0.0f, false);
             let rough: bool = !wedge && roughLobe(lobe.pdf, lobe_index == LOBE_DIFFUSE, material.roughness);
             if (arrived) {
                 if (!inverse_footprint) {
