@@ -163,6 +163,7 @@ Medium HookScene_cameraMedium_0(V direction, float distance, uint32_t* filling) 
     return camera_fog;
 }
 static int majorants_of_none = 0;
+bool HookScene_varyingUsed_0() { return true; }
 float HookScene_majorant_0(uint32_t filling) {
     majorants_of_none += filling == 0xFFFFFFFFu;
     return camera_fog.extinction.x;
