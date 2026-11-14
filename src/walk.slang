@@ -196,6 +196,14 @@ __extern_cpp public struct MediumSides {
     __extern_cpp public uint2 fillings;
     __extern_cpp public float3 face;
 }
+// Whether the surface's face bounds a volume, as flex-cuda-pt's encloses, which only its walk's surfaces carry
+func boundsVolume(surface: Surface) -> bool {
+#ifdef FK_FCPT_WALK
+    return surface.encloses;
+#else
+    return false;
+#endif
+}
 func mediumSides(surface: Surface, medium: Medium, filling: uint, dir: float3) -> MediumSides {
     var sides: MediumSides = MediumSides(medium, medium, uint2(filling), surface.geometry_n);
 #ifdef FK_FCPT_WALK
@@ -210,14 +218,14 @@ func mediumSides(surface: Surface, medium: Medium, filling: uint, dir: float3) -
 #endif
     return sides;
 }
-// Whether a ray leaving along dir, by the side of side_n that the faced normal g turns, goes in front of the face
-func leavesInFront(face: float3, dir: float3, side_n: float3, g: float3) -> bool {
-    return (dot(dir, side_n) > 0.0f) == (dot(g, face) > 0.0f);
+// Whether a ray leaving along dir, by the side of the faced normal g it lies on, goes in front of the face
+func leavesInFront(face: float3, dir: float3, g: float3) -> bool {
+    return (dot(dir, g) > 0.0f) == (dot(g, face) > 0.0f);
 }
 
 #ifdef FK_FCPT_WALK
 // What flex-cuda-pt's shadow segments read of the vertex they leave: the extinction and varying medium's key on either
-// side of the faced normal, the side normal that picks one toward the light, the vertex's depth and arrival lobe
+// side of the faced normal, the faced normal that picks one toward the light, the vertex's depth and arrival lobe
 // for the occluders' Light Path inputs, whether it is a surface's, as the hooks take it, and the length and cone width
 // of the segment reaching it, for the shading of what it passes
 __extern_cpp public struct ShadowContext {
@@ -234,14 +242,18 @@ __extern_cpp public struct ShadowContext {
     __extern_cpp public Hit own;
     __extern_cpp public bool fiber;
 }
-func shadowContext(surface: Surface, turned: bool, side_n: float3, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint, length: float, width: float, own: Hit, fiber: bool) -> ShadowContext {
-    var faced: Surface = surface;
-    faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
-    let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction), filling, dir);
-    // The face's sides as the faced normal sees them
-    var context: ShadowContext = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, side_n, depth, lobe, true, length, width, own, fiber);
-    if (turned) {
-        context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, side_n, depth, lobe, true, length, width, own, fiber);
+func shadowContext(surface: Surface, turned: bool, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint, length: float, width: float, own: Hit, fiber: bool) -> ShadowContext {
+    // Of a face bounding no volume, as flex-cuda-pt's encloses, the medium the vertex is in on both sides
+    var context: ShadowContext = ShadowContext(extinction, extinction, uint2(filling), surface.geometry_n, depth, lobe, true, length, width, own, fiber);
+    if (surface.encloses) {
+        var faced: Surface = surface;
+        faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
+        let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction), filling, dir);
+        // The face's sides as the faced normal sees them
+        context = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, surface.geometry_n, depth, lobe, true, length, width, own, fiber);
+        if (turned) {
+            context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, surface.geometry_n, depth, lobe, true, length, width, own, fiber);
+        }
     }
     return context;
 }
@@ -774,6 +786,7 @@ public interface IScene {
     public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe, float3 dir);
     public uint layers(Hit hit);
     public float majorant(uint filling);
+    public bool varyingUsed();
     public Medium cameraMedium(float3 direction, float distance, out uint filling);
     public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe, bool camera);
     public float3 hitPosition(Hit hit);
@@ -886,6 +899,10 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "0.0f")
     __target_intrinsic(cuda, "fcptMajorant($0)")
     public float majorant(uint filling);
+    // Whether varying media are compiled in, flex-cuda-pt's own constant, false where its scene has none: their code folds
+    __target_intrinsic(wgsl, "false")
+    __target_intrinsic(cuda, "fcptVaryingUsed()")
+    public bool varyingUsed();
     // The medium the camera is in, flex-cuda-pt's alone, shaded along the camera ray's direction and distance: its
     // coefficients and its material's key if varying, else UINT_MAX
     __target_intrinsic(wgsl, "Medium()")
@@ -1377,7 +1394,7 @@ uint extractBits(uint e, uint offset, uint count) {
     // Before the hit, the medium scatters the ray at distances its mean scattering coefficient samples, or a
     // varying one's tracking under its majorant does, at vertices leaving by the isotropic phase function,
     // which ReSTIR neither reconnects at nor across
-    let varying: bool = filling != UINT_MAX;
+    let varying: bool = scene.varyingUsed() && filling != UINT_MAX;
     // A varying medium's majorant asked of it alone, none of no medium
     let sigma: float = varying ? scene.majorant(filling) : (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f;
     if (replay && b == stop && rc == RC_SURFACE && sigma > 0.0f) {
@@ -1506,7 +1523,7 @@ uint extractBits(uint e, uint offset, uint count) {
     ray.origin += hit.distance * ray.unit_direction;
     if (mediaUsed()) {
         // What the medium lets through to the hit, unscattered, and what a varying one emits on the way
-        if (filling != UINT_MAX) {
+        if (scene.varyingUsed() && filling != UINT_MAX) {
             if (!replay) {
                 addGlow(sel, throughput * glowed / density);
             }
@@ -1588,6 +1605,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         ray.origin = dom.x0;
         hit.distance = length(dom.x1 - dom.x0);
         let camera: Medium = scene.cameraMedium(ray.unit_direction, hit.distance, filling);
+        filling = select(UINT_MAX, filling, scene.varyingUsed());
         scatter_in = camera.scatter;
         extinction_in = camera.extinction;
         if (coneUsed()) {
@@ -1715,7 +1733,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         if (samples_light) {
 #ifdef FK_FCPT_WALK
             light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, sided, stream(r.seed, b + STREAM_NEE)
-                , shadowContext(surface, turned, surface.geometry_n, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
+                , shadowContext(surface, turned, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
                 );
 #else
             light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), stream(r.seed, b + STREAM_NEE)
@@ -1956,15 +1974,16 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (refracted && !through) {
                 is_inside = !is_inside;
             }
-            if (mediaUsed() && !(layersUsed() && passes)) {
-                // Into the medium on the side it leaves by, of the face as the mesh turns it
+            if (mediaUsed() && boundsVolume(surface) && !(layersUsed() && passes)) {
+                // Into the medium on the side it leaves by, of the face as the mesh turns it; a face bounding no
+                // volume, as flex-cuda-pt's encloses, keeps the one the ray travels in
                 var faced: Surface = surface;
                 faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
                 let sides: MediumSides = mediumSides(faced, Medium(scatter_in, extinction_in), filling, ray.unit_direction);
-                let front: bool = leavesInFront(faced.geometry_n, dir, surface.geometry_n, surface.geometry_n);
+                let front: bool = leavesInFront(faced.geometry_n, dir, surface.geometry_n);
                 scatter_in = select(sides.behind.scatter, sides.front.scatter, front);
                 extinction_in = select(sides.behind.extinction, sides.front.extinction, front);
-                filling = select(sides.fillings.x, sides.fillings.y, front);
+                filling = select(UINT_MAX, select(sides.fillings.x, sides.fillings.y, front), scene.varyingUsed());
             }
             ray.unit_direction = dir;
             if (!(layersUsed() && passes)) {

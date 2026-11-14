@@ -1,9 +1,10 @@
 // flex-cuda-pt's shadow segments in the walk: light sampling hands the shadow hook the extinction and varying medium's
-// key on the side of the vertex the light is on, by side_n, as renderer.cu's sampleLight starts in sides[dot(face,
-// toLight) > 0] (66d4e7e, lines 1145-1146), with the light pick's random state, the vertex's depth and arrival lobe, and
+// key on the side of the vertex the light is on, by the faced normal, as renderer.cu's sampleLight starts in
+// sides[dot(face, toLight) > 0] (66d4e7e, lines 1145-1146), with the light pick's random state, the vertex's depth and
+// arrival lobe, and
 // its segment's length and width.
-// Over faces bounding a volume or not, met entering or leaving it, faced either way, side_n on the faced normal or
-// tilted, lights all around: the hook's medium against flex-cuda-pt's. Printed: the cases that differ
+// Over faces bounding a volume or not, met entering or leaving it, faced either way, lights all around: the hook's
+// medium against flex-cuda-pt's. Printed: the cases that differ
 #include <stdio.h>
 #include <math.h>
 #include <initializer_list>
@@ -29,16 +30,14 @@ int main() {
     for (const bool encloses : {false, true})
         for (const float arriving : {-1.0f, 1.0f})
             for (const bool turned : {false, true})
-                for (const float tilt : {0.0f, 0.6f})
-                    for (int k = 0; k < 16; k++) {
+                for (int k = 0; k < 16; k++) {
                         const float a = 0.4f * k, facing = turned ? -1.0f : 1.0f;
                         const V f = up, g(0, 0, facing), in(0.6f, 0, 0.8f * arriving), light(cosf(a), 0, sinf(a));
-                        const V side(tilt * facing, 0, facing * sqrtf(1 - tilt * tilt));
                         Hit none = {Vector<float, 2>(0, 0), 0xFFFFFFFFu, 0, 0, 0};  // No hit to skip
                         // The surface as the walk holds it, faced, with the volume its face bounds
                         Surface faced = {up, g, 0, {ONE, ZERO, 1, 0, 0, 1, ZERO, ONE, 1}, false, 0, 1, encloses,
                             {ONE, extinct}, FILLS};
-                        ShadowContext context = shadowContext_0(&faced, turned, side, carried, AIR, in, 5, 2, 0.75f,
+                        ShadowContext context = shadowContext_0(&faced, turned, carried, AIR, in, 5, 2, 0.75f,
                             0.125f, &none, false);
                         lightTransmittance_0(ZERO, light, 0, light, &context, 77, &none);
                         // flex-cuda-pt's, indexed by the faced normal
@@ -49,7 +48,7 @@ int main() {
                             ext[back] = extinct, fill[back] = FILLS;
                             if (dot_0(in, f) > 0) ext[ahead] = ZERO, fill[ahead] = NONE;
                         }
-                        const unsigned i = dot_0(side, light) > 0;
+                        const unsigned i = dot_0(g, light) > 0;
                         cases++, differ += got_extinction.x != ext[i].x || got_extinction.z != ext[i].z
                             || got_filling != fill[i] || got_state != 77 || got_depth != 5 || got_lobe != 2
                             || !got_surface || got_length != 0.75f || got_width != 0.125f;
