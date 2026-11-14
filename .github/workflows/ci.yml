@@ -48,6 +48,7 @@ jobs:
             key: FLEXLIGHT_DEPLOY_KEY
             source: wgsl
             targets: wgsl:src/flexlight/webgpu/shaders/flexkernels glsl:src/flexlight/webgl2/shaders/flexkernels
+              wgsl-restir:src/flexlight/webgpu/shaders/flexkernels-restir
     steps:
       - uses: actions/checkout@v7
         with:
