@@ -786,6 +786,7 @@ public interface IScene {
     public Surface surfaceAtPath(Hit hit, float3 origin, uint init_random_state, float width, uint layer, uint depth, uint lobe, float3 dir);
     public uint layers(Hit hit);
     public float majorant(uint filling);
+    public bool varyingUsed();
     public Medium cameraMedium(float3 direction, float distance, out uint filling);
     public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe, bool camera);
     public float3 hitPosition(Hit hit);
@@ -898,6 +899,10 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "0.0f")
     __target_intrinsic(cuda, "fcptMajorant($0)")
     public float majorant(uint filling);
+    // Whether varying media are compiled in, flex-cuda-pt's own constant, false where its scene has none: their code folds
+    __target_intrinsic(wgsl, "false")
+    __target_intrinsic(cuda, "fcptVaryingUsed()")
+    public bool varyingUsed();
     // The medium the camera is in, flex-cuda-pt's alone, shaded along the camera ray's direction and distance: its
     // coefficients and its material's key if varying, else UINT_MAX
     __target_intrinsic(wgsl, "Medium()")
@@ -1389,7 +1394,7 @@ uint extractBits(uint e, uint offset, uint count) {
     // Before the hit, the medium scatters the ray at distances its mean scattering coefficient samples, or a
     // varying one's tracking under its majorant does, at vertices leaving by the isotropic phase function,
     // which ReSTIR neither reconnects at nor across
-    let varying: bool = filling != UINT_MAX;
+    let varying: bool = scene.varyingUsed() && filling != UINT_MAX;
     // A varying medium's majorant asked of it alone, none of no medium
     let sigma: float = varying ? scene.majorant(filling) : (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f;
     if (replay && b == stop && rc == RC_SURFACE && sigma > 0.0f) {
@@ -1518,7 +1523,7 @@ uint extractBits(uint e, uint offset, uint count) {
     ray.origin += hit.distance * ray.unit_direction;
     if (mediaUsed()) {
         // What the medium lets through to the hit, unscattered, and what a varying one emits on the way
-        if (filling != UINT_MAX) {
+        if (scene.varyingUsed() && filling != UINT_MAX) {
             if (!replay) {
                 addGlow(sel, throughput * glowed / density);
             }
@@ -1600,6 +1605,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         ray.origin = dom.x0;
         hit.distance = length(dom.x1 - dom.x0);
         let camera: Medium = scene.cameraMedium(ray.unit_direction, hit.distance, filling);
+        filling = select(UINT_MAX, filling, scene.varyingUsed());
         scatter_in = camera.scatter;
         extinction_in = camera.extinction;
         if (coneUsed()) {
@@ -1977,7 +1983,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 let front: bool = leavesInFront(faced.geometry_n, dir, surface.geometry_n, surface.geometry_n);
                 scatter_in = select(sides.behind.scatter, sides.front.scatter, front);
                 extinction_in = select(sides.behind.extinction, sides.front.extinction, front);
-                filling = select(sides.fillings.x, sides.fillings.y, front);
+                filling = select(UINT_MAX, select(sides.fillings.x, sides.fillings.y, front), scene.varyingUsed());
             }
             ray.unit_direction = dir;
             if (!(layersUsed() && passes)) {
