@@ -196,6 +196,14 @@ __extern_cpp public struct MediumSides {
     __extern_cpp public uint2 fillings;
     __extern_cpp public float3 face;
 }
+// Whether the surface's face bounds a volume, as flex-cuda-pt's encloses, which only its walk's surfaces carry
+func boundsVolume(surface: Surface) -> bool {
+#ifdef FK_FCPT_WALK
+    return surface.encloses;
+#else
+    return false;
+#endif
+}
 func mediumSides(surface: Surface, medium: Medium, filling: uint, dir: float3) -> MediumSides {
     var sides: MediumSides = MediumSides(medium, medium, uint2(filling), surface.geometry_n);
 #ifdef FK_FCPT_WALK
@@ -235,13 +243,17 @@ __extern_cpp public struct ShadowContext {
     __extern_cpp public bool fiber;
 }
 func shadowContext(surface: Surface, turned: bool, side_n: float3, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint, length: float, width: float, own: Hit, fiber: bool) -> ShadowContext {
-    var faced: Surface = surface;
-    faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
-    let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction), filling, dir);
-    // The face's sides as the faced normal sees them
-    var context: ShadowContext = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, side_n, depth, lobe, true, length, width, own, fiber);
-    if (turned) {
-        context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, side_n, depth, lobe, true, length, width, own, fiber);
+    // Of a face bounding no volume, as flex-cuda-pt's encloses, the medium the vertex is in on both sides
+    var context: ShadowContext = ShadowContext(extinction, extinction, uint2(filling), side_n, depth, lobe, true, length, width, own, fiber);
+    if (surface.encloses) {
+        var faced: Surface = surface;
+        faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
+        let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction), filling, dir);
+        // The face's sides as the faced normal sees them
+        context = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, side_n, depth, lobe, true, length, width, own, fiber);
+        if (turned) {
+            context = ShadowContext(sides.front.extinction, sides.behind.extinction, sides.fillings.yx, side_n, depth, lobe, true, length, width, own, fiber);
+        }
     }
     return context;
 }
@@ -1956,8 +1968,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (refracted && !through) {
                 is_inside = !is_inside;
             }
-            if (mediaUsed() && !(layersUsed() && passes)) {
-                // Into the medium on the side it leaves by, of the face as the mesh turns it
+            if (mediaUsed() && boundsVolume(surface) && !(layersUsed() && passes)) {
+                // Into the medium on the side it leaves by, of the face as the mesh turns it; a face bounding no
+                // volume, as flex-cuda-pt's encloses, keeps the one the ray travels in
                 var faced: Surface = surface;
                 faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
                 let sides: MediumSides = mediumSides(faced, Medium(scatter_in, extinction_in), filling, ray.unit_direction);
