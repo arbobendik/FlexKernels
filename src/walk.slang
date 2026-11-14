@@ -1432,9 +1432,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     var chain: Reservoir = emptyReservoir();
     chain.seed = r.seed;
     var chain_throughput: float3 = float3(0.0f);
-    // Camera medium: scattering vertices count from b = 0, the camera at UINT_MAX
-    var b: uint = UINT_MAX;
+#ifdef FK_FCPT_WALK
+    // Last vertex of the camera's segment
+    var camera_b: uint = UINT_MAX;
+#endif
     if (mediaUsed()) {
+        // Camera medium: scattering vertices count from b = 0, the camera at UINT_MAX
+        var b: uint = UINT_MAX;
         ray.origin = dom.x0;
         hit.distance = length(dom.x1 - dom.x0);
         let camera: Medium = scene.cameraMedium(ray.unit_direction, hit.distance, filling);
@@ -1503,9 +1507,15 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         if (coneUsed()) {
             width += spread * hit.distance;
         }
+#ifdef FK_FCPT_WALK
+        camera_b = b;
+#endif
     }
-    let primary: uint = b + 1u;
-    for (b = primary; ; b++) {
+#ifdef FK_FCPT_WALK
+    for (var b: uint = camera_b + 1u; ; b++) {
+#else
+    for (var b: uint = 0u; ; b++) {
+#endif
         let point_light_lighting: bool = hit.is_point_light == 1u;
         // A reconnection ray meeting another surface first is not in the image of the shift
         if (replay && rc == RC_SURFACE && b == k
@@ -1550,7 +1560,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             scatter = !surface.skip;
             geometry_density = geometryDensity(surface.geometry_n, ray.unit_direction, hit.distance);
-            if (b == primary) {
+#ifdef FK_FCPT_WALK
+            if (b == camera_b + 1u) {
+#else
+            if (b == 0u) {
+#endif
                 // Primary ray footprint (Eq. 5)
                 threshold = footprintThreshold(geometry_density);
             }
