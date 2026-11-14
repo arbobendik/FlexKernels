@@ -691,7 +691,7 @@ __extern_cpp public struct Light {
 public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface, Hit left, bool viewed);
     public float3 shadowTransmittance(Ray ray, float l);
-    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left);
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left, Hit light);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
     public SampleBSDF connectHair(float3 hair, float3 albedo, float3 tint, float3 in_dir, float3 out_dir);
     public SampleBSDF sampleHair(float3 hair, float3 albedo, float3 tint, float3 in_dir, uint random_state);
@@ -771,8 +771,8 @@ public struct HookScene : IScene {
     public float3 shadowTransmittance(Ray ray, float l);
     // Shadow ray transmittance through media and occluders
     __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
-    __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
-    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left);
+    __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")
+    public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left, Hit light);
     __target_intrinsic(wgsl, "surfaceAt($0, $1, $2)")
     __target_intrinsic(cuda, "fcptSurfaceAt($0, $1, $2)")
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
@@ -978,7 +978,7 @@ public struct HookScene : IScene {
 // Shadow test toward a light sample, short of its end
 func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_offset: float, light_dir: float3
 #ifdef FK_FCPT_WALK
-    , context: ShadowContext, random_state: uint
+    , context: ShadowContext, random_state: uint, light: Hit
 #endif
     ) -> float3 {
     let unit_light_dir: float3 = normalize(light_dir);
@@ -992,7 +992,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
 #ifdef FK_FCPT_WALK
     // Medium on the side of the light
     let front: bool = dot(context.side, light_dir + geometry_offset * smooth_n) > 0.0f;
-    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe, context.surface && !context.fiber, context.length, context.width, context.fiber ? context.own : noHit());
+    return scene.shadowTransmittanceIn(light_ray, shadowLength(light_dir), select(context.extinction_behind, context.extinction_front, front), select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe, context.surface && !context.fiber, context.length, context.width, context.fiber ? context.own : noHit(), light);
 #else
     return scene.shadowTransmittance(light_ray, shadowLength(light_dir));
 #endif
@@ -1032,6 +1032,9 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
     let leaf: uint4 = scene.lightNode(n);
     // Vector from start to the end of the shadow ray
     var shadow: float3;
+#ifdef FK_FCPT_WALK
+    var emitter: Hit = noHit();
+#endif
     if (leaf.x == 2u) {
         let light: Light = scene.light(leaf.y);
         if (sided) {
@@ -1062,8 +1065,10 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
         } else if (!(dot(smooth_n, point - origin) > 0.0f)) {
             return sample;
         }
+        // Emission at the point as the path tracer shades it
 #ifdef FK_FCPT_WALK
-        let surface: Surface = scene.lightSurfaceAt(Hit(uv, leaf.y, triangle_index, 0u, 0.0f), point, random_along.state,
+        emitter = Hit(uv, leaf.y, triangle_index, 0u, 0.0f);
+        let surface: Surface = scene.lightSurfaceAt(emitter, point, random_along.state,
             normalize(point - start), context.depth, length(point - origin));
 #else
         let surface: Surface = scene.surfaceAt(Hit(uv, leaf.y, triangle_index, 0u, 0.0f), point, random_along.state);
@@ -1080,7 +1085,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
     }
     let transmitted: float3 = lightTransmittance(scene, origin, lift_n, geometry_offset, shadow
 #ifdef FK_FCPT_WALK
-        , context, random_along.state
+        , context, random_along.state, emitter
 #endif
         );
     sample.radiance = select(sample.radiance * transmitted, float3(0.0f), all(transmitted == float3(0.0f)));
