@@ -106,17 +106,22 @@ Surface HookScene_surfaceAt_0(Hit hit, V origin, uint32_t state) {
     return HookScene_surfaceAtPath_0(hit, origin, state, 0, 0, 1, 0, ZERO);
 }
 // Hair as an isotropic fiber, a stand-in for flex-cuda-pt's baked far field: albedo times tint over the sphere, of
-// density 1 / (4 pi), its throughput the albedo; directions it samples uniform over the sphere
-static int hair_connects = 0;
+// density 1 / (4 pi), its throughput the albedo; directions it samples uniform over the sphere. Connections outside
+// its sampling counted apart: a light sample's
+static int hair_connects = 0, light_connects = 0;
+static bool hair_sampling = false;
 SampleBSDF HookScene_connectHair_0(V, V albedo, V tint, V in_dir, V out_dir) {
-    hair_connects++;  // Forward a refraction, as flex-cuda-pt labels hair's, else a reflection (2)
+    hair_connects++, light_connects += !hair_sampling;  // Forward a refraction, as flex-cuda-pt labels hair's, else a
+    // reflection (2)
     return SampleBSDF{out_dir, V(albedo.x * tint.x, albedo.y * tint.y, albedo.z * tint.z), 0, false,
         dotv(out_dir, in_dir) > 0 ? 1u : 2u, 0.25f / 3.14159265f};
 }
 SampleBSDF HookScene_sampleHair_0(V hair, V albedo, V tint, V in_dir, uint32_t state) {
     const Random u = pcg(state), v = pcg(u.state);
     const float z = 1 - 2 * u.value, r = sqrtf(fmaxf(0, 1 - z * z)), phi = 6.2831853f * v.value;
+    hair_sampling = true;
     SampleBSDF sampled = HookScene_connectHair_0(hair, albedo, tint, in_dir, V(r * cosf(phi), r * sinf(phi), z));
+    hair_sampling = false;
     sampled.random_state = v.state;
     return sampled;
 }
@@ -159,11 +164,13 @@ static V shadowThrough(Ray ray, float l, bool surface, Hit left = NO_HIT) {
     }
 }
 V HookScene_shadowTransmittance_0(Ray ray, float l) { return shadowThrough(ray, l, true); }
-// the medium a shadow ray starts in filling it up to the first surface it meets
+// the medium a shadow ray starts in filling it up to the first surface it meets; each counted, for a shift's
+static int shift_shadows = 0;
 V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t,
-    bool surface, float length, float, Hit left) {
+    bool surface, float length, float, Hit left, Hit) {
     const V from = ray.origin - segment_start;
     if (checking && !surface) segments++, misfits += fabsf(sqrtf(dotv(from, from)) - length) > 1e-6f;
+    shift_shadows++;
     const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface, left, false).distance, l);
     const V through = shadowThrough(ray, l, surface, left);
     return V(through.x * expf(-extinction.x * inside), through.y * expf(-extinction.y * inside),
@@ -200,8 +207,13 @@ Medium HookScene_cameraMedium_0(V direction, float distance, uint32_t* filling) 
     *filling = varying ? 0 : 0xFFFFFFFFu;
     return camera_fog;
 }
-// The varying camera fog, tracked under its extinction: each tentative collision real, scattering by its albedo
-float HookScene_majorant_0(uint32_t) { return camera_fog.extinction.x; }
+// The varying camera fog, tracked under its extinction: each tentative collision real, scattering by its albedo; asked
+// of no medium (UINT_MAX) counted
+static int majorants_of_none = 0;
+float HookScene_majorant_0(uint32_t filling) {
+    majorants_of_none += filling == 0xFFFFFFFFu;
+    return camera_fog.extinction.x;
+}
 // Of each walk, the camera's own segment flagged as the camera's, its first tracked, and none after it
 static int tracked = 0, tracked_misfits = 0, walk_tracks = 0;
 float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t* state, V* weight, V*, V* scatter, V* extinction,
@@ -363,6 +375,25 @@ int main() {
     failed += !replayed;
     printf("replay in fog: %d of %d scattered paths there and back exactly%s\n", kept, scattered,
         replayed ? "" : "  FAILED");
+    // With bounces, a shift samples light at the fog's vertices only where it reconnects to the light, at its stop: one
+    // shadow ray at most, those of the vertices before it never read
+    bounces = 8;
+    int most = 0, shifts = 0;
+    for (int i = 0; i < 4096; i++) {
+        Reservoir path = {};
+        path.seed = hash(3 * i + 2);
+        Selection sel = {};
+        sel.random_state = hash(3 * i + 3);
+        walk_hook(here, path, false, 1, &sel);
+        const Reservoir r = finalize(sel, 1);
+        if (!(r.w > 0)) continue;
+        shift_shadows = 0, shifts++;
+        shift_hook(there, r);
+        most = shift_shadows > most ? shift_shadows : most;
+    }
+    failed += most > 1 || shifts < 256;
+    printf("replay in fog, 8 bounces: at most %d shadow rays in each of %d shifts%s\n", most, shifts,
+        most > 1 || shifts < 256 ? "  FAILED" : "");
     // Seen through a black shell covered at 0.5 around an emitter of 1, the pass through its uncovered half a vertex of
     // its own: with no bounce the walk ends there, reading 0; with one it reaches the emitter, 0.5. Each such pass hands
     // the trace the hit it leaves, which flex-cuda-pt's traversal skips
@@ -503,6 +534,10 @@ int main() {
     summing = true;
     furnace("white hair, ReSTIR off", camera, center, 0.3f, 1, failed);
     summing = false;
+    // No light in the tree: each light sample brings none, so none evaluates the fiber's BSDF
+    failed += light_connects != 0;
+    printf("hair under no light: %d light samples connected%s\n", light_connects,
+        light_connects != 0 ? "  FAILED" : "");
     // The sky light sampled too, a light both sampled and met: hair's light samples weighed against its escapes
     cdf = true;
     furnace("white hair, sky sampled", camera, center, 0.3f, 1, failed);
@@ -561,5 +596,8 @@ int main() {
     failed += misfits > 0 || segments == 0;
     printf("handed segments: %d misfits, %d medium vertices checked%s\n", misfits, segments,
         misfits > 0 || segments == 0 ? "  FAILED" : "");
+    // A majorant asked of varying media alone, over every walk above
+    failed += majorants_of_none != 0;
+    printf("majorants asked of no medium: %d%s\n", majorants_of_none, majorants_of_none != 0 ? "  FAILED" : "");
     return failed;
 }
