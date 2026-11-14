@@ -2026,7 +2026,10 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 if (wrong_side && material.transmission > 0.0f) {
                     let geometry_bsdf_sampled: SampleBSDF = sampleBSDF(bsdf_sampled.unit_direction, surface.geometry_n, material, eta.x, eta.y, bsdf_sampled.random_state, float2(0.0f));
                     bsdf_sampled.unit_direction = geometry_bsdf_sampled.unit_direction;
+#ifndef FK_FCPT_WALK
+                    // FlexLight's walk takes the side the sample again leaves by; flex-cuda-pt's keeps the first sample's
                     bsdf_sampled.refracted = geometry_bsdf_sampled.refracted;
+#endif
                     bsdf_sampled.throughput = geometry_bsdf_sampled.throughput;
                 } else if (wrong_side) {
                     bsdf_sampled.unit_direction -= 2.0f * dot(bsdf_sampled.unit_direction, surface.geometry_n) * surface.geometry_n;
