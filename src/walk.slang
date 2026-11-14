@@ -1342,7 +1342,7 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
 
 // BSDF times cosine toward an environment sample over its density, each lobe weighted against the BSDF sampled escape by the
 // balance heuristic. Lobes sampling can't produce toward dir are left to rays sampled to the wrong side, sampled again or mirrored.
-func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
+[CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
     let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
     return neeBSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y, refracted, pdf, false, random_state);
 }
@@ -1634,7 +1634,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     for (b = primary; ; b++) {
         let point_light_lighting: bool = hit.is_point_light == 1u;
         // Loop scoped variables are initialized explicitly, some compilers keep the previous iteration's value otherwise
-        var surface: Surface = {};
+        var surface: Surface = Surface();
         // Smooth normal the surface emits along, before it faces the ray
         var front_n: float3 = float3(0.0f);
         var scatter: bool = false;
@@ -1852,7 +1852,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             var refracted: bool = lobe_index == LOBE_REFRACT;
             var wrong_side: bool = false;
             // Sample leaving this vertex, without density when sampled to the wrong side of the face
-            var lobe: SampleBSDF = {};
+            var lobe: SampleBSDF = SampleBSDF();
             if (connect) {
                 if (is_inside != (extractBits(r.path, PATH_INSIDE, 1u) == 1u)) {
                     return fail;
