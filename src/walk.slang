@@ -1095,7 +1095,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
 // Light sampling, as flex-cuda-pt's sampleLight: a light the light BVH picks by its importance to origin, a uniform point
 // on it or a direction in the cone of its sphere, seen from origin lifted by geometry_offset in front of smooth_n. Sided,
 // for translucent surfaces, light all around, origin lifted to the side of the face geometry_n the light lies on
-public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_n: float3, geometry_offset: float, sided: bool, init_random_state: uint
+[noinline] public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_n: float3, geometry_offset: float, sided: bool, init_random_state: uint
 #ifdef FK_FCPT_WALK
     , context: ShadowContext
 #endif
@@ -1290,7 +1290,7 @@ func searchCDF<S: IScene>(scene: S, start: uint2, step: uint2, count: uint, u: f
 
 // Radiance the path tracer's ray from a vertex along dir receives from the environment map if it hits nothing on the way.
 // Escapes passing transparent texels are left to BSDF sampling.
-func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, is_inside: bool, dir: float3) -> float3 {
+[noinline] func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, is_inside: bool, dir: float3) -> float3 {
     let inside: bool = is_inside != wrongSide(is_inside, false, dir, surface.geometry_n);
     let ray: Ray = Ray(origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, inside), dir);
     // Of no Light Path context: flex-cuda-pt samples no sky before its world has a luminance CDF
@@ -1335,7 +1335,7 @@ func escapeWeight<S: IScene>(scene: S, pdf: float, dir: float3) -> float {
 }
 
 // Toward dir, for flex-cuda-pt's world shader from the depth and lobe of the vertex the ray left
-func environment<S: IScene>(scene: S, dir: float3
+[noinline] func environment<S: IScene>(scene: S, dir: float3
 #ifdef FK_FCPT_WALK
     , depth: uint, lobe: uint
 #endif
