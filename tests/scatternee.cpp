@@ -38,10 +38,13 @@ Surface HookScene_lightSurfaceAt_0(Hit hit, V point, uint32_t state, V dir, uint
         || (dir.x * to.x + dir.y * to.y + dir.z * to.z) < (1 - 1e-6f) * distance;
     return HookScene_surfaceAt_0(hit, point, state);
 }
+// The emitter shaded after its shadow test or before it; the light passing, or not where the check below blocks it
+static bool shadow_first = true, blocked = false;
+bool HookScene_shadowFirst_0() { return shadow_first; }
 V HookScene_shadowTransmittanceIn_0(Ray, float, V, uint32_t filling, uint32_t, uint32_t, uint32_t, bool, float, float,
     Hit, Hit) {
     hook_filling = filling;
-    return V(1, 1, 1);
+    return blocked ? V(0, 0, 0) : V(1, 1, 1);
 }
 
 // A 4 x 2 environment map, its CDF uniform over its cells, which the escape weight reads
@@ -96,6 +99,23 @@ int main() {
         printf("from behind the light: %.5f +- %.5f of %.5f sr%s\n", mean, se, behind, ok ? "" : "  FAILED");
         from = V(0, 0, 0);
     }
+    // Either order gives the same samples, lit or blocked
+    int unlike = 0;
+    for (int i = 0; i < 4096; i++) {
+        ShadowContext context = {V(0.1f, 0.1f, 0.1f), V(0.1f, 0.1f, 0.1f), Vector<uint32_t, 2>(9, 9), DOWN, 3, 0, false,
+            0, 0, {}, false};
+        blocked = i % 3 == 0;
+        shadow_first = true;
+        const TreeSample after = sampleLightTree_0(V(0, 0, 0), DOWN, DOWN, 0, true, hash(i), &context);
+        shadow_first = false;
+        const TreeSample before = sampleLightTree_0(V(0, 0, 0), DOWN, DOWN, 0, true, hash(i), &context);
+        unlike += after.radiance.x != before.radiance.x || after.dir.x != before.dir.x || after.dir.z != before.dir.z
+            || after.density != before.density;
+    }
+    blocked = false, shadow_first = true;
+    failed += unlike != 0;
+    printf("emitter shaded after its shadow test or before: %d of 4096 samples differ%s\n", unlike,
+        unlike ? "  FAILED" : "");
     // Escapes after a scattering vertex, and after a vertex of the phase function's density, which would split them
     double least = 1, split = 1;
     for (int k = 0; k < 16; k++) {
