@@ -643,6 +643,7 @@ public interface IScene {
     public uint layers(Hit hit);
     public float majorant(uint filling);
     public bool varyingUsed();
+    public bool hairUsed();
     public Medium cameraMedium(float3 direction, float distance, out uint filling);
     public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe, bool camera);
     public float3 hitPosition(Hit hit);
@@ -742,6 +743,9 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "false")
     __target_intrinsic(cuda, "fcptVaryingUsed()")
     public bool varyingUsed();
+    __target_intrinsic(wgsl, "false")
+    __target_intrinsic(cuda, "fcptHairUsed()")
+    public bool hairUsed();
     // Medium the camera is in, its varying material key or UINT_MAX
     __target_intrinsic(wgsl, "Medium()")
     __target_intrinsic(cuda, "fcptCameraMedium($0, $1, $2)")
@@ -1544,7 +1548,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             nee = false;
         }
 #ifdef FK_FCPT_WALK
-        let hair: bool = dot(surface.hair, surface.hair) > 0.0f;  // A strand's fiber: no side of it wrong, none opaque
+        let hair: bool = scene.hairUsed() && dot(surface.hair, surface.hair) > 0.0f;  // A strand's fiber: no side of it wrong, none opaque
         // Light sampled all around: hair, translucent surfaces and transmitting surfaces of one layer
         let sided: bool = hair || isTranslucent(material) || (material.transmission > 0.0f && scene.layers(hit) == 1u);
 #endif
