@@ -1048,7 +1048,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
         sample.dir = normalize(point - start);
         sample.density = solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), point - start);
         sample.radiance = select(emitted(scene, surface.material.emissive, sample.dir, surface.smooth_n), float3(0.0f), surface.skip) / sample.density;
-        shadow = point + shadowLift(surface.smooth_n, surface.geometry_offset, start, point) - start;
+        shadow = point - start;
 #endif
     }
     let transmitted: float3 = lightTransmittance(scene, origin, lift_n, geometry_offset, shadow
