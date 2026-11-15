@@ -36,6 +36,7 @@ struct TestScene : IScene {
     float majorant(uint filling) { return float(filling) * 0.5f; }
     bool varyingUsed() { return true; }
     bool hairUsed() { return true; }
+    bool shadowFirst() { return true; }
     Medium cameraMedium(float3 direction, float distance, out uint filling) {
         filling = 7u;
         return Medium(float3(0.25f) * direction, float3(0.5f * distance));
@@ -62,6 +63,7 @@ struct TestScene : IScene {
     uint triangleOffset(uint instance_index) { return instance_index; }
     float3 calculatePointLightContrib(uint index) { return float3(float(index)); }
     float3 env_map_sample(float3 dir, uint depth, uint lobe) { return abs(dir) * float(depth + lobe); }
+    bool twoSided() { return true; }
     float4 environmentCdf(uint2 cell) { return float4(float(cell.x + 1u) / 5.0f, 0.25f, 0.0f, 0.0f); }
     uint2 environmentCdfSize() { return uint2(5u, 4u); }
     uint2 environmentMapSize() { return uint2(4u, 4u); }
