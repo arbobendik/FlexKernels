@@ -169,9 +169,8 @@ __device__ Result evaluate(const Case& c) {
     }
     const float uvw[] = {1 - u - w, u, w};
     r.geometry_offset = geometryOffset(in_dir, out_dir, g_n, n, vec(n1), vec(n2), vec(face), vec(uvw), vec(position));
-    const float start[] = {2 * c.in[0], 2 * c.in[1], 2 * c.in[2]}, shadow[] = {c.in[3] * (1 + 3 * c.in[16]) - c.in[0],
-        c.in[4] * (1 + 3 * c.in[16]) - c.in[1], c.in[5] * (1 + 3 * c.in[16]) - c.in[2]};
-    r.lift = shadowLift(n, 0.1f * albedo.x * (1 - c.in[17]), vec(start), out_dir);
+    const float shadow[] = {c.in[3] * (1 + 3 * c.in[16]) - c.in[0], c.in[4] * (1 + 3 * c.in[16]) - c.in[1],
+        c.in[5] * (1 + 3 * c.in[16]) - c.in[2]};
     r.shadow_length = shadowLength(vec(shadow));
     r.transmittance = occluderTransmittance(in_dir, n, material, albedo.z);
     return r;

@@ -947,12 +947,6 @@ __extern_cpp public struct BSDFLobes {
 }
 #endif
 
-
-// Shadow end lifted off the emitter by its geometry offset, toward start
-[CudaDeviceExport] public func shadowLift(light_n: float3, light_offset: float, start: float3, end: float3) -> float3 {
-    return light_n * (sign(dot(light_n, start - end)) * light_offset);
-}
-
 // A relative 1e-4 short of the end
 [CudaDeviceExport] public func shadowLength(shadow: float3) -> float {
     return length(shadow) * (1.0f - 1e-4f);
