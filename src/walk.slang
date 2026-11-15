@@ -318,32 +318,6 @@ static const float RESTIR_DUPLICATION_ALPHA = 0.1;
     return transmission > 0.0f || dot(face, direction) < 0.0f ? 1.0f : -1.0f;
 }
 
-// PDF_area = PDF_solid_angle * |cos_theta| / distance^2
-// => PDF_area / PDF_solid_angle = |dot(geometry_n, direction)| / distance^2
-[CudaDeviceExport] public func geometryDensity(geometry_n: float3, direction: float3, distance: float) -> float {
-    return abs(dot(geometry_n, direction)) / (distance * distance);
-}
-
-// Primary ray footprint (Eq. 5) of the camera's hit
-[CudaDeviceExport] public func footprintThreshold(geometry_density: float) -> float {
-    return RESTIR_FOOTPRINT / geometry_density;
-}
-
-// Ray footprint criterion for reconnecting from the previous vertex to this one (Eq. 5)
-[CudaDeviceExport] public func withinFootprint(open: bool, prev_rough: bool, prev_pdf: float, geometry_density: float, threshold: float) -> bool {
-    return open && prev_rough && prev_pdf * geometry_density * threshold <= 1.0f;
-}
-
-// Eq. 5 from this vertex along the sampled lobe
-[CudaDeviceExport] public func withinInverseFootprint(pdf: float, diffuse: bool, prev_cos: float, distance: float, threshold: float) -> bool {
-    return pdf > 0.0f && (diffuse || pdf * prev_cos / (distance * distance) * threshold <= 1.0f);
-}
-
-// Whether a sampled lobe is rough enough to reconnect through (Sec. 4.2)
-[CudaDeviceExport] public func roughLobe(pdf: float, diffuse: bool, roughness: float) -> bool {
-    return pdf > 0.0f && (diffuse || roughness >= RESTIR_ROUGHNESS);
-}
-
 // Russian roulette: q = min(max(throughput) / density, 1)
 [CudaDeviceExport] public func survivalProbability(throughput: float3, density: float) -> float {
     let importancy_factor: float3 = throughput / density;
@@ -1050,7 +1024,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
         sample.dir = normalize(point - start);
         sample.density = solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), point - start);
         sample.radiance = select(surface.material.emissive * max(sign(dot(- sample.dir, surface.smooth_n)), 0.0f), float3(0.0f), surface.skip) / sample.density;
-        shadow = point + shadowLift(surface.smooth_n, surface.geometry_offset, start, point) - start;
+        shadow = point - start;
 #endif
     }
     let transmitted: float3 = lightTransmittance(scene, origin, lift_n, geometry_offset, shadow
@@ -1523,18 +1497,22 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 throughput *= beerLambert(hit.distance, surface.material.absorption);
             }
             scatter = !surface.skip;
-            geometry_density = geometryDensity(surface.geometry_n, ray.unit_direction, hit.distance);
+            // PDF_area = PDF_solid_angle * |cos_theta| / distance^2
+            // => PDF_area / PDF_solid_angle = |dot(geometry_n, direction)| / distance^2
+            geometry_density = abs(dot(surface.geometry_n, ray.unit_direction)) / (hit.distance * hit.distance);
 #ifdef FK_FCPT_WALK
             if (b == camera_b + 1u) {
 #else
             if (b == 0u) {
 #endif
                 // Primary ray footprint (Eq. 5)
-                threshold = footprintThreshold(geometry_density);
+                // Primary ray footprint (Eq. 5) of the camera's hit
+                threshold = RESTIR_FOOTPRINT / geometry_density;
             }
         }
         // Ray footprint criterion for reconnecting from the previous vertex to this one (Eq. 5)
-        let footprint: bool = withinFootprint(scatter, prev.rough, prev.pdf, geometry_density, threshold);
+        // Ray footprint criterion for reconnecting from the previous vertex to this one (Eq. 5)
+        let footprint: bool = scatter && prev.rough && prev.pdf * geometry_density * threshold <= 1.0f;
         let material: Material = surface.material;
         let n_dot_v: float = dot(surface.smooth_n, - ray.unit_direction);
         let eta: float2 = vertexEta(material, n_dot_v);
@@ -1822,8 +1800,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 nee_vertex.none = true;
             }
             // Inverse ray footprint criterion for the density of the direction leaving this vertex (Eq. 5)
-            let inverse_footprint: bool = withinInverseFootprint(lobe.pdf, spread_out, prev.cos, hit.distance, threshold);
-            let rough: bool = roughLobe(lobe.pdf, spread_out, material.roughness);
+            // Eq. 5 from this vertex along the sampled lobe
+            let inverse_footprint: bool = lobe.pdf > 0.0f
+                && (spread_out || lobe.pdf * prev.cos / (hit.distance * hit.distance) * threshold <= 1.0f);
+            // Whether a sampled lobe is rough enough to reconnect through (Sec. 4.2)
+            let rough: bool = lobe.pdf > 0.0f && (spread_out || material.roughness >= RESTIR_ROUGHNESS);
             if (arrived) {
                 if (!inverse_footprint) {
                     return fail;
