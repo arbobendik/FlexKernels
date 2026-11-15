@@ -39,9 +39,10 @@ struct TestScene : IScene {
     bool shadowFirst() { return true; }
     Medium cameraMedium(float3 direction, float distance, out uint filling) {
         filling = 7u;
-        return Medium(float3(0.25f) * direction, float3(0.5f * distance));
+        return Medium(float3(0.25f) * direction, float3(0.5f * distance), 0.5f);
     }
-    float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe, bool camera) {
+    float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, inout float g, uint depth, uint lobe, bool camera) {
+        g = float(depth) * 0.1f;
         random_state += depth + lobe + uint(camera);
         weight *= 0.5f;
         glowed += origin;

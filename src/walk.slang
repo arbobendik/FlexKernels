@@ -224,7 +224,7 @@ func shadowContext(surface: Surface, turned: bool, extinction: float3, filling: 
     if (surface.encloses) {
         var faced: Surface = surface;
         faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
-        let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction), filling, dir);
+        let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction, 0.0f), filling, dir);
         // The face's sides as the faced normal sees them
         context = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, surface.geometry_n, depth, lobe, true, length, width, own, fiber);
         if (turned) {
@@ -266,6 +266,39 @@ func isotropic(random_state: uint) -> float3 {
     let r: float = sqrt(max(1.0f - z * z, 0.0f));
     let angle: float = 2.0f * PI * v.value;
     return float3(r * cos(angle), r * sin(angle), z);
+}
+// Henyey-Greenstein phase function, mu = cos(theta) between the ray before and after scattering
+// p(mu) = (1 - g^2) / (4 * PI * (1 + g^2 - 2 * g * mu)^(3/2))
+func phaseHG(g: float, mu: float) -> float {
+    // g = 0 => p(mu) = 1 / (4 * PI)
+    if (abs(g) < 1e-3f) {
+        return 0.25f * INV_PI;
+    }
+    return (1.0f - g * g) * 0.25f * INV_PI / pow(1.0f + g * g - 2.0f * g * mu, 1.5f);
+}
+// Sample Henyey-Greenstein phase function around dir
+// PDF = p(mu)
+func samplePhase(g: float, dir: float3, random_state: uint, out pdf: float) -> float3 {
+    // Inversion divides by g, sample isotropic instead
+    if (abs(g) < 1e-3f) {
+        pdf = 0.25f * INV_PI;
+        return isotropic(random_state);
+    }
+    let u: Random = pcg(random_state);
+    let v: Random = pcg(u.state);
+    // CDF(mu) = 2 * PI * integral_-1^mu p(t) dt
+    //         = (1 - g^2) / (2 * g) * (1 / sqrt(1 + g^2 - 2 * g * mu) - 1 / (1 + g))
+    //
+    // CDF(mu) = u
+    // => square = sqrt(1 + g^2 - 2 * g * mu) = (1 - g^2) / (1 - g + 2 * g * u)
+    // => mu = (1 + g^2 - square^2) / (2 * g)
+    let square: float = (1.0f - g * g) / (1.0f - g + 2.0f * g * u.value);
+    let mu: float = clamp((1.0f + g * g - square * square) / (2.0f * g), -1.0f, 1.0f);
+    // Uniform azimuth around dir
+    let r: float = sqrt(max(1.0f - mu * mu, 0.0f));
+    let angle: float = 2.0f * PI * v.value;
+    pdf = phaseHG(g, mu);
+    return normalize(tangentToWorld(float3(r * cos(angle), mu, r * sin(angle)), dir));
 }
 
 [ForceInline] public bool layersUsed() {
@@ -608,6 +641,7 @@ __target_intrinsic(cuda, "FKMedium")
 __extern_cpp public struct Medium {
     __extern_cpp public float3 scatter = float3(0.0f);
     __extern_cpp public float3 extinction = float3(0.0f);
+    __extern_cpp public float g = 0.0f;
 }
 
 __target_intrinsic(wgsl, "Surface")
@@ -714,7 +748,7 @@ public interface IScene {
     public bool hairUsed();
     public bool shadowFirst();
     public Medium cameraMedium(float3 direction, float distance, out uint filling);
-    public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe, bool camera);
+    public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, inout float g, uint depth, uint lobe, bool camera);
     public float3 hitPosition(Hit hit);
     public float3x3 worldTriangle(uint instance_index, uint triangle_index);
     public LightBounds lightBounds(uint n);
@@ -824,8 +858,8 @@ public struct HookScene : IScene {
     __target_intrinsic(cuda, "fcptCameraMedium($0, $1, $2)")
     public Medium cameraMedium(float3 direction, float distance, out uint filling);
     __target_intrinsic(wgsl, "0.0f")
-    __target_intrinsic(cuda, "fcptTrackMedium($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")
-    public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe, bool camera);
+    __target_intrinsic(cuda, "fcptTrackMedium($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)")
+    public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, inout float g, uint depth, uint lobe, bool camera);
     __target_intrinsic(wgsl, "hitPosition($0)")
     __target_intrinsic(cuda, "fcptHitPosition($0)")
     public float3 hitPosition(Hit hit);
@@ -1313,8 +1347,9 @@ uint extractBits(uint e, uint offset, uint count) {
 [ForceInline] func crossMedium<S: IScene>(scene: S, r: Reservoir, replay: bool, stop: uint, rc: uint, scale: float,
     chain: Reservoir, chain_throughput: float3, is_inside: bool, filling: uint, inout b: uint, inout ray: Ray,
     inout hit: Hit, inout throughput: float3, inout density: float, inout weight: float3, inout glowed: float3,
-    inout scatter_in: float3, inout extinction_in: float3, inout width: float, inout spread: float, inout prev: Vertex,
-    inout nee_vertex: NEEVertex, inout sky_pdf: float, inout sel: Selection, out ended: Shift) -> bool {
+    inout scatter_in: float3, inout extinction_in: float3, inout g_in: float, inout width: float, inout spread: float,
+    inout prev: Vertex, inout nee_vertex: NEEVertex, inout sky_pdf: float, inout sel: Selection,
+    out ended: Shift) -> bool {
     ended = Shift(float3(0.0f), 0.0f);
     // Free flight by the mean scattering coefficient, or tracking under a varying medium's majorant
     let varying: bool = scene.varyingUsed() && filling != UINT_MAX;
@@ -1333,8 +1368,8 @@ uint extractBits(uint e, uint offset, uint count) {
             b == UINT_MAX))).value, sigma);
         if (varying) {
             along = scene.trackMedium(filling, ray.origin, ray.unit_direction, hit.distance, tracking, weight, glowed,
-                scatter_in, extinction_in, select(b, 0u, b == UINT_MAX), select(prev.lobe, LOBE_NONE, b == UINT_MAX),
-                b == UINT_MAX);
+                scatter_in, extinction_in, g_in, select(b, 0u, b == UINT_MAX),
+                select(prev.lobe, LOBE_NONE, b == UINT_MAX), b == UINT_MAX);
         }
         if (!(along < hit.distance)) {
             break;
@@ -1367,8 +1402,9 @@ uint extractBits(uint e, uint offset, uint count) {
         // radiance = L * T / PDF_light
         // f = throughput * p(mu) * radiance * w_light, w_light = powerHeuristic(PDF_light, p(mu))
         // Delta lights and the last bounce: no competing phase sample, w_light = 1
-        let competing: float = select(0.0f, 0.25f * INV_PI, b < scene.maxBounces() && light.density > 0.0f);
-        let f: float3 = select(float3(0.0f), throughput * light.radiance * (0.25f * INV_PI
+        let phase: float = phaseHG(g_in, dot(ray.unit_direction, light.dir));
+        let competing: float = select(0.0f, phase, b < scene.maxBounces() && light.density > 0.0f);
+        let f: float3 = select(float3(0.0f), throughput * light.radiance * (phase
             * powerHeuristic(light.density, competing)), sampled);
         if (replay && b == stop) {
             if (rc == RC_LIGHT && rgb_to_greyscale(f) > 0.0f) {
@@ -1391,9 +1427,10 @@ uint extractBits(uint e, uint offset, uint count) {
             }
             density *= survival_probability;
         }
+        var phase_pdf: float = 0.0f;
+        ray.unit_direction = samplePhase(g_in, ray.unit_direction, stream(r.seed, b), phase_pdf);
         // Emission met next is weighed against the light sampled here
-        nee_vertex = NEEVertex(false, 0.25f * INV_PI, ray.origin, float3(0.0f), ray.origin);
-        ray.unit_direction = isotropic(stream(r.seed, b));
+        nee_vertex = NEEVertex(false, phase_pdf, ray.origin, float3(0.0f), ray.origin);
         prev = scatteredVertex(is_inside);
         sky_pdf = prev.pdf;
         hit = scene.traverseInstanceBVH(ray, true, POW32, false, noHit(), false);
@@ -1431,6 +1468,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     var weight: float3 = float3(1.0f);
     var glowed: float3 = float3(0.0f);
     var extinction_in: float3 = float3(0.0f);
+    var g_in: float = 0.0f;
     var filling: uint = UINT_MAX;
     var turned: bool = false;
     if (coneUsed()) {
@@ -1469,6 +1507,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         filling = select(UINT_MAX, filling, scene.varyingUsed());
         scatter_in = camera.scatter;
         extinction_in = camera.extinction;
+        g_in = camera.g;
         if (coneUsed()) {
             width = coneOf(dom).x;
         }
@@ -1477,8 +1516,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let unscattered: uint = b;
 #endif
         if (crossMedium(scene, r, replay, stop, rc, scale, chain, chain_throughput, is_inside, filling, b, ray, hit,
-            throughput, density, weight, glowed, scatter_in, extinction_in, width, spread, prev, nee_vertex, sky_pdf,
-            sel, ended)) {
+            throughput, density, weight, glowed, scatter_in, extinction_in, g_in, width, spread, prev, nee_vertex,
+            sky_pdf, sel, ended)) {
             return ended;
         }
 #ifdef FK_FCPT_WALK
@@ -1937,10 +1976,12 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 // Into the medium on the side the ray leaves by
                 var faced: Surface = surface;
                 faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
-                let sides: MediumSides = mediumSides(faced, Medium(scatter_in, extinction_in), filling, ray.unit_direction);
+                let sides: MediumSides = mediumSides(faced, Medium(scatter_in, extinction_in, g_in), filling,
+                    ray.unit_direction);
                 let front: bool = leavesInFront(faced.geometry_n, dir, surface.geometry_n);
                 scatter_in = select(sides.behind.scatter, sides.front.scatter, front);
                 extinction_in = select(sides.behind.extinction, sides.front.extinction, front);
+                g_in = select(sides.behind.g, sides.front.g, front);
                 filling = select(UINT_MAX, select(sides.fillings.x, sides.fillings.y, front), scene.varyingUsed());
             }
             ray.unit_direction = dir;
@@ -2011,8 +2052,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             let unscattered: uint = b;
 #endif
             if (crossMedium(scene, r, replay, stop, rc, scale, chain, chain_throughput, is_inside, filling, b, ray,
-                hit, throughput, density, weight, glowed, scatter_in, extinction_in, width, spread, prev, nee_vertex,
-                sky_pdf, sel, ended)) {
+                hit, throughput, density, weight, glowed, scatter_in, extinction_in, g_in, width, spread, prev,
+                nee_vertex, sky_pdf, sel, ended)) {
                 return ended;
             }
 #ifdef FK_FCPT_WALK
