@@ -18,7 +18,9 @@ int main() {
             const double p = t < d ? 0 : c[k], f = t < d ? c[k] : 0;
             pass[k] += p, pass2[k] += p * p, first[k] += f, first2[k] += f * f;
         }
-        const V dir = isotropic_0(hash(2 * i + 2));
+        // Isotropic: E[z] = 0, E[z^2] = 1 / 3
+        float density;
+        const V dir = samplePhase_0(0, V(0, 0, 1), hash(2 * i + 2), &density);
         z1 += dir.z, z2 += dir.z * dir.z, z4 += dir.z * dir.z * dir.z * dir.z;
     }
     const double s[3] = {scatter.x, scatter.y, scatter.z}, e[3] = {extinction.x, extinction.y, extinction.z};
