@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <math.h>
+#include <initializer_list>
 #include "pathtracer.cpp"
 
 int main() {
@@ -39,5 +40,26 @@ int main() {
     failed += !iso;
     printf("isotropic: z mean %.5f +- %.5f, z^2 mean %.5f +- %.5f of 0.33333%s\n", mz, sz, mz2, sz2,
         iso ? "" : "  FAILED");
+    // Henyey-Greenstein: 2 * PI * integral_-1^1 p(mu) dmu = 1, PDF = p(mu), E[mu] = g
+    for (const float g : {-0.9f, -0.3f, 0.3f, 0.9f}) {
+        const int M = 1 << 16, K = 1 << 20;
+        double integral = 0, mu1 = 0, mu2 = 0;
+        for (int j = 0; j < M; j++)
+            integral += 2 * 3.14159265358979 * phaseHG_0(g, -1 + (j + 0.5f) * 2.0f / M) * 2.0 / M;
+        int misfits = 0;
+        const V axis = normalize_0(V(0.3f, -0.4f, 0.8f));
+        for (int i = 0; i < K; i++) {
+            float density;
+            const V dir = samplePhase_0(g, axis, hash(i), &density);
+            const float mu = dot_0(dir, axis);
+            misfits += fabsf(density - phaseHG_0(g, mu)) > 1e-3f * density;
+            mu1 += mu, mu2 += double(mu) * mu;
+        }
+        const double mean = mu1 / K, se = sqrt((mu2 / K - mean * mean) / K);
+        const bool ok = fabs(integral - 1) < 1e-4 && misfits == 0 && fabs(mean - g) < 4 * se;
+        failed += !ok;
+        printf("Henyey-Greenstein g %.1f: integral %.6f of 1, mean mu %.5f +- %.5f of %.1f, %d densities off%s\n", g,
+            integral, mean, se, g, misfits, ok ? "" : "  FAILED");
+    }
     return failed;
 }
