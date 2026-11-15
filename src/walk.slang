@@ -644,6 +644,7 @@ public interface IScene {
     public float majorant(uint filling);
     public bool varyingUsed();
     public bool hairUsed();
+    public bool shadowFirst();
     public Medium cameraMedium(float3 direction, float distance, out uint filling);
     public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, uint depth, uint lobe, bool camera);
     public float3 hitPosition(Hit hit);
@@ -746,6 +747,10 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "false")
     __target_intrinsic(cuda, "fcptHairUsed()")
     public bool hairUsed();
+    // Whether an emitter is shaded only after its shadow test passes
+    __target_intrinsic(wgsl, "false")
+    __target_intrinsic(cuda, "fcptShadowFirst()")
+    public bool shadowFirst();
     // Medium the camera is in, its varying material key or UINT_MAX
     __target_intrinsic(wgsl, "Medium()")
     __target_intrinsic(cuda, "fcptCameraMedium($0, $1, $2)")
@@ -985,6 +990,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
     var shadow: float3;
 #ifdef FK_FCPT_WALK
     var emitter: Hit = noHit();
+    var emitter_point: float3 = float3(0.0f);
 #endif
     if (leaf.x == 2u) {
         let light: Light = scene.light(leaf.y);
@@ -1019,26 +1025,40 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
         // Emission at the point as the path tracer shades it
 #ifdef FK_FCPT_WALK
         emitter = Hit(uv, leaf.y, triangle_index, 0u, 0.0f);
-        let surface: Surface = scene.lightSurfaceAt(emitter, point, random_along.state,
-            normalize(point - start), context.depth, length(point - origin));
+        emitter_point = point;
+        sample.dir = normalize(point - start);
+        sample.density = solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), point - start);
+        shadow = point - start;
+        if (!scene.shadowFirst()) {
+            // Emitters emit on both sides
+            let surface: Surface = scene.lightSurfaceAt(emitter, point, random_along.state, sample.dir,
+                context.depth, length(point - origin));
+            sample.random_state = surface.random_state;
+            sample.radiance = select(surface.material.emissive, float3(0.0f), surface.skip) / sample.density;
+        }
 #else
         let surface: Surface = scene.surfaceAt(Hit(uv, leaf.y, triangle_index, 0u, 0.0f), point, random_along.state);
-#endif
         sample.random_state = surface.random_state;
         sample.dir = normalize(point - start);
         sample.density = solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), point - start);
-#ifdef FK_FCPT_WALK
-        sample.radiance = select(surface.material.emissive, float3(0.0f), surface.skip) / sample.density;
-#else
         sample.radiance = select(surface.material.emissive * max(sign(dot(- sample.dir, surface.smooth_n)), 0.0f), float3(0.0f), surface.skip) / sample.density;
-#endif
         shadow = point + shadowLift(surface.smooth_n, surface.geometry_offset, start, point) - start;
+#endif
     }
     let transmitted: float3 = lightTransmittance(scene, origin, lift_n, geometry_offset, shadow
 #ifdef FK_FCPT_WALK
         , context, random_along.state, emitter
 #endif
         );
+#ifdef FK_FCPT_WALK
+    // Emitter shaded after its shadow test passes
+    if (scene.shadowFirst() && emitter.instance_index != UINT_MAX && !all(transmitted == float3(0.0f))) {
+        let surface: Surface = scene.lightSurfaceAt(emitter, emitter_point, random_along.state, sample.dir,
+            context.depth, length(emitter_point - origin));
+        sample.random_state = surface.random_state;
+        sample.radiance = select(surface.material.emissive, float3(0.0f), surface.skip) / sample.density;
+    }
+#endif
     sample.radiance = select(sample.radiance * transmitted, float3(0.0f), all(transmitted == float3(0.0f)));
     return sample;
 }
