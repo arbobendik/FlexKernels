@@ -891,7 +891,7 @@ static const float HAIR_TILTS[4] = {-2.0f, 1.0f, 4.0f, 0.0f};
 #endif
 
 // Shadow segments, alike in both consumers: from the start lift places off the shaded point, to the sampled point on
-// an emitter lifted by the emitter's own offset, short of that end by a relative 1e-4, which keeps it off the emitter
+// an emitter, short of that end by a relative 1e-4, which keeps it off the emitter
 
 // Lift of the end of a shadow ray at end on an emitter, along the emitter's smooth normal light_n turned toward start,
 // by the emitter's geometry offset there; each consumer adds it where it forms the segment

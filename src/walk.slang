@@ -1098,7 +1098,7 @@ public struct HookScene : IScene {
 [ForceInline] uint select(uint f, uint t, bool cond) { return select(cond, t, f); }
 
 // Shadow test toward a light sample, including the quick exit for lights behind the shading normal, along the shared
-// segment: short of its end, which an emitting triangle's sample lifts off it toward the start
+// segment: short of its end
 func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_offset: float, light_dir: float3
 #ifdef FK_FCPT_WALK
     , context: ShadowContext, random_state: uint, light: Hit
@@ -1187,7 +1187,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
         } else if (!(dot(smooth_n, point - origin) > 0.0f)) {
             return sample;
         }
-        // Emission at the point as the path tracer shades it, toward its smooth normal, the shadow ray ending in front of it
+        // Emission at the point as the path tracer shades it, toward its smooth normal, the shadow ray ending short of it
 #ifdef FK_FCPT_WALK
         emitter = Hit(uv, leaf.y, triangle_index, 0u, 0.0f);  // The light its shadow ray goes toward
         emitter_point = point;
@@ -1209,7 +1209,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
         sample.dir = normalize(point - start);
         sample.density = solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), point - start);
         sample.radiance = select(surface.material.emissive * max(sign(dot(- sample.dir, surface.smooth_n)), 0.0f), float3(0.0f), surface.skip) / sample.density;
-        shadow = point + shadowLift(surface.smooth_n, surface.geometry_offset, start, point) - start;
+        shadow = point - start;
 #endif
     }
     let transmitted: float3 = lightTransmittance(scene, origin, lift_n, geometry_offset, shadow
