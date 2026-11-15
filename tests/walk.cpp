@@ -176,14 +176,14 @@ float HookScene_majorant_0(uint32_t filling) {
 }
 static int tracked = 0, tracked_misfits = 0, walk_tracks = 0;
 float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t* state, V* weight, V*, V* scatter, V* extinction,
-    uint32_t, uint32_t, bool camera) {
+    float* g, uint32_t, uint32_t, bool camera) {
     tracked++, tracked_misfits += camera != (walk_tracks++ == 0);
     const Random u = pcg(*state);
     *state = u.state;
     const float along = -logf(1 - u.value) / camera_fog.extinction.x;
     if (along < distance) {
         *weight = scaled(*weight, camera_fog.scatter.x / camera_fog.extinction.x);
-        *scatter = camera_fog.scatter, *extinction = camera_fog.extinction;
+        *scatter = camera_fog.scatter, *extinction = camera_fog.extinction, *g = camera_fog.g;
     }
     return along < distance ? along : 2 * distance;
 }
@@ -282,6 +282,8 @@ int main() {
     furnace("coat over glass", camera, center, 0.3f, 1, failed);
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, fog}};
     furnace("medium of albedo 1", camera, center, 0.3f, 1, failed);
+    scene[0].volume.g = 0.8f;
+    furnace("medium of albedo 1 scattering forward", camera, center, 0.3f, 1, failed);
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, false, none}, {center, 0.5f, false, {lambert(1, 0)}, 1, 1, false,
         none}};
     furnace("white sphere in a shell", camera, center, 0.15f, 1, failed);
