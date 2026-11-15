@@ -36,6 +36,7 @@ struct TestScene : IScene {
     float majorant(uint filling) { return float(filling) * 0.5f; }
     bool varyingUsed() { return true; }
     bool hairUsed() { return true; }
+    bool shadowFirst() { return true; }
     Medium cameraMedium(float3 direction, float distance, out uint filling) {
         filling = 7u;
         return Medium(float3(0.25f) * direction, float3(0.5f * distance));
