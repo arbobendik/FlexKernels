@@ -2193,6 +2193,15 @@ __extern_cpp public struct ShiftJob {
     __extern_cpp public Domain dom;
     __extern_cpp public Reservoir r;
 }
+#ifdef FK_FCPT_WALK
+// On cuda the consumer's own Reservoir, empty by value initialization
+[ForceInline] ShiftJob emptyShiftJob() {
+    __target_switch {
+    case cuda: __intrinsic_asm "ShiftJob{}";
+    default: return {};
+    }
+}
+#endif
 
 // Temporal round job t of p: previous sample into the current domain (t = 0), current into the previous (t = 1)
 public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJob) -> bool {
@@ -2233,7 +2242,11 @@ public func shiftBin(r: Reservoir) -> uint {
 public func temporalBins<S: IScene>(scene: S, p: int2) -> uint[3] {
     var bins: uint[3] = { SHIFT_BINS, SHIFT_BINS, SHIFT_BINS };
     for (var t: uint = 0u; t < 2u; t++) {
+#ifdef FK_FCPT_WALK
+        var job: ShiftJob = emptyShiftJob();
+#else
         var job: ShiftJob = {};
+#endif
         if (temporalJob(scene, p, t, job)) {
             bins[t] = shiftBin(job.r);
         }
@@ -2244,7 +2257,11 @@ public func temporalBins<S: IScene>(scene: S, p: int2) -> uint[3] {
 public func spatialBins<S: IScene>(scene: S, p: int2) -> uint[3] {
     var bins: uint[3] = { SHIFT_BINS, SHIFT_BINS, SHIFT_BINS };
     for (var t: uint = 0u; t < scene.restirNeighbours(); t++) {
+#ifdef FK_FCPT_WALK
+        var job: ShiftJob = emptyShiftJob();
+#else
         var job: ShiftJob = {};
+#endif
         if (spatialJob(scene, p, t, job)) {
             bins[t] = shiftBin(job.r);
         }
@@ -2272,7 +2289,7 @@ groupshared uint bin_offsets[SHIFT_BINS];
 // Count the jobs of the workgroup per bin
 public func countShifts<S: IScene>(scene: S, bins: uint[3], local_invocation_index: uint) {
     __target_switch {
-    case cuda:
+    case cuda: case cpp:
         for (var t: uint = 0u; t < 3u; t++) {
             if (bins[t] < SHIFT_BINS) {
                 scene.queueCountAdd(bins[t], 1u);
@@ -2298,7 +2315,7 @@ public func countShifts<S: IScene>(scene: S, bins: uint[3], local_invocation_ind
 // Write the jobs of the workgroup bin by bin into the queue and the size of the indirect dispatch running them
 public func queueShifts<S: IScene>(scene: S, p: int2, bins: uint[3], global_invocation_id: uint3, local_invocation_index: uint) {
     __target_switch {
-    case cuda:
+    case cuda: case cpp:
         for (var t: uint = 0u; t < 3u; t++) {
             if (bins[t] < SHIFT_BINS) {
                 var start: uint = 0u;
@@ -2369,14 +2386,26 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     let p: int2 = int2(global_invocation_id.xy);
     var dom: Domain = {};
     if (!scene.currentDomain(p, dom)) {
+#ifdef FK_FCPT_WALK
+        scene.storeReservoirInitial(p, emptyReservoir(), dom.hit);
+#else
         scene.storeReservoirInitial(p, Reservoir(), dom.hit);
+#endif
         return;
     }
     let pixel_seed: uint = stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y);
+#ifdef FK_FCPT_WALK
+    var initial: Selection = emptySelection();
+#else
     var initial: Selection = {};
+#endif
     initial.random_state = stream(pixel_seed, STREAM_SELECT);
     for (var i: uint = 0u; i < scene.samples(); i++) {
+#ifdef FK_FCPT_WALK
+        var r: Reservoir = emptyReservoir();
+#else
         var r: Reservoir = {};
+#endif
         r.seed = stream(pixel_seed, i);
         walk(scene, dom, r, false, 1.0f / float(scene.samples()), initial);
     }
@@ -2388,7 +2417,11 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
     let p: int2 = int2(global_invocation_id.xy);
     var dom: Domain = {};
     if (!scene.currentDomain(p, dom)) {
+#ifdef FK_FCPT_WALK
+        scene.storeReservoirTemporal(p, emptyReservoir(), dom.hit);
+#else
         scene.storeReservoirTemporal(p, Reservoir(), dom.hit);
+#endif
         return;
     }
     var r: Reservoir = scene.loadReservoirInitial(p);
@@ -2405,7 +2438,11 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
         }
         let p_c: float = rgb_to_greyscale(r.f);
         let p_t: float = rgb_to_greyscale(temporal.f);
+#ifdef FK_FCPT_WALK
+        var sel: Selection = emptySelection();
+#else
         var sel: Selection = {};
+#endif
         sel.random_state = stream(stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y), STREAM_SELECT + 1u);
         let weights: float2 = temporalWeights(r.c, p_c, c_t, p_t, rgb_to_greyscale(to_previous.xyz), rgb_to_greyscale(to_current.xyz));
         offerShifted(sel, r, Shift(r.f, 1.0f), weights.x);
@@ -2437,7 +2474,11 @@ public func restir_temporal_shift<S: IScene>(scene: S, workgroup_id: uint3, loca
     let job: uint = queuedShift(scene, workgroup_id, local_invocation_index);
     if (job != UINT_MAX) {
         let p: int2 = int2(uint2(job, job >> 14u) & uint2(16383u));
+#ifdef FK_FCPT_WALK
+        var shift_job: ShiftJob = emptyShiftJob();
+#else
         var shift_job: ShiftJob = {};
+#endif
         temporalJob(scene, p, job >> 28u, shift_job);
         let shifted: Shift = shift(scene, shift_job.dom, shift_job.r);
         scene.storeTemporalShift(p, job >> 28u, uint4(asuint(shifted.f), asuint(shifted.jac)));
@@ -2464,7 +2505,11 @@ public func restir_shift<S: IScene>(scene: S, workgroup_id: uint3, local_invocat
     let job: uint = queuedShift(scene, workgroup_id, local_invocation_index);
     if (job != UINT_MAX) {
         let p: int2 = int2(uint2(job, job >> 14u) & uint2(16383u));
+#ifdef FK_FCPT_WALK
+        var shift_job: ShiftJob = emptyShiftJob();
+#else
         var shift_job: ShiftJob = {};
+#endif
         spatialJob(scene, p, job >> 28u, shift_job);
         let shifted: Shift = shift(scene, shift_job.dom, shift_job.r);
         scene.storeShiftData(p, job >> 28u, uint4(asuint(shifted.f), asuint(shifted.jac)));
@@ -2478,10 +2523,19 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
     let p: int2 = int2(global_invocation_id.xy);
     var dom: Domain = {};
     if (!scene.currentDomain(p, dom)) {
+#ifdef FK_FCPT_WALK
+        scene.storeReservoirPrevious(p, emptyReservoir(), dom.hit);
+#else
         scene.storeReservoirPrevious(p, Reservoir(), dom.hit);
+#endif
         let screen_space: float2 = float2(global_invocation_id.xy) / float2(scene.renderSize().xy) * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
         // If there is no triangle render ambient color
+#ifdef FK_FCPT_WALK
+        scene.storeColor(p, 0u, float4(environment(scene, normalize(mul(float3(screen_space, 1.0f), scene.invViewMatrix())),
+            0u, LOBE_NONE), 1.0f));
+#else
         scene.storeColor(p, 0u, float4(environment(scene, normalize(mul(float3(screen_space, 1.0f), scene.invViewMatrix()))), 1.0f));
+#endif
         if (scene.isTemporal() == 1u) {
             scene.storeColor(p, 1u, float4(0.0f));
         }
@@ -2502,7 +2556,11 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
     let c_pair: float = r.c / max(count, 1.0f);
     let p_c: float = rgb_to_greyscale(r.f);
     var canonical_mis: float = select(0.0f, 1.0f, count == 0.0f);
+#ifdef FK_FCPT_WALK
+    var sel: Selection = emptySelection();
+#else
     var sel: Selection = {};
+#endif
     sel.random_state = stream(stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y), STREAM_SELECT + 2u);
     for (var t: uint = 0u; t < scene.restirNeighbours(); t++) {
         let q: int2 = partner(scene, p, t);
@@ -2553,7 +2611,7 @@ uint previousSeed<S: IScene>(S scene, int2 q) {
 // Fraction of the 17 x 17 neighborhood sharing each pixel's sample (Sec. 5)
 public func restir_duplicates<S: IScene>(scene: S, global_invocation_id: uint3, local_invocation_id: uint3, local_invocation_index: uint) {
     __target_switch {
-    case cuda:
+    case cuda: case cpp:
         let own: uint = previousSeed(scene, int2(global_invocation_id.xy));
         var count: uint = 0u;
         for (var y: int = -8; y <= 8; y++) {
