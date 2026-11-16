@@ -79,12 +79,17 @@ struct TestScene : IScene {
     int4 pairing(int2 texel, uint t) { return int4(texel.yx - int2(int(t)), 0, 0); }
     uint4 reservoirPrevious(int2 q, uint layer) { return uint4(uint(q.x), layer, 0u, asuint(float(q.y))); }
     Domain previousDomain(int2 q) { return Domain(float3(0.0f), float3(float2(q), 1.0f), Hit(float2(0.5f), uint(q.x), uint(q.y), 0u, 1.0f)); }
+    Domain previousDomain(int2 q, uint seed) { Domain dom = previousDomain(q); dom.x0 = float3(float(seed)); return dom; }
     uint restirNeighbours() { return 3u; }
     Reservoir loadReservoirPrevious(int2 q) { return reservoirs[uint(q.x)]; }
     Reservoir loadReservoirInitial(int2 p) { return reservoirs[uint(p.y)]; }
     Reservoir loadReservoirTemporal(int2 p) { return reservoirs[uint(p.x + p.y)]; }
     bool storedDomainInitial(int2 p, out Domain dom) { dom = previousDomain(p); return p.x > 0; }
     bool storedDomainTemporal(int2 p, out Domain dom) { dom = previousDomain(p.yx); return p.y > 0; }
+    bool storedDomainInitial(int2 p, uint seed, out Domain dom) { dom = previousDomain(p, seed); return p.x > 0; }
+    bool storedDomainTemporal(int2 p, uint seed, out Domain dom) { dom = previousDomain(p.yx, seed); return p.y > 0; }
+    bool sceneUnchanged() { return true; }
+    bool previousScenes() { return false; }
     uint queueCountAdd(uint bin, uint jobs) { uint before; InterlockedAdd(queue[bin], jobs, before); return before; }
     uint queueCountLoad(uint bin) { return queue[bin]; }
     uint queueCursorAdd(uint bin, uint jobs) { uint before; InterlockedAdd(queue[40u + bin], jobs, before); return before; }
@@ -119,7 +124,11 @@ float walkOver(Domain dom, Reservoir r) {
     float passes = 0.0f;
 #ifdef FK_RESTIR_PASSES
     const int2 p = int2(int(r.seed % 64u), int(r.seed / 64u % 48u));
+#ifdef FK_FCPT_WALK
+    const int2 q = temporalNeighbor(scene, p, dom, r.seed) + partner(scene, p, r.path % 3u);
+#else
     const int2 q = temporalNeighbor(scene, p, dom) + partner(scene, p, r.path % 3u);
+#endif
     const uint[3] bins = temporalBins(scene, p);
     const uint[3] spatial = spatialBins(scene, q);
     passes = float(q.x * q.y) + float(bins[0] + bins[1] + spatial[2] + shiftBin(r));
