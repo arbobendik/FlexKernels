@@ -697,6 +697,7 @@ public interface IScene {
     public uint triangleOffset(uint instance_index);
     public float3 calculatePointLightContrib(uint index);
     public float3 env_map_sample(float3 dir, uint depth, uint lobe);
+    public bool zUp();
     public bool twoSided();
     public float4 environmentCdf(uint2 cell);
     public uint2 environmentCdfSize();
@@ -839,6 +840,11 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "env_map_sample($0)")
     __target_intrinsic(cuda, "fcptEnvMapSample($0, $1, $2)")
     public float3 env_map_sample(float3 dir, uint depth, uint lobe);
+    // The scene's up axis, z or else y, the environment map's own
+    __target_intrinsic(wgsl, "(false)")
+    __target_intrinsic(cuda, "(true)")
+    __target_intrinsic(cpp, "(true)")
+    public bool zUp();
     // Whether emitters emit on both sides, else toward their front alone
     __target_intrinsic(wgsl, "(false)")
     __target_intrinsic(cuda, "(true)")
@@ -1209,15 +1215,21 @@ func environmentMapped<S: IScene>(scene: S) -> bool {
 }
 
 // p = p(row) * p(column | row), PDF_st = p * size.x * size.y
-// dw = 2 * PI^2 * sin(theta) ds dt, sin(theta) = length(dir.xz)
+// dw = 2 * PI^2 * sin(theta) ds dt, sin(theta) = length(f.xz)
 // => PDF = p * size.x * size.y / (2 * PI^2 * sin(theta))
 func environmentPdf<S: IScene>(scene: S, dir: float3) -> float {
     let size: uint2 = scene.environmentCdfSize() - uint2(1u, 0u);
-    // Same coordinates as env_map_sample
-    let st: float2 = float2(atan2(- dir.z, - dir.x) / (2.0f * PI) + 0.5f, acos(clamp(dir.y, -1.0f, 1.0f)) / PI);
+    // Same coordinates as env_map_sample, f of y up
+    let f: float3 = skyFrame(scene, dir);
+    let st: float2 = float2(atan2(- f.z, - f.x) / (2.0f * PI) + 0.5f, acos(clamp(f.y, -1.0f, 1.0f)) / PI);
     let cell: uint2 = min(uint2(st * float2(size)), size - 1u);
     let p: float = scene.environmentCdf(cell).y * scene.environmentCdf(uint2(size.x, cell.y)).y;
-    return p * float(size.x * size.y) / (2.0f * PI * PI * length(dir.xz));
+    return p * float(size.x * size.y) / (2.0f * PI * PI * length(f.xz));
+}
+
+// The environment's y up of dir, its own inverse: z up f = (-dir.x, dir.z, dir.y)
+func skyFrame<S: IScene>(scene: S, dir: float3) -> float3 {
+    return select(dir, float3(- dir.x, dir.z, dir.y), scene.zUp());
 }
 
 // First entry of a row or of the marginal column of the environment CDF exceeding u
@@ -1269,7 +1281,7 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     let row: uint = searchCDF(scene, uint2(size.x, 0u), uint2(0u, 1u), size.y, random_0.value);
     let column: uint = searchCDF(scene, uint2(0u, row), uint2(1u, 0u), size.x, random_1.value);
     let angles: float2 = (float2(float(column), float(row)) + float2(random_2.value, random_3.value)) / float2(size) * float2(2.0f * PI, PI);
-    let dir: float3 = float3(sin(angles.y) * cos(angles.x), cos(angles.y), sin(angles.y) * sin(angles.x));
+    let dir: float3 = skyFrame(scene, float3(sin(angles.y) * cos(angles.x), cos(angles.y), sin(angles.y) * sin(angles.x)));
     let pdf: float = environmentPdf(scene, dir);
     let f: float3 = skyBSDF(ray.unit_direction, dir, surface, eta, is_inside, pdf, lobe_state);
     // Only trace toward directions that contribute

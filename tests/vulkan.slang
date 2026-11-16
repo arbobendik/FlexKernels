@@ -65,6 +65,7 @@ struct TestScene : IScene {
     uint triangleOffset(uint instance_index) { return instance_index; }
     float3 calculatePointLightContrib(uint index) { return float3(float(index)); }
     float3 env_map_sample(float3 dir, uint depth, uint lobe) { return abs(dir) * float(depth + lobe); }
+    bool zUp() { return true; }
     bool twoSided() { return true; }
     float4 environmentCdf(uint2 cell) { return float4(float(cell.x + 1u) / 5.0f, 0.25f, 0.0f, 0.0f); }
     uint2 environmentCdfSize() { return uint2(5u, 4u); }
