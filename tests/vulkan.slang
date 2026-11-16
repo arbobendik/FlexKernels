@@ -90,6 +90,12 @@ struct TestScene : IScene {
     bool storedDomainTemporal(int2 p, uint seed, out Domain dom) { dom = previousDomain(p.yx, seed); return p.y > 0; }
     bool sceneUnchanged() { return true; }
     bool previousScenes() { return false; }
+    Shift shiftPrevious(Domain dom, Reservoir r) { return Shift(dom.x1 * r.w, r.c); }
+    Shift walkCallable(Domain dom, Reservoir r, bool replay, float scale, inout Selection sel) {
+        sel.w_sum += scale;
+        return Shift(dom.x0 * float(replay), r.w);
+    }
+    float2 pixelOf(float3 position, bool previous) { return position.xy * (previous ? 2.0f : 1.0f); }
     uint queueCountAdd(uint bin, uint jobs) { uint before; InterlockedAdd(queue[bin], jobs, before); return before; }
     uint queueCountLoad(uint bin) { return queue[bin]; }
     uint queueCursorAdd(uint bin, uint jobs) { uint before; InterlockedAdd(queue[40u + bin], jobs, before); return before; }
