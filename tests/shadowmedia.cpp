@@ -26,6 +26,7 @@ int main() {
     const V up(0, 0, 1), ZERO(0, 0, 0), ONE(1, 1, 1);
     const unsigned NONE = 0xFFFFFFFFu, FILLS = 7, AIR = 3;
     const V carried(0.2f, 0.2f, 0.2f), extinct(4, 5, 6);
+    Medium outside = {ZERO, V(0.7f, 0.8f, 0.9f)};  // Medium outside all volumes
     int cases = 0, differ = 0;
     for (const bool encloses : {false, true})
         for (const float arriving : {-1.0f, 1.0f})
@@ -38,7 +39,7 @@ int main() {
                         Surface faced = {up, g, 0, {ONE, ZERO, 1, 0, 0, 1, ZERO, ONE, 1}, false, 0, 1, encloses,
                             {ONE, extinct}, FILLS};
                         ShadowContext context = shadowContext_0(&faced, turned, carried, AIR, in, 5, 2, 0.75f,
-                            0.125f, &none, false);
+                            0.125f, &none, false, &outside);
                         lightTransmittance_0(ZERO, light, 0, light, &context, 77, &none);
                         // flex-cuda-pt's, indexed by the faced normal
                         V ext[2] = {carried, carried};
@@ -46,7 +47,7 @@ int main() {
                         if (encloses) {
                             const bool back = dot_0(g, f) < 0, ahead = dot_0(g, f) > 0;
                             ext[back] = extinct, fill[back] = FILLS;
-                            if (dot_0(in, f) > 0) ext[ahead] = ZERO, fill[ahead] = NONE;
+                            if (dot_0(in, f) > 0) ext[ahead] = outside.extinction, fill[ahead] = NONE;
                         }
                         const unsigned i = dot_0(g, light) > 0;
                         cases++, differ += got_extinction.x != ext[i].x || got_extinction.z != ext[i].z
