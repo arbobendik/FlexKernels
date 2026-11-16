@@ -170,6 +170,13 @@ static int majorants_of_none = 0;
 bool HookScene_varyingUsed_0() { return true; }
 bool HookScene_hairUsed_0() { return true; }
 bool HookScene_shadowFirst_0() { return true; }
+static Medium world = {ZERO, ZERO};
+// Asked of the face being left, the one shaded last
+static int outside_asked = 0, outside_misfits = 0;
+Medium HookScene_outsideMedium_0(Hit hit) {
+    outside_asked++, outside_misfits += hit.instance_index != last_shaded.instance_index;
+    return world;
+}
 float HookScene_majorant_0(uint32_t filling) {
     majorants_of_none += filling == 0xFFFFFFFFu;
     return camera_fog.extinction.x;
@@ -290,6 +297,15 @@ int main() {
     scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}, {V(0, 0, 3.2f), 2, false, {dielectric(1)}, 1, 1,
         false, none}};
     furnace("white sphere beside a shell", V(2.2f, 0, 0.6f), V(0, 0, 0.6f), 0.1f, 1, failed);
+    // Clear shell of radius 1 about the camera, absorbing outside medium, walls emitting 1 at radius 10: exp(-0.1 * 9)
+    world = {ZERO, scaled(ONE, 0.1f)}, sky = 0;
+    scene = {{center, 10, true, {lambert(0, 1)}, 1, 1, false, none},
+        {center, 1, false, {dielectric(1)}, 1, 1, true, none}};
+    furnace("walls past a shell, outside absorbing", center, V(0, 0, 1), 3.14159265f, exp(-0.9), failed);
+    world = none, sky = 1;
+    failed += outside_asked == 0 || outside_misfits > 0;
+    printf("outside medium: %d asked, %d off the face left%s\n", outside_asked, outside_misfits,
+        outside_asked == 0 || outside_misfits > 0 ? "  FAILED" : "");
     scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
     camera_fog = {ZERO, scaled(ONE, 0.5f)};
     furnace("white sphere in an absorber", camera, center, 0.3f, 1, failed, 0.5f);
