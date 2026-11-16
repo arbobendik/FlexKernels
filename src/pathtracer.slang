@@ -32,6 +32,8 @@ __extern_cpp public struct Material {
     __extern_cpp public float anisotropy = 0.0f;
     __extern_cpp public float anisotropic_rotation = 0.0f;
     __extern_cpp public float3 tangent = float3(0.0f);
+    // Velvet sheen lobe if 1
+    __extern_cpp public float velvet = 0.0f;
 };
 
 __extern_cpp public struct RandomSphere {
@@ -55,7 +57,8 @@ __extern_cpp public struct AnisotropicFrame {
     __extern_cpp public float2 alphas;
 }
 
-// The sheen's values at a vertex: on, and its albedo by the view, exp(bilinear SHEEN_ALBEDO); zero without sheen
+// The sheen's values at a vertex: on, and its albedo by the view, exp(bilinear SHEEN_ALBEDO), bilinear VELVET_ALBEDO
+// for velvet; zero without sheen
 __extern_cpp public struct SheenProfile {
     __extern_cpp public bool on;
     __extern_cpp public float albedo;
@@ -120,6 +123,79 @@ public static const float SHEEN_ALBEDO[576] = {
     -2.7388f, -2.6148f, -2.5070f, -2.4127f, -2.3296f, -2.2562f, -2.1909f, -2.1327f, -2.0805f, -2.0335f, -1.9905f, -1.9537f
 };
 
+// albedo = integral f * n_dot_l dl over the hemisphere, f of the velvet lobe
+// VELVET_ALBEDO[i * SHEEN_NODES + j] = albedo at
+// sqrt(n_dot_v) = i / (SHEEN_NODES - 1)
+// sqrt(sheen_roughness) = sqrt(VELVET_LEAST) + j / (SHEEN_NODES - 1) * (1 - sqrt(VELVET_LEAST))
+// bilinear VELVET_ALBEDO >= albedo
+public static const float VELVET_LEAST = 0.01f;
+public static const float VELVET_ALBEDO[576] = {
+    1.03604f, 1.04969f, 1.0247f, 1.01461f, 1.00961f, 1.0068f, 1.00505f, 1.0039f, 1.00313f,
+    1.00258f, 1.00213f, 1.00174f, 1.00139f, 1.00113f, 1.00097f, 1.00093f, 1.00098f, 1.00108f,
+    1.00119f, 1.00128f, 1.00132f, 1.00134f, 1.00133f, 1.00131f, 0.907341f, 0.982758f, 0.983867f,
+    0.987145f, 0.989889f, 0.991949f, 0.993481f, 0.99464f, 0.995514f, 0.996202f, 0.996783f, 0.997259f,
+    0.997621f, 0.997881f, 0.998069f, 0.99823f, 0.998401f, 0.998602f, 0.998829f, 0.999051f, 0.999248f,
+    0.999416f, 0.999554f, 0.999666f, 0.4705f, 0.720479f, 0.825413f, 0.880248f, 0.913171f, 0.934224f,
+    0.948453f, 0.958545f, 0.965972f, 0.971619f, 0.975998f, 0.979463f, 0.982253f, 0.984537f, 0.986437f,
+    0.988039f, 0.989404f, 0.990578f, 0.991595f, 0.992474f, 0.993232f, 0.993946f, 0.994618f, 0.995143f,
+    0.103391f, 0.376527f, 0.589906f, 0.716831f, 0.793741f, 0.843842f, 0.877875f, 0.901892f, 0.919514f,
+    0.932841f, 0.943174f, 0.951355f, 0.95795f, 0.963352f, 0.967837f, 0.971608f, 0.974813f, 0.97756f,
+    0.97993f, 0.981985f, 0.983773f, 0.98533f, 0.986689f, 0.987881f, 0.00549575f, 0.121308f, 0.330383f,
+    0.509574f, 0.635823f, 0.721304f, 0.780631f, 0.823377f, 0.855f, 0.878958f, 0.897554f, 0.912288f,
+    0.92417f, 0.933904f, 0.94199f, 0.948788f, 0.954564f, 0.959515f, 0.963786f, 0.96749f, 0.970712f,
+    0.973521f, 0.975974f, 0.978117f, 6.61684e-05f, 0.0197857f, 0.134809f, 0.304415f, 0.456845f, 0.574617f,
+    0.661371f, 0.725478f, 0.773616f, 0.810615f, 0.839515f, 0.862483f, 0.881046f, 0.896275f, 0.908938f,
+    0.919593f, 0.928652f, 0.936419f, 0.943122f, 0.948936f, 0.953994f, 0.958404f, 0.962256f, 0.965621f,
+    6.08604e-08f, 0.00167625f, 0.0368659f, 0.144052f, 0.286438f, 0.418522f, 0.526809f, 0.611797f, 0.677611f,
+    0.728972f, 0.769568f, 0.802119f, 0.828613f, 0.85042f, 0.868594f, 0.883912f, 0.896951f, 0.908142f,
+    0.917807f, 0.926193f, 0.933494f, 0.939862f, 0.945423f, 0.950285f, 1.25723e-12f, 5.34419e-05f, 0.00689807f,
+    0.0529875f, 0.151352f, 0.273795f, 0.389782f, 0.489247f, 0.570689f, 0.636345f, 0.689308f, 0.732306f,
+    0.767559f, 0.796797f, 0.82128f, 0.841979f, 0.859637f, 0.874817f, 0.887945f, 0.899347f, 0.90928f,
+    0.917949f, 0.925524f, 0.932147f, 1.3243e-19f, 4.34399e-07f, 0.000783197f, 0.0150598f, 0.0670014f, 0.156855f,
+    0.264148f, 0.367524f, 0.458924f, 0.536339f, 0.600868f, 0.654321f, 0.698765f, 0.735947f, 0.767304f,
+    0.793975f, 0.81681f, 0.836493f, 0.853549f, 0.868387f, 0.881328f, 0.892632f, 0.902517f, 0.911163f,
+    1.21215e-29f, 5.61858e-10f, 4.58034e-05f, 0.00315008f, 0.0245591f, 0.0787702f, 0.161048f, 0.256356f, 0.349499f,
+    0.43383f, 0.507297f, 0.570105f, 0.623414f, 0.668656f, 0.70719f, 0.740185f, 0.768629f, 0.793246f,
+    0.814644f, 0.8333f, 0.849601f, 0.863861f, 0.876341f, 0.887267f, 1.18e-43f, 6.58941e-14f, 1.12095e-06f,
+    0.000447875f, 0.00728175f, 0.0341812f, 0.0884685f, 0.164118f, 0.249804f, 0.334535f, 0.412717f, 0.482445f,
+    0.543312f, 0.596086f, 0.641678f, 0.681142f, 0.715394f, 0.745232f, 0.771299f, 0.794104f, 0.81408f,
+    0.831588f, 0.846935f, 0.860384f, 0.0f, 3.57222e-19f, 8.93677e-09f, 3.87386e-05f, 0.0016727f, 0.0126485f,
+    0.0432065f, 0.0963084f, 0.166104f, 0.243926f, 0.321657f, 0.39457f, 0.46081f, 0.519763f, 0.571757f,
+    0.617429f, 0.657506f, 0.692694f, 0.723625f, 0.750828f, 0.774739f, 0.795752f, 0.814208f, 0.830406f,
+    0.0f, 3.95293e-26f, 1.71185e-11f, 1.77652e-06f, 0.000278371f, 0.00388712f, 0.0185851f, 0.051246f, 0.102469f,
+    0.167095f, 0.23838f, 0.31022f, 0.378577f, 0.441685f, 0.498804f, 0.549939f, 0.595501f, 0.63594f,
+    0.671776f, 0.703496f, 0.731528f, 0.756251f, 0.778023f, 0.797168f, 0.0f, 3.24832e-35f, 5.40527e-15f,
+    3.64183e-08f, 3.07466e-05f, 0.000948591f, 0.00691073f, 0.0245214f, 0.0580932f, 0.107074f, 0.167111f, 0.232879f,
+    0.299713f, 0.364121f, 0.424437f, 0.479848f, 0.530119f, 0.575395f, 0.615977f, 0.652184f, 0.684402f,
+    0.712959f, 0.738198f, 0.760445f, 0.0f, 0.0f, 1.74471e-19f, 2.68698e-10f, 2.01521e-06f, 0.00017266f,
+    0.00214895f, 0.0103928f, 0.0300239f, 0.06363f, 0.11019f, 0.166118f, 0.227146f, 0.289683f, 0.35066f,
+    0.408507f, 0.462324f, 0.51169f, 0.556544f, 0.597014f, 0.633331f, 0.66572f, 0.694487f, 0.719913f,
+    0.0f, 0.0f, 3.08186e-25f, 5.37352e-13f, 6.7686e-08f, 2.15671e-05f, 0.000531871f, 0.0037964f, 0.0139498f,
+    0.034771f, 0.0677712f, 0.111826f, 0.164029f, 0.220927f, 0.279718f, 0.337675f, 0.393289f, 0.445565f,
+    0.493927f, 0.538158f, 0.578278f, 0.614346f, 0.64653f, 0.675068f, 0.0f, 0.0f, 1.27566e-32f,
+    1.98236e-16f, 9.54645e-10f, 1.65077e-06f, 9.77844e-05f, 0.00114505f, 0.00568278f, 0.0172268f, 0.0385165f, 0.0704336f,
+    0.111939f, 0.16071f, 0.213977f, 0.269376f, 0.324579f, 0.378065f, 0.428723f, 0.475863f, 0.519157f,
+    0.558469f, 0.593769f, 0.625195f, 0.0f, 0.0f, 3.71e-42f, 7.81385e-21f, 4.26179e-12f, 6.59225e-08f,
+    1.21035e-05f, 0.000267655f, 0.00194808f, 0.00754345f, 0.019913f, 0.0410557f, 0.0715148f, 0.110424f, 0.155951f,
+    0.205847f, 0.258068f, 0.310556f, 0.361781f, 0.410492f, 0.455929f, 0.497659f, 0.535512f, 0.569487f,
+    0.0f, 0.0f, 0.0f, 1.45017e-26f, 3.94085e-15f, 1.07907e-09f, 8.70304e-07f, 4.40725e-05f, 0.000526944f,
+    0.00279516f, 0.00910075f, 0.0217338f, 0.0421972f, 0.0708745f, 0.107093f, 0.149399f, 0.195912f, 0.244817f,
+    0.294247f, 0.342617f, 0.388693f, 0.431747f, 0.471393f, 0.507518f, 0.0f, 0.0f, 0.0f,
+    3.37723e-34f, 3.80886e-19f, 4.90657e-12f, 2.86603e-08f, 4.38328e-06f, 0.000101341f, 0.000814766f, 0.00349242f, 0.0100821f,
+    0.0224322f, 0.0417282f, 0.0682778f, 0.101541f, 0.1403f, 0.18293f, 0.22785f, 0.27341f, 0.318203f,
+    0.361181f, 0.401751f, 0.439621f, 0.0f, 0.0f, 0.0f, 1e-44f, 1.13511e-24f, 3.09601e-15f,
+    2.829e-10f, 2.00208e-07f, 1.15122e-05f, 0.000164009f, 0.00102415f, 0.00382522f, 0.0102177f, 0.0217333f, 0.039361f,
+    0.0633666f, 0.0933079f, 0.128186f, 0.166681f, 0.207392f, 0.249039f, 0.290635f, 0.331344f, 0.370641f,
+    0.0f, 0.0f, 0.0f, 0.0f, 8.14998e-33f, 6.36955e-20f, 3.45818e-13f, 2.37366e-09f, 5.25425e-07f,
+    1.73998e-05f, 0.000188743f, 0.00102674f, 0.00357492f, 0.00922096f, 0.019297f, 0.0347333f, 0.0558823f, 0.0825094f,
+    0.11391f, 0.149101f, 0.187013f, 0.226641f, 0.267131f, 0.307802f, 0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 7.3833e-28f, 4.41417e-18f, 1.48474e-12f, 3.29402e-09f, 4.59631e-07f, 1.27394e-05f, 0.000130862f,
+    0.000711395f, 0.00253174f, 0.00673074f, 0.0145471f, 0.0270257f, 0.0448186f, 0.0681154f, 0.09668f, 0.129946f,
+    0.16713f, 0.207334f, 0.249632f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+    3.35173e-37f, 1.16604e-24f, 3.3994e-17f, 1.6423e-12f, 1.93988e-09f, 2.40242e-07f, 7.14224e-06f, 8.33758e-05f, 0.00051761f,
+    0.00207299f, 0.00607771f, 0.0141988f, 0.0280109f, 0.0485893f, 0.0762827f, 0.110697f, 0.150843f, 0.195364f
+};
+
 #ifdef FK_HAIR
 // HAIR_WIDTHS and HAIR_TILTS scale the R lobe's width w and the cuticle tilt alpha per lobe
 static const float HAIR_WIDTHS[4] = {1.0f, 0.5f, 2.0f, 2.0f};
@@ -146,6 +222,12 @@ public float inverseSqrt(float x) {
 [ForceInline] public bool sheenUsed() {
     __target_switch {
     case glsl: __intrinsic_asm "(SHEEN)";
+    default: return true;
+    }
+}
+[ForceInline] public bool velvetUsed() {
+    __target_switch {
+    case glsl: __intrinsic_asm "(VELVET)";
     default: return true;
     }
 }
@@ -656,21 +738,32 @@ __extern_cpp public struct BSDFLobes {
         * select(1.0f - share, share, n_i_dot_l < 0.0f), share > 0.0f), n_i_dot_v > 0.0f);
 }
 
+// Velvet in place of the Charlie sheen
+[ForceInline] public func isVelvet(material: Material) -> bool {
+    return velvetUsed() && material.velvet > 0.0f;
+}
+
 [CudaDeviceExport] public func sheenProfile(v: float3, n_i: float3, material: Material) -> SheenProfile {
     var profile: SheenProfile = SheenProfile(false, 0.0f);
     if (sheenUsed() && rgb_to_greyscale(material.sheen) > 0.0f) {
         let x: float = clamp(sqrt(max(dot(n_i, v), 0.0f)), 0.0f, 1.0f) * float(SHEEN_NODES - 1u);
         let i: uint = min(uint(x), SHEEN_NODES - 2u);
-        let least: float = sqrt(SHEEN_LEAST);
+        let least: float = select(sqrt(SHEEN_LEAST), sqrt(VELVET_LEAST), isVelvet(material));
         let y: float = (clamp(sqrt(max(material.sheen_roughness, 0.0f)), least, 1.0f) - least) / (1.0f - least)
             * float(SHEEN_NODES - 1u);
         let j: uint = min(uint(y), SHEEN_NODES - 2u);
         let k: uint = i * SHEEN_NODES + j;
         let u: float = x - float(i);
         let t: float = y - float(j);
-        let a: float = SHEEN_ALBEDO[k] + (SHEEN_ALBEDO[k + SHEEN_NODES] - SHEEN_ALBEDO[k]) * u;
-        let b: float = SHEEN_ALBEDO[k + 1u] + (SHEEN_ALBEDO[k + SHEEN_NODES + 1u] - SHEEN_ALBEDO[k + 1u]) * u;
-        profile = SheenProfile(true, exp(a + (b - a) * t));
+        if (isVelvet(material)) {
+            let a: float = VELVET_ALBEDO[k] + (VELVET_ALBEDO[k + SHEEN_NODES] - VELVET_ALBEDO[k]) * u;
+            let b: float = VELVET_ALBEDO[k + 1u] + (VELVET_ALBEDO[k + SHEEN_NODES + 1u] - VELVET_ALBEDO[k + 1u]) * u;
+            profile = SheenProfile(true, a + (b - a) * t);
+        } else {
+            let a: float = SHEEN_ALBEDO[k] + (SHEEN_ALBEDO[k + SHEEN_NODES] - SHEEN_ALBEDO[k]) * u;
+            let b: float = SHEEN_ALBEDO[k + 1u] + (SHEEN_ALBEDO[k + SHEEN_NODES + 1u] - SHEEN_ALBEDO[k + 1u]) * u;
+            profile = SheenProfile(true, exp(a + (b - a) * t));
+        }
     }
     return profile;
 }
@@ -688,13 +781,25 @@ __extern_cpp public struct BSDFLobes {
     // V = 1 / (4 * (n_dot_l + n_dot_v - n_dot_l * n_dot_v))
     // f holds D * V
     // => throughput = sheen * f * n_dot_l * 2 * PI / p_sheen_velvet
+    //
+    // Velvet: s = max(sheen_roughness, 0.01), sin2 = 1 - n_dot_h^2
+    // D = exp(-n_dot_h^2 / (sin2 * s^2)) / (PI * s^2 * sin2^2), V = G / (4 * n_dot_l * n_dot_v)
+    // G = min(1, 2 * n_dot_h * n_dot_v / v_dot_h, 2 * n_dot_h * n_dot_l / v_dot_h)
+    // => throughput = sheen * f * n_dot_l * 2 * PI / p_sheen_velvet, f holding D * V
     let h: float3 = normalize(l + lobes.view);
     let n_dot_h: float = dot(n_i, h);
     let n_dot_l: float = max(dot(n_i, l), 0.0f);
     let n_dot_v: float = max(dot(n_i, lobes.view), 0.0f);
     let inv_r: float = 1.0f / max(material.sheen_roughness, SHEEN_LEAST);
-    let f: float = (2.0f + inv_r) * pow(max(1.0f - n_dot_h * n_dot_h, 0.0f), 0.5f * inv_r) * 0.5f * INV_PI
+    var f: float = (2.0f + inv_r) * pow(max(1.0f - n_dot_h * n_dot_h, 0.0f), 0.5f * inv_r) * 0.5f * INV_PI
         / max(4.0f * (n_dot_l + n_dot_v - n_dot_l * n_dot_v), BIAS);
+    if (isVelvet(material)) {
+        let s2: float = max(material.sheen_roughness, 0.01f) * max(material.sheen_roughness, 0.01f);
+        let sin2: float = max(1.0f - n_dot_h * n_dot_h, BIAS);
+        f = exp(- n_dot_h * n_dot_h / (sin2 * s2)) / (PI * s2 * sin2 * sin2)
+            * min(1.0f, 2.0f * n_dot_h * min(n_dot_l, n_dot_v) / max(abs(dot(h, lobes.view)), BIAS))
+            / max(4.0f * n_dot_l * n_dot_v, BIAS);
+    }
     return lobes.sheen * (f * n_dot_l * 2.0f * PI / lobes.p_sheen_velvet);
 }
 
