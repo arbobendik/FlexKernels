@@ -801,6 +801,12 @@ public interface IScene {
     // The scene the previous frame saw, and whether shifts into it reach it
     public bool sceneUnchanged();
     public bool previousScenes();
+    // Shift of r into dom in the previous frame's scene
+    public Shift shiftPrevious(Domain dom, Reservoir r);
+    // The walk, run on cuda by the consumer
+    public Shift walkCallable(Domain dom, Reservoir r, bool replay, float scale, inout Selection sel);
+    // Pixel coordinates of position seen by the previous or the current frame's camera
+    public float2 pixelOf(float3 position, bool previous);
 #else
     public bool storedDomainInitial(int2 p, out Domain dom);
     public bool storedDomainTemporal(int2 p, out Domain dom);
@@ -994,6 +1000,12 @@ public struct HookScene : IScene {
     public bool sceneUnchanged();
     __target_intrinsic(cuda, "fcptPreviousScenes()")
     public bool previousScenes();
+    __target_intrinsic(cuda, "fcptShiftPrevious($0, $1)")
+    public Shift shiftPrevious(Domain dom, Reservoir r);
+    __target_intrinsic(cuda, "fcptWalk($0, $1, $2, $3, $4)")
+    public Shift walkCallable(Domain dom, Reservoir r, bool replay, float scale, inout Selection sel);
+    __target_intrinsic(cuda, "fcptPixelOf($0, $1)")
+    public float2 pixelOf(float3 position, bool previous);
 #else
     __target_intrinsic(wgsl, "storedDomain(reservoir_initial, $0, &$1)")
     __target_intrinsic(cuda, "fcptStoredDomainInitial($0, $1)")
@@ -2183,9 +2195,15 @@ public func temporalNeighbor<S: IScene>(scene: S, p: int2, dom: Domain
     if (previousValid(scene, p) && sameDomain(scene.previousDomain(p, seed), dom)) {
         return p;
     }
-#endif
+    // A missed sample keeps no other neighbour
+    if (dom.hit.instance_index == UINT_MAX) {
+        return int2(-1);
+    }
+    let q: int2 = int2(floor(scene.pixelOf(dom.x1, true)));
+#else
     // Primary hits are rasterized at pixel centers
     let q: int2 = int2(floor(project(scene, scene.prevViewMatrix(), scene.prevCameraPosition(), dom.x1)));
+#endif
     if (!previousValid(scene, q)) {
         return int2(-1);
     }
@@ -2198,7 +2216,11 @@ public func temporalNeighbor<S: IScene>(scene: S, p: int2, dom: Domain
     if (previous.hit.instance_index == dom.hit.instance_index && distance(previous.x1, dom.x1) <= dom.hit.distance * 8.0f / float(scene.renderSize().x)) {
         return q;
     }
+#ifdef FK_FCPT_WALK
+    let dual: int2 = int2(floor(float2(p + q) + 1.0f - scene.pixelOf(previous.x1, false)));
+#else
     let dual: int2 = int2(floor(float2(p + q) + 1.0f - project(scene, scene.viewMatrix(), scene.cameraPosition(), previous.x1)));
+#endif
     return select(int2(-1), dual, previousValid(scene, dual));
 }
 
@@ -2229,6 +2251,24 @@ public func shift<S: IScene>(scene: S, dom: Domain, r: Reservoir) -> Shift {
     }
     return walk(scene, dom, r, true, 0.0f, sel);
 }
+
+#if defined(FK_FCPT_WALK) && defined(FK_RESTIR_PASSES)
+// The passes' walk, on cuda one callable of the consumer's in place of a copy per pass
+func passWalk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, scale: float, inout sel: Selection)
+    -> Shift {
+    __target_switch {
+    case cuda: case cpp: return scene.walkCallable(dom, r, replay, scale, sel);
+    default: return walk(scene, dom, r, replay, scale, sel);
+    }
+}
+func passShift<S: IScene>(scene: S, dom: Domain, r: Reservoir) -> Shift {
+    var sel: Selection = emptySelection();
+    if (r.w <= 0.0f) {
+        return Shift(float3(0.0f), 0.0f);
+    }
+    return passWalk(scene, dom, r, true, 0.0f, sel);
+}
+#endif
 
 // Shifting into an identical domain is the identity
 public func sameDomain(a: Domain, b: Domain) -> bool {
@@ -2488,7 +2528,11 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
         var r: Reservoir = {};
 #endif
         r.seed = stream(pixel_seed, i);
+#ifdef FK_FCPT_WALK
+        passWalk(scene, dom, r, false, 1.0f / float(scene.samples()), initial);
+#else
         walk(scene, dom, r, false, 1.0f / float(scene.samples()), initial);
+#endif
     }
     scene.storeReservoirInitial(p, finalize(initial, 1.0f), dom.hit);
 }
@@ -2581,7 +2625,13 @@ public func restir_temporal_shift<S: IScene>(scene: S, workgroup_id: uint3, loca
         var shift_job: ShiftJob = {};
 #endif
         temporalJob(scene, p, job >> 28u, shift_job);
+#ifdef FK_FCPT_WALK
+        // Job 1 shifts into the previous frame's scene
+        let shifted: Shift = job >> 28u == 1u ? scene.shiftPrevious(shift_job.dom, shift_job.r)
+            : passShift(scene, shift_job.dom, shift_job.r);
+#else
         let shifted: Shift = shift(scene, shift_job.dom, shift_job.r);
+#endif
         scene.storeTemporalShift(p, job >> 28u, uint4(asuint(shifted.f), asuint(shifted.jac)));
     }
 }
@@ -2612,7 +2662,11 @@ public func restir_shift<S: IScene>(scene: S, workgroup_id: uint3, local_invocat
         var shift_job: ShiftJob = {};
 #endif
         spatialJob(scene, p, job >> 28u, shift_job);
+#ifdef FK_FCPT_WALK
+        let shifted: Shift = passShift(scene, shift_job.dom, shift_job.r);
+#else
         let shifted: Shift = shift(scene, shift_job.dom, shift_job.r);
+#endif
         scene.storeShiftData(p, job >> 28u, uint4(asuint(shifted.f), asuint(shifted.jac)));
     }
 }
