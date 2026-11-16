@@ -206,6 +206,45 @@ int main() {
             sampled, spread, asymmetry, bad ? "  FAILED" : "");
         failed |= bad;
     }
+    // Toon materials, white, all toon: sampled albedo P(theta_v) (diffuse) and the glossy lobe's; half toon over a
+    // white diffuse base: sampled as connected and evaluated, at most what it receives
+    const float TOON_MATERIALS[][4] = {{1, 0.5f, 0.5f, 60}, {1, 0.5f, 0.5f, 80}, {-1, 0.5f, 0.5f, 0},
+        {-1, 0.2f, 0.2f, 80}};
+    const double TOON_MATERIAL_ALBEDOS[] = {0.666667, 0.222222, 0.652480, 0.201805};
+    for (int k = 0; k < 4; k++) {
+        const float w = TOON_MATERIALS[k][0], view = TOON_MATERIALS[k][3] / 57.29578f;
+        const Vector<float, 3> in_dir(-sinf(view), 0, -cosf(view)), up(0, 0, 1);
+        Material alone = {ONE, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ZERO, 0.5f, 0, 0, ZERO, 0,
+            Vector<float, 3>(w, w * TOON_MATERIALS[k][1], w * TOON_MATERIALS[k][2])};
+        Material half = alone, coloured = alone;
+        coloured.albedo = Vector<float, 3>(0.8f, 0.4f, 0.1f);
+        half.toon = Vector<float, 3>(alone.toon.x * 0.5f, alone.toon.y * 0.5f, alone.toon.z * 0.5f);
+        double sampled = 0, squares = 0, over = 0, worst = 0, tinted[3] = {};
+        for (unsigned i = 0; i < 1u << 18; i++) {
+            const SampleBSDF s = sampleBSDF(in_dir, up, alone, 1, 1, hash(i), Vector<float, 2>(0, 0));
+            const SampleBSDF m = sampleBSDF(in_dir, up, half, 1, 1, hash(i), Vector<float, 2>(0, 0));
+            const SampleBSDF c = towardLobe(in_dir, m.unit_direction, up, half, 1, 1, m.lobe, hash(i));
+            sampled += s.throughput.x / (1 << 18), squares += s.throughput.x * s.throughput.x / (1 << 18);
+            const Vector<float, 3> t = sampleBSDF(in_dir, up, coloured, 1, 1, hash(i), Vector<float, 2>(0, 0)).throughput;
+            tinted[0] += t.x / (1 << 18), tinted[1] += t.y / (1 << 18), tinted[2] += t.z / (1 << 18);
+            over += m.throughput.x / (1 << 18);
+            // Directions that carry light: the toon's glossy cone also reaches below the horizon, where f is 0
+            if ((m.lobe == 0 || m.lobe == 6) && m.throughput.x > 0) {
+                const double each = m.throughput.x * m.pdf;
+                worst = fmax(worst, fmax(fabs(c.pdf / m.pdf - 1), fabs(c.throughput.x * c.pdf / each - 1)));
+            }
+        }
+        const double error = 4 * sqrt(fmax(squares - sampled * sampled, 0) / (1 << 18)) + 1e-3;
+        const double COLOUR[3] = {0.8, 0.4, 0.1};
+        bool off = false;
+        for (int c = 0; c < 3; c++) off |= fabs(tinted[c] - COLOUR[c] * TOON_MATERIAL_ALBEDOS[k]) > COLOUR[c] * error;
+        const bool bad = !(fabs(sampled - TOON_MATERIAL_ALBEDOS[k]) <= error && over <= 1.002 && worst <= 1e-4 && !off);
+        printf("toon material %s %g %g at %g deg: sampled %.4f of %.4f, coloured (%.4f %.4f %.4f), half over white %.4f, "
+            "worst mismatch %.2g%s\n", w > 0 ? "diffuse" : "glossy", TOON_MATERIALS[k][1], TOON_MATERIALS[k][2],
+            TOON_MATERIALS[k][3], sampled, TOON_MATERIAL_ALBEDOS[k], tinted[0], tinted[1], tinted[2], over, worst,
+            bad ? "  FAILED" : "");
+        failed |= bad;
+    }
     const Vector<float, 3> TINTS[] = {Vector<float, 3>(1, 0, 0), Vector<float, 3>(0, 0, 1)};
     const float WEIGHTS[] = {0.4f, 1}, TINTED_ROUGHNESSES[] = {0.1f, 0.5f}, TINTED_VIEWS[] = {1, 0.2f, 0.02f};
     for (const float weight : WEIGHTS) for (const Vector<float, 3> tint : TINTS) for (int metal = 0; metal < 2; metal++)
