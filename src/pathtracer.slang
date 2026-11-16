@@ -620,6 +620,96 @@ __extern_cpp public struct AnisotropicFrame {
 }
 #endif
 
+#ifdef FK_TOON
+// Toon (Blender's Toon BSDF) of mark (w, w * Size, w * Smooth), glossy for w < 0
+// a = Size * PI / 2, s = Smooth * PI / 2, b = min(a + s, PI / 2)
+// P(t) = 1 below a, 1 - (t - a) / s up to a + s, 0 beyond
+struct ToonLobe {
+    float a;
+    float s;
+    float b;
+    bool glossy;
+}
+func toonLobe(toon: float3) -> ToonLobe {
+    let weight: float = select(1.0f, toon.x, abs(toon.x) > 0.0f);
+    let a: float = clamp(toon.y / weight, 1e-5f, 1.0f) * PI / 2.0f;
+    let s: float = clamp(toon.z / weight, 0.0f, 1.0f) * PI / 2.0f;
+    return ToonLobe(a, s, min(a + s, PI / 2.0f), toon.x < 0.0f);
+}
+func toonProfile(t: float, lobe: ToonLobe) -> float {
+    return t < lobe.a ? 1.0f : max(1.0f - (t - lobe.a) / max(lobe.s, BIAS), 0.0f);
+}
+
+// G(t) = integral_0^t P cos sin = sin(min(t, a))^2 / 2 + (1 + a / s) * (cos(2a) - cos(2t)) / 4
+//      - ((sin(2t) / 8 - t * cos(2t) / 4) - (sin(2a) / 8 - a * cos(2a) / 4)) / s beyond a
+// H(t) = integral_0^t P sin = 1 - cos(min(t, a)) + (1 + a / s) * (cos(a) - cos(t))
+//      - ((sin(t) - t * cos(t)) - (sin(a) - a * cos(a))) / s beyond a
+func toonIntegral(t: float, lobe: ToonLobe) -> float {
+    let a: float = lobe.a;
+    let core: float = lobe.glossy ? 1.0f - cos(min(t, a)) : sin(min(t, a)) * sin(min(t, a)) / 2.0f;
+    if (!(t > a && lobe.s > 0.0f)) {
+        return core;
+    }
+    if (lobe.glossy) {
+        return core + (1.0f + a / lobe.s) * (cos(a) - cos(t))
+            - ((sin(t) - t * cos(t)) - (sin(a) - a * cos(a))) / lobe.s;
+    }
+    return core + (1.0f + a / lobe.s) * (cos(2.0f * a) - cos(2.0f * t)) / 4.0f
+        - ((sin(2.0f * t) / 8.0f - t * cos(2.0f * t) / 4.0f)
+        - (sin(2.0f * a) / 8.0f - a * cos(2.0f * a) / 4.0f)) / lobe.s;
+}
+
+// t in [0, b] where the integral reaches target, from the core's closed form or the ramp's middle by 8 Newton steps
+func toonInvert(target: float, lobe: ToonLobe) -> float {
+    let core: float = lobe.glossy ? acos(clamp(1.0f - target, -1.0f, 1.0f)) : asin(min(sqrt(2.0f * target), 1.0f));
+    var t: float = core < lobe.a ? core : (lobe.a + lobe.b) / 2.0f;
+    for (var k: int = 0; k < 8; k++) {
+        let slope: float = toonProfile(t, lobe) * sin(t) * (lobe.glossy ? 1.0f : cos(t));
+        t = clamp(t - select(0.0f, (toonIntegral(t, lobe) - target) / slope, slope > 0.0f), 0.0f, lobe.b);
+    }
+    return t;
+}
+
+// Diffuse: f = albedo * P(theta_v) * P(theta_l) / K, K = 2 * PI * G(b)
+// Glossy: f = albedo * P(alpha) / W, W = 2 * PI * H(b), alpha from l to R = 2 * n_dot_v * n - v
+// => toonBSDF = f / albedo
+[CudaDeviceExport] public func toonBSDF(v: float3, l: float3, n: float3, toon: float3) -> float {
+    let lobe: ToonLobe = toonLobe(toon);
+    let n_dot_v: float = dot(n, v);
+    let n_dot_l: float = dot(n, l);
+    if (!(n_dot_v > 0.0f && n_dot_l > 0.0f)) {
+        return 0.0f;
+    }
+    if (lobe.glossy) {
+        return toonProfile(acos(clamp(dot(2.0f * n_dot_v * n - v, l), -1.0f, 1.0f)), lobe)
+            / (2.0f * PI * toonIntegral(lobe.b, lobe));
+    }
+    return toonProfile(acos(min(n_dot_v, 1.0f)), lobe) * toonProfile(acos(min(n_dot_l, 1.0f)), lobe)
+        / (2.0f * PI * toonIntegral(lobe.b, lobe));
+}
+
+// Diffuse PDF = P(theta_l) * n_dot_l / K, glossy PDF = P(alpha) / W
+[CudaDeviceExport] public func toonDensity(v: float3, l: float3, n: float3, toon: float3) -> float {
+    let lobe: ToonLobe = toonLobe(toon);
+    let n_dot_l: float = dot(n, l);
+    if (lobe.glossy) {
+        return toonProfile(acos(clamp(dot(2.0f * dot(n, v) * n - v, l), -1.0f, 1.0f)), lobe)
+            / (2.0f * PI * toonIntegral(lobe.b, lobe));
+    }
+    return select(0.0f, toonProfile(acos(min(n_dot_l, 1.0f)), lobe) * n_dot_l
+        / (2.0f * PI * toonIntegral(lobe.b, lobe)), n_dot_l > 0.0f);
+}
+
+// theta (or alpha) where the integral reaches u_1 times its value at b, azimuth 2 * PI * u_2 about n (or R)
+[CudaDeviceExport] public func sampleToon(v: float3, n: float3, toon: float3, u_1: float, u_2: float) -> float3 {
+    let lobe: ToonLobe = toonLobe(toon);
+    let t: float = toonInvert(u_1 * toonIntegral(lobe.b, lobe), lobe);
+    let phi: float = 2.0f * PI * u_2;
+    let axis: float3 = lobe.glossy ? normalize(2.0f * dot(n, v) * n - v) : n;
+    return tangentToWorld(float3(sin(t) * cos(phi), cos(t), sin(t) * sin(phi)), axis);
+}
+#endif
+
 // translucent_share = greyscale(translucent) / (greyscale(albedo) + greyscale(translucent))
 [CudaDeviceExport] public func translucentShare(material: Material) -> float {
     let translucent: float = rgb_to_greyscale(material.translucent);
