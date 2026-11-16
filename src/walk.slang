@@ -741,7 +741,9 @@ __extern_cpp public struct Light {
 
 public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface, Hit left, bool viewed);
+#ifndef FK_FCPT_WALK
     public float3 shadowTransmittance(Ray ray, float l);
+#endif
     public float3 shadowTransmittanceIn(Ray ray, float l, float3 extinction, uint filling, uint random_state, uint depth, uint lobe, bool surface, float length, float width, Hit left, Hit light);
     public Surface surfaceAt(Hit hit, float3 origin, uint init_random_state);
     public SampleBSDF connectHair(float3 hair, float3 albedo, float3 tint, float3 in_dir, float3 out_dir);
@@ -821,9 +823,11 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "traverseInstanceBVH($0, $1, $2)")
     __target_intrinsic(cuda, "fcptTraverseInstanceBVH($0, $1, $2, $3, $4, $5)")
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface, Hit left, bool viewed);
+#ifndef FK_FCPT_WALK
     __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
     __target_intrinsic(cuda, "fcptShadowTransmittance($0, $1)")
     public float3 shadowTransmittance(Ray ray, float l);
+#endif
     // Shadow ray transmittance through media and occluders
     __target_intrinsic(wgsl, "shadowTransmittance($0, $1)")
     __target_intrinsic(cuda, "fcptShadowTransmittanceIn($0, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)")
@@ -1286,14 +1290,31 @@ func searchCDF<S: IScene>(scene: S, start: uint2, step: uint2, count: uint, u: f
 }
 
 // Radiance the path tracer's ray from a vertex along dir receives from the environment map if it hits nothing on the way.
-[noinline] func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, is_inside: bool, dir: float3) -> float3 {
+[noinline] func skyRadiance<S: IScene>(scene: S, origin: float3, surface: Surface, is_inside: bool, dir: float3
+#ifdef FK_FCPT_WALK
+    , context: ShadowContext, random_state: uint
+#endif
+    ) -> float3 {
     let inside: bool = is_inside != wrongSide(is_inside, false, dir, surface.geometry_n);
     let ray: Ray = Ray(origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, inside), dir);
+#ifdef FK_FCPT_WALK
+    // Medium on the side of dir
+    let front: bool = dot(context.side, dir) > 0.0f;
+    return scene.env_map_sample(dir, 0u, LOBE_NONE) * scene.shadowTransmittanceIn(ray, POW32,
+        select(context.extinction_behind, context.extinction_front, front),
+        select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe,
+        context.surface && !context.fiber, context.length, context.width, noHit(), noHit());
+#else
     return scene.env_map_sample(dir, 0u, LOBE_NONE) * scene.shadowTransmittance(ray, POW32);
+#endif
 }
 
 // Next event estimation toward the environment map, drawing a direction by its luminance
-func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_inside: bool, init_random_state: uint, lobe_state: uint) -> SkySample {
+func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_inside: bool, init_random_state: uint, lobe_state: uint
+#ifdef FK_FCPT_WALK
+    , context: ShadowContext
+#endif
+    ) -> SkySample {
     let size: uint2 = scene.environmentCdfSize() - uint2(1u, 0u);
     let random_0: Random = pcg(init_random_state);
     let random_1: Random = pcg(random_0.state);
@@ -1309,7 +1330,11 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     if (!(pdf > 0.0f) || all(f == float3(0.0f))) {
         return SkySample(dir, float3(0.0f), float3(0.0f), random_3.state);
     }
-    let radiance: float3 = skyRadiance(scene, ray.origin, surface, is_inside, dir);
+    let radiance: float3 = skyRadiance(scene, ray.origin, surface, is_inside, dir
+#ifdef FK_FCPT_WALK
+        , context, random_3.state
+#endif
+        );
     return SkySample(dir, radiance, f * radiance, random_3.state);
 }
 
@@ -1687,10 +1712,19 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let samples_light: bool = nee && select(replay, replayed, scatter);
         var light: TreeSample = TreeSample(float3(0.0f), float3(0.0f), 0.0f, 0u);
         var lit: float3 = float3(0.0f);
+#ifdef FK_FCPT_WALK
+        // Shared by the vertex's light and sky samples
+        var context: ShadowContext = ShadowContext(float3(0.0f), float3(0.0f), uint2(0u), float3(0.0f), 0u, 0u, false,
+            0.0f, 0.0f, noHit(), false);
+        if (nee) {
+            context = shadowContext(surface, turned, extinction_in, filling, ray.unit_direction, b,
+                arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair, scene.outsideMedium(hit));
+        }
+#endif
         if (samples_light) {
 #ifdef FK_FCPT_WALK
             light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, sided, stream(r.seed, b + STREAM_NEE)
-                , shadowContext(surface, turned, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair, scene.outsideMedium(hit))
+                , context
                 );
 #else
             light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), stream(r.seed, b + STREAM_NEE)
@@ -1730,7 +1764,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         } else if (replay && b == stop && (!scatter || (rc != RC_SURFACE && rc != RC_ENV))) {
             if (rc == RC_LIGHT && nee && !footprint && end_type == END_SKY) {
                 // Forced reconnection to the environment direction, drawn independently of the vertex (unit Jacobian)
-                let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state);
+                let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state
+#ifdef FK_FCPT_WALK
+                    , context
+#endif
+                    );
                 return Shift(throughput * sky.color, 1.0f);
             }
             if (rc == RC_LIGHT && nee && !footprint) {
@@ -1784,7 +1822,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             // No sky sample at hair
             if (nee && AT_HAIR(false, environmentMapped(scene)) && b < scene.maxBounces()) {
-                let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state);
+                let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state
+#ifdef FK_FCPT_WALK
+                    , context
+#endif
+                    );
                 let f: float3 = throughput * sky.color;
                 var candidate: Reservoir = chain;
                 if (chain_found) {
