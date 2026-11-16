@@ -107,6 +107,69 @@ int main() {
         failed |= fabs(alone - albedo) > se || fabs(over - white) > over_se || white > 1.002 || white < 0.99
             || worst > 1e-5;
     }
+    // White velvet: alone its albedo E, over a white diffuse at most what it receives, sampled as connected and
+    // evaluated, f(l, v) = f(v, l)
+    const float VELVET_ROUGHNESSES[] = {0.1f, 0.3f, 0.6f, 1};
+    for (const float r : VELVET_ROUGHNESSES) for (const float mu : VIEWS) {
+        const Vector<float, 3> in_dir(sqrtf(1 - mu * mu), 0, -mu), v(-in_dir.x, 0, mu);
+        const Material VELVET[] = {{ZERO, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r, 0, 0, ZERO, 1},
+            {ONE, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r, 0, 0, ZERO, 1}};
+        // By quadrature as for the sheen; f(l, v) = f(v, l) where neither view's table exceeds 1
+        double albedo = 0, white = 0, alone = 0, over = 0, worst = 0, asymmetry = 0, alone2 = 0, over2 = 0;
+        for (int i = 0; i < 512; i++) for (int j = 0; j < 1024; j++) {
+            const float t = (i + 0.5f) / 512 * PI / 2, phi = (j + 0.5f) / 1024 * 2 * PI;
+            const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
+            const float f = faceBSDF(in_dir, l, n, n, VELVET[0], 1, 1, 0).x / cosf(t);
+            const float g = faceBSDF(-l, v, n, n, VELVET[0], 1, 1, 0).x / mu;
+            albedo += f * cosf(t) * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
+            white += faceBSDF(in_dir, l, n, n, VELVET[1], 1, 1, 0).x * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
+            asymmetry = fmax(asymmetry, fabs(f - g) / fmax(f, 1e-3));
+        }
+        for (unsigned i = 0; i < 1u << 18; i++) {
+            const SampleBSDF s = sampleBSDF(in_dir, n, VELVET[0], 1, 1, hash(i), Vector<float, 2>(0, 0));
+            const SampleBSDF w = sampleBSDF(in_dir, n, VELVET[1], 1, 1, hash(i), Vector<float, 2>(0, 0));
+            const SampleBSDF c = towardLobe(in_dir, w.unit_direction, n, VELVET[1], 1, 1, w.lobe, hash(i));
+            alone += s.throughput.x / (1 << 18), over += w.throughput.x / (1 << 18);
+            alone2 += s.throughput.x * s.throughput.x / (1 << 18), over2 += w.throughput.x * w.throughput.x / (1 << 18);
+            if (w.pdf > 0)
+                worst = fmax(worst, fmax(fabs(c.pdf / w.pdf - 1), fabs(c.throughput.x / w.throughput.x - 1)));
+        }
+        // 4 standard errors of the sampled means
+        const double se = 4 * sqrt(fmax(alone2 - alone * alone, 0) / (1 << 18)) + 0.002,
+            over_se = 4 * sqrt(fmax(over2 - over * over, 0) / (1 << 18)) + 0.002;
+        printf("velvet %g at cosine %g: alone %.4f of %.4f, over white %.4f of %.4f, worst mismatch %.2g, asymmetry "
+            "%.2g\n", r, mu, alone, albedo, over, white, worst, asymmetry);
+        failed |= fabs(alone - albedo) > se || fabs(over - white) > over_se || white > 1.0001 || worst > 1e-5
+            || asymmetry > 1e-3;
+    }
+    // Velvet's mean albedo over rings of view cosine and over the hemisphere, 2 * integral E(mu) * mu dmu, by midpoint
+    // quadrature, against Blender's closure integrated apart
+    const double RINGS[][4] = {{0.00011, 0.07940, 0.41787, 0.07998}, {0.03423, 0.36729, 0.69332, 0.24830},
+        {0.22433, 0.60383, 0.82573, 0.45903}};
+    const float RING_SIGMAS[] = {0.3f, 0.6f, 1};
+    for (int k = 0; k < 3; k++) {
+        double ring[3] = {}, weight[3] = {}, hemisphere = 0, off = 0;
+        for (int m = 0; m < 64; m++) {
+            const float mu = (m + 0.5f) / 64;
+            const Vector<float, 3> v(sqrtf(1 - mu * mu), 0, mu);
+            double e = 0;
+            for (int i = 0; i < 256; i++) for (int j = 0; j < 512; j++) {
+                const float t = (i + 0.5f) / 256 * PI / 2, phi = (j + 0.5f) / 512 * 2 * PI;
+                const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
+                const Material velvet = {ZERO, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, RING_SIGMAS[k], 0, 0, ZERO,
+                    1};
+                e += faceBSDF(-v, l, n, n, velvet, 1, 1, 0).x * sinf(t) * (PI / 2 / 256) * (2 * PI / 512);
+            }
+            hemisphere += 2 * e * mu / 64;
+            const float LOW[] = {0.9f, 0.4f, 0.15f}, HIGH[] = {1, 0.6f, 0.3f};
+            for (int q = 0; q < 3; q++) if (mu > LOW[q] && mu <= HIGH[q]) ring[q] += e * mu, weight[q] += mu;
+        }
+        for (int q = 0; q < 3; q++) off = fmax(off, fabs(ring[q] / weight[q] - RINGS[k][q]));
+        off = fmax(off, fabs(hemisphere - RINGS[k][3]));
+        printf("velvet %g rings %.5f %.5f %.5f, hemisphere %.5f, off by %.2g\n", RING_SIGMAS[k], ring[0] / weight[0],
+            ring[1] / weight[1], ring[2] / weight[2], hemisphere, off);
+        failed |= off > 1e-3;
+    }
     const Vector<float, 3> TINTS[] = {Vector<float, 3>(1, 0, 0), Vector<float, 3>(0, 0, 1)};
     const float WEIGHTS[] = {0.4f, 1}, TINTED_ROUGHNESSES[] = {0.1f, 0.5f}, TINTED_VIEWS[] = {1, 0.2f, 0.02f};
     for (const float weight : WEIGHTS) for (const Vector<float, 3> tint : TINTS) for (int metal = 0; metal < 2; metal++)
