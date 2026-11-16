@@ -802,6 +802,12 @@ public interface IScene {
     public Shift walkCallable(Domain dom, Reservoir r, bool replay, float scale, inout Selection sel);
     // Pixel coordinates of position seen by the previous or the current frame's camera
     public float2 pixelOf(float3 position, bool previous);
+    // Reuse on, or each path's contribution summed
+    public bool restirUsed();
+    // A path of p whose camera ray dom met nothing, its weight scale
+    public void missed(int2 p, Domain dom, float scale);
+    // Color added to p's accumulation, w its sample count
+    public void addColor(int2 p, float4 color);
 #else
     public bool storedDomainInitial(int2 p, out Domain dom);
     public bool storedDomainTemporal(int2 p, out Domain dom);
@@ -1001,6 +1007,12 @@ public struct HookScene : IScene {
     public Shift walkCallable(Domain dom, Reservoir r, bool replay, float scale, inout Selection sel);
     __target_intrinsic(cuda, "fcptPixelOf($0, $1)")
     public float2 pixelOf(float3 position, bool previous);
+    __target_intrinsic(cuda, "fcptRestirUsed()")
+    public bool restirUsed();
+    __target_intrinsic(cuda, "fcptMissed($0, $1, $2)")
+    public void missed(int2 p, Domain dom, float scale);
+    __target_intrinsic(cuda, "fcptAddColor($0, $1)")
+    public void addColor(int2 p, float4 color);
 #else
     __target_intrinsic(wgsl, "storedDomain(reservoir_initial, $0, &$1)")
     __target_intrinsic(cuda, "fcptStoredDomainInitial($0, $1)")
@@ -2588,39 +2600,59 @@ public func queuedShift<S: IScene>(scene: S, workgroup_id: uint3, local_invocati
 #endif
 
 #ifdef FK_RESTIR_PASSES
+#ifdef FK_FCPT_WALK
+// Initial candidates of p, each path from the domain of its own seed
 public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     let p: int2 = int2(global_invocation_id.xy);
     var dom: Domain = {};
     if (!scene.currentDomain(p, dom)) {
-#ifdef FK_FCPT_WALK
         scene.storeReservoirInitial(p, emptyReservoir(), dom.hit);
-#else
-        scene.storeReservoirInitial(p, Reservoir(), dom.hit);
-#endif
         return;
     }
     let pixel_seed: uint = stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y);
-#ifdef FK_FCPT_WALK
     var initial: Selection = emptySelection();
+    initial.random_state = stream(pixel_seed, STREAM_SELECT);
+    initial.sums = !scene.restirUsed();
+    // Seed of a selection of nothing, the first path's
+    initial.r.seed = stream(pixel_seed, 0u);
+    var hit: Hit = noHit();
+    let scale: float = 1.0f / float(scene.samples());
+    for (var i: uint = 0u; i < scene.samples(); i++) {
+        var r: Reservoir = emptyReservoir();
+        r.seed = stream(pixel_seed, i);
+        var path: Domain = {};
+        if (!scene.storedDomainInitial(p, r.seed, path)) {
+            scene.missed(p, path, scale);
+            continue;
+        }
+        passWalk(scene, path, r, false, scale, initial);
+        // Hit of the path the selection holds
+        if (initial.r.seed == r.seed) {
+            hit = path.hit;
+        }
+    }
+    scene.addColor(p, float4(initial.glow + select(float3(0.0f), initial.color, initial.sums), 1.0f));
+    scene.storeReservoirInitial(p, finalize(initial, 1.0f), hit);
+}
 #else
+public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
+    let p: int2 = int2(global_invocation_id.xy);
+    var dom: Domain = {};
+    if (!scene.currentDomain(p, dom)) {
+        scene.storeReservoirInitial(p, Reservoir(), dom.hit);
+        return;
+    }
+    let pixel_seed: uint = stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y);
     var initial: Selection = {};
-#endif
     initial.random_state = stream(pixel_seed, STREAM_SELECT);
     for (var i: uint = 0u; i < scene.samples(); i++) {
-#ifdef FK_FCPT_WALK
-        var r: Reservoir = emptyReservoir();
-#else
         var r: Reservoir = {};
-#endif
         r.seed = stream(pixel_seed, i);
-#ifdef FK_FCPT_WALK
-        passWalk(scene, dom, r, false, 1.0f / float(scene.samples()), initial);
-#else
         walk(scene, dom, r, false, 1.0f / float(scene.samples()), initial);
-#endif
     }
     scene.storeReservoirInitial(p, finalize(initial, 1.0f), dom.hit);
 }
+#endif
 
 // Temporal reuse with the shifts of the temporal round
 public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
