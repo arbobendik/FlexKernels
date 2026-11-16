@@ -19,10 +19,11 @@ Reservoir HookScene_loadReservoirTemporal_0(Vector<int32_t, 2> p) { return tempo
 // Domain of the sample of seed at p: x0 its seed, x1 on the pixel's center at depth 1 under a still pinhole, off it
 // in x by edge pixels
 static float edge = 0;
+static bool missed = false;
 static Domain domainOf(Vector<int32_t, 2> p, uint32_t seed) {
     const float x = (p.x + 0.5f + edge) / W * 2 - 1, y = (1 - (p.y + 0.5f) / H) * 2 - 1;
     return Domain{Vector<float, 3>(float(seed), 0, 0), Vector<float, 3>(x, y, 1),
-        Hit{Vector<float, 2>(0, 0), uint32_t(p.y * W + p.x), 0, 0, sqrtf(x * x + y * y + 1)}, 0};
+        Hit{Vector<float, 2>(0, 0), missed ? 0xFFFFFFFFu : uint32_t(p.y * W + p.x), 0, 0, sqrtf(x * x + y * y + 1)}, 0};
 }
 // Partners off the image and in its last column have no domain
 bool HookScene_storedDomainTemporal_0(Vector<int32_t, 2> q, uint32_t seed, Domain* dom) {
@@ -38,11 +39,29 @@ Vector<uint32_t, 4> HookScene_reservoirPrevious_0(Vector<int32_t, 2> q, uint32_t
     const Reservoir& r = previous[q.y * W + q.x];
     return Vector<uint32_t, 4>(r.seed, r.path, *(const uint32_t*)&r.w, *(const uint32_t*)&r.c);
 }
+// Previous samples' seeds trace no domain in the current frame
+static bool previous_unseen = false;
 bool HookScene_storedDomainInitial_0(Vector<int32_t, 2> p, uint32_t seed, Domain* dom) {
     *dom = domainOf(p, seed);
-    return inside(p);
+    return inside(p) && !(previous_unseen && seed >= 2000);
 }
-Domain HookScene_previousDomain_0(Vector<int32_t, 2> q, uint32_t seed) { return domainOf(q, seed); }
+// The previous frame's domains moved off the current ones by moved in x0
+static float moved = 0;
+Domain HookScene_previousDomain_0(Vector<int32_t, 2> q, uint32_t seed) {
+    Domain dom = domainOf(q, seed);
+    dom.x0.y = moved;
+    return dom;
+}
+static int shifted_previous = 0, walked = 0, asked[2] = {};
+Shift HookScene_shiftPrevious_0(Domain, Reservoir) { return shifted_previous++, Shift{Vector<float, 3>(1, 1, 1), 1}; }
+Shift HookScene_walkCallable_0(Domain, Reservoir, bool replay, float, Selection*) {
+    return walked += replay, Shift{Vector<float, 3>(1, 1, 1), 1};
+}
+// The pinhole of domainOf
+Vector<float, 2> HookScene_pixelOf_0(Vector<float, 3> x, bool previous) {
+    asked[previous]++;
+    return Vector<float, 2>((x.x / x.z * 0.5f + 0.5f) * W, (0.5f - x.y / x.z * 0.5f) * H);
+}
 bool HookScene_currentDomain_0(Vector<int32_t, 2> p, Domain* dom) { return HookScene_storedDomainInitial_0(p, 0, dom); }
 bool HookScene_sceneUnchanged_0() { return unchanged; }
 bool HookScene_previousScenes_0() { return scenes; }
@@ -50,10 +69,15 @@ Matrix<float, 3, 3> HookScene_viewMatrix_0() { return Matrix<float, 3, 3>(1, 0, 
 Matrix<float, 3, 3> HookScene_prevViewMatrix_0() { return HookScene_viewMatrix_0(); }
 Vector<float, 3> HookScene_cameraPosition_0() { return Vector<float, 3>(0, 0, 0); }
 Vector<float, 3> HookScene_prevCameraPosition_0() { return Vector<float, 3>(0, 0, 0); }
-Vector<uint32_t, 4> HookScene_temporalShift_0(Vector<int32_t, 2>, uint32_t) {
-    return slot_reads++, Vector<uint32_t, 4>(0);
+// Slots written this frame, and reads of slots not written
+static bool written[2][W * H];
+static int stale_reads = 0;
+Vector<uint32_t, 4> HookScene_temporalShift_0(Vector<int32_t, 2> p, uint32_t t) {
+    return slot_reads++, stale_reads += !written[t][p.y * W + p.x], Vector<uint32_t, 4>(0);
 }
-void HookScene_storeTemporalShift_0(Vector<int32_t, 2>, uint32_t, Vector<uint32_t, 4>) {}
+void HookScene_storeTemporalShift_0(Vector<int32_t, 2> p, uint32_t t, Vector<uint32_t, 4>) {
+    written[t][p.y * W + p.x] = true;
+}
 Vector<uint32_t, 4> HookScene_duplication_0(Vector<int32_t, 2>) { return Vector<uint32_t, 4>(0); }
 uint32_t HookScene_restirDecorrelation_0() { return 0; }
 void HookScene_storeReservoirTemporal_0(Vector<int32_t, 2>, Reservoir, Hit) {}
@@ -146,5 +170,53 @@ int main() {
     edge = 0;
     failed += off > 0;
     printf("temporal neighbour at a pixel's edge: %d of %d off their pixel%s\n", off, W * H, off > 0 ? "  FAILED" : "");
+    // Shift passes: job 1 into the previous frame's scene, job 0 and the spatial round through the consumer's walk
+    const auto drain = [&](void (*count)(Vector<uint32_t, 3>, uint32_t), void (*prepass)(Vector<uint32_t, 3>, uint32_t),
+        void (*shift)(Vector<uint32_t, 3>, uint32_t)) {
+        for (uint32_t& word : queue) word = 0;
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) count(Vector<uint32_t, 3>(x, y, 0), 0);
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) prepass(Vector<uint32_t, 3>(x, y, 0), 0);
+        for (uint32_t group = 0; group < queue[0] * queue[1]; group++) for (uint32_t local = 0; local < 64; local++)
+            shift(Vector<uint32_t, 3>(group % 65535, group / 65535, 0), local);
+    };
+    unchanged = false, scenes = true, moved = 1;
+    drain(restir_temporal_count_hook, restir_temporal_prepass_hook, restir_temporal_shift_hook);
+    const int temporal_walked = walked;
+    walked = 0;
+    drain(restir_count_hook, restir_prepass_hook, restir_shift_hook);
+    const bool through = shifted_previous == W * H && temporal_walked == W * H && walked == int(expected.size());
+    failed += !through;
+    printf("shift passes: %d previous-scene shifts, %d walks in the temporal and %d in the spatial round%s\n",
+        shifted_previous, temporal_walked, walked, through ? "" : "  FAILED");
+    // Reprojection by the consumer's pixelOf; a missed sample keeps no neighbour but its own pixel's
+    asked[0] = asked[1] = 0;
+    int kept = 0, lost = 0;
+    for (int run = 0; run < 2; run++) {
+        moved = run, missed = true;
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+            Domain dom = domainOf(Vector<int32_t, 2>(x, y), 1000 + y * W + x);
+            const Vector<int32_t, 2> q = temporalNeighbor_0(Vector<int32_t, 2>(x, y), &dom, 1000 + y * W + x);
+            run ? lost += q.x < 0 : kept += q.x == x && q.y == y;
+        }
+        missed = false;
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+            Domain dom = domainOf(Vector<int32_t, 2>(x, y), 1000 + y * W + x);
+            temporalNeighbor_0(Vector<int32_t, 2>(x, y), &dom, 1000 + y * W + x);
+        }
+    }
+    moved = 0;
+    const bool projected = kept == W * H && lost == W * H && asked[1] == W * H;
+    failed += !projected;
+    printf("reprojection: %d previous pixels asked of pixelOf; missed samples %d kept still, %d without a neighbour "
+        "moved%s\n", asked[1], kept, lost, projected ? "" : "  FAILED");
+    // A previous sample without a domain here runs no shift, and restir_temporal reads the zero its prepass wrote
+    unchanged = false, scenes = true, moved = 1, previous_unseen = true, slot_reads = stale_reads = 0;
+    for (auto& slots : written) for (bool& w : slots) w = false;
+    drain(restir_temporal_count_hook, restir_temporal_prepass_hook, restir_temporal_shift_hook);
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) restir_temporal_hook(Vector<uint32_t, 3>(x, y, 0));
+    previous_unseen = false, moved = 0;
+    failed += slot_reads == 0 || stale_reads > 0;
+    printf("unseen previous samples: %d shift slots read, %d not written this frame%s\n", slot_reads, stale_reads,
+        slot_reads == 0 || stale_reads > 0 ? "  FAILED" : "");
     return failed;
 }
