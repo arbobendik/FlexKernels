@@ -224,6 +224,10 @@ __extern_cpp public struct Material {
     // 1 for a sheen lobe of Ashikhmin's velvet, 0 for Charlie's
     __extern_cpp public float velvet = 0.0f;
 #endif
+#ifdef FK_TOON
+    // (w, w * Size, w * Smooth) of a Toon BSDF taking weight |w|, glossy for w < 0
+    __extern_cpp public float3 toon = float3(0.0f);
+#endif
 };
 
 __extern_cpp public struct Random {
@@ -467,6 +471,10 @@ __extern_cpp public struct BSDFLobes {
     __extern_cpp public float3 tangent;
     __extern_cpp public float2 alphas;
     __extern_cpp public float visible;
+#ifdef FK_TOON
+    // Share of the diffuse lobe the toon samples
+    __extern_cpp public float toon_share = 0.0f;
+#endif
 }
 
 // Tangent and roughness along tangent and bitangent, 0 when isotropic
@@ -533,6 +541,14 @@ __extern_cpp public struct AnisotropicFrame {
         sheen = material.sheen / max(albedo, 1.0f);
         view = v;
     }
+#ifdef FK_TOON
+    // Base lobes scaled by 1 - |w|, the toon chosen with the diffuse lobe by |w| * greyscale(albedo)
+    var toon_component: float = 0.0f;
+    if (abs(material.toon.x) > 0.0f) {
+        scale *= 1.0f - min(abs(material.toon.x), 1.0f);
+        toon_component = min(abs(material.toon.x), 1.0f) * rgb_to_greyscale(material.albedo);
+    }
+#endif
     var F: float3 = mix(F_dielectric, material.albedo, material.metallic) * scale;
     let F_greyscale: float = rgb_to_greyscale(F);
     // BSDF weights (these are artistic choices to balance the lobes)
@@ -545,9 +561,16 @@ __extern_cpp public struct AnisotropicFrame {
     let diffuse_component: float = max(rgb_to_greyscale(diffuse_weight), 0.0f);
     let refract_component: float = max(rgb_to_greyscale(refract_weight) * sign(length(refracted)), 0.0f);
     // Calculate sampling probabilities
+#ifdef FK_TOON
+    let total_component: float = reflect_component + diffuse_component + refract_component + sheen_component
+        + toon_component;
+    let total_component_inv: float = 1.0f / max(total_component, BIAS);
+    let p_diffuse: float = (diffuse_component + sheen_component + toon_component) * total_component_inv;
+#else
     let total_component: float = reflect_component + diffuse_component + refract_component + sheen_component;
     let total_component_inv: float = 1.0f / max(total_component, BIAS);
     let p_diffuse: float = (diffuse_component + sheen_component) * total_component_inv;
+#endif
     let p_reflect: float = reflect_component * total_component_inv;
     let p_refract: float = refract_component * total_component_inv;
     // Anisotropic G1_v * D, the VNDF's numerator
@@ -555,7 +578,13 @@ __extern_cpp public struct AnisotropicFrame {
     if (frame.alphas.x > 0.0f) {
         visible = anisotropicG1(anisotropicLocal(v, frame.tangent, n_i), frame.alphas) * anisotropicD(anisotropicLocal(ggx_n, frame.tangent, n_i), frame.alphas);
     }
+#ifdef FK_TOON
+    return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse,
+        p_reflect, p_refract, 0.0f, sheen, view, frame.tangent, frame.alphas, visible,
+        toon_component / max(diffuse_component + sheen_component + toon_component, BIAS));
+#else
     return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect, p_refract, 0.0f, sheen, view, frame.tangent, frame.alphas, visible);
+#endif
 }
 
 // Charlie sheen (Estevez and Kulla 2017) with Ashikhmin's visibility, r = max(r, SHEEN_LEAST)
@@ -864,6 +893,24 @@ func toonInvert(target: float, lobe: ToonLobe) -> float {
 }
 
 // SampleBSDF takes in incoming direction, surface normal, material and random state and returns an outgoing direction with throughput according to the BSDF for global illumination
+#ifdef FK_TOON
+// Diffuse lobe holding the toon by share t:
+// PDF = (1 - t) * PDF_base + t * p_diffuse * PDF_toon
+// BSDF * n_dot_l = BSDF_base * n_dot_l + |w| * albedo * f_toon * n_dot_l
+// => throughput = (throughput_base * PDF_base + |w| * albedo * f_toon * n_dot_l) / PDF
+func toonMix(inout drawn: SampleBSDF, v: float3, n_i: float3, material: Material, lobes: BSDFLobes) {
+    let l: float3 = drawn.unit_direction;
+    // The base draws nothing behind but through translucency
+    let base: float = max(drawn.pdf, 0.0f);
+    let pdf: float = (1.0f - lobes.toon_share) * base
+        + lobes.toon_share * lobes.p_diffuse * toonDensity(v, l, n_i, material.toon);
+    let f: float3 = min(abs(material.toon.x), 1.0f) * material.albedo * toonBSDF(v, l, n_i, material.toon)
+        * max(dot(n_i, l), 0.0f);
+    drawn.throughput = select(float3(0.0f), (drawn.throughput * base + f) / pdf, pdf > 0.0f);
+    drawn.pdf = pdf;
+}
+#endif
+
 [CudaDeviceExport] public func sampleBSDF(in_dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, random_init: uint, screen_space: float2) -> SampleBSDF {
     var random_state: uint = random_init;
     // Basic dot products
@@ -889,6 +936,21 @@ func toonInvert(target: float, lobe: ToonLobe) -> float {
         sample.random_state = random_d_2.state;
         // Sample cosine weighted hemisphere
         let cosine_hemisphere: float3 = sampleCosWeightedHemisphere(random_d_1.value, random_d_2.value);
+#ifdef FK_TOON
+        if (lobes.toon_share > 0.0f) {
+            // The toon's own sampling past (1 - t) of the diffuse lobe, else the base, behind by translucent_share
+            let toon: bool = random_p.value >= lobes.p_diffuse * (1.0f - lobes.toon_share);
+            let through: bool = random_p.value < lobes.p_diffuse * (1.0f - lobes.toon_share) * lobes.translucent_share;
+            let toward: float = select(cosine_hemisphere.y, - cosine_hemisphere.y, through);
+            sample.unit_direction = toon ? sampleToon(v, n_i, material.toon, random_d_1.value, random_d_2.value)
+                : tangentToWorld(float3(cosine_hemisphere.x, toward, cosine_hemisphere.z), n_i);
+            sample.throughput = lobeThroughput(sample.unit_direction, n_i, alpha, material, lobes, 0u);
+            sample.pdf = lobeDensity(dot(n_i, sample.unit_direction), 0.0f, n_i_dot_v, alpha, lobes, eta_i, eta_o, 0u);
+            sample.refracted = dot(n_i, sample.unit_direction) < 0.0f;
+            toonMix(sample, v, n_i, material, lobes);
+            return sample;
+        }
+#endif
         // Behind the surface with probability translucent_share: cosine sample mirrored across the tangent plane
         let through: bool = random_p.value < lobes.p_diffuse * lobes.translucent_share;
         let toward: float = select(cosine_hemisphere.y, - cosine_hemisphere.y, through);
@@ -942,7 +1004,16 @@ func toonInvert(target: float, lobe: ToonLobe) -> float {
     if (!(pdf > 0.0f)) {
         return SampleBSDF();
     }
+#ifdef FK_TOON
+    var sample: SampleBSDF = SampleBSDF(out_dir, lobeThroughput(out_dir, n_i, alpha, material, lobes, lobe),
+        random_state, lobe == LOBE_REFRACT, lobe, pdf);
+    if (lobe == LOBE_DIFFUSE && lobes.toon_share > 0.0f) {
+        toonMix(sample, v, n_i, material, lobes);
+    }
+    return sample;
+#else
     return SampleBSDF(out_dir, lobeThroughput(out_dir, n_i, alpha, material, lobes, lobe), random_state, lobe == LOBE_REFRACT, lobe, pdf);
+#endif
 }
 
 // I = L * PI * radius^2, the sphere's projected area
