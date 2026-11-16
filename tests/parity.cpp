@@ -96,8 +96,8 @@ __device__ Result evaluate(const Case& c) {
         r.connected[lobe] = vec(weighted);
         r.connected_pdf[lobe] = s.pdf;
     }
-    FixedArray<Vec, 4> throughputs;
-    FixedArray<float, 4> pdfs;
+    FixedArray<Vec, 5> throughputs;
+    FixedArray<float, 5> pdfs;
     r.bsdf = BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19],
         dot_0(vec(c.in + 9), -in_dir) * dot_0(vec(c.in + 9), out_dir) <= 0, c.random_state, &throughputs, &pdfs);
     r.nee = neeDecision(material, dot_0(n, -in_dir), c.in[18], c.in[19]);
@@ -118,7 +118,7 @@ __device__ Result evaluate(const Case& c) {
     BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, c.random_state, &throughputs, &pdfs);
     const float pdf = 0.5f + c.in[17];
     float balance[3] = {}, power[3] = {};
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
         if (!(pdfs[i] > 0)) continue;
         const float ratio = pdfs[i] / pdf;
         const float t[] = {throughputs[i].x * pdfs[i], throughputs[i].y * pdfs[i], throughputs[i].z * pdfs[i]};

@@ -1,7 +1,7 @@
 // sampleBSDF's lobes toward a given out_dir for the tests, by their BSDF and PDF functions
 using TermsV = Vector<float, 3>;
 // sampleBSDF's lobe toward a given out_dir by its half vector terms and its BSDF and PDF functions, as the walk's
-// replay takes it: diffuse 0, refract 1, reflect 2, sheen 4, directions it can't sample carrying nothing
+// replay takes it: diffuse 0, refract 1, reflect 2, sheen 4, toon 6, directions it can't sample carrying nothing
 static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m, float eta_i, float eta_o,
     unsigned lobe, unsigned random_init) {
     const float n_dot_v = dot_0(n, negate_0(in_dir)), alpha = m.roughness * m.roughness;
@@ -28,6 +28,14 @@ static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m
         h.translucent_share = translucentShare(m);
         pdf = sheenVelvetPDF(n_i_dot_l, 0, n_i_dot_v, alpha, h, eta_i, eta_o);
         throughput = sheenVelvetBSDF(out_dir, n_i, alpha, m, h);
+#ifndef FK_UNTOON
+    } else if (lobe == 6) {
+        BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, sampledHalf(in_dir, n, m, random_init, frame), m,
+            eta_i, eta_o, frame);
+        h.translucent_share = translucentShare(m);
+        pdf = toonPDF(n_i_dot_l, dot_0(out_dir, h.toon_axis), n_i_dot_v, alpha, h, eta_i, eta_o);
+        throughput = toonBSDF(out_dir, n_i, alpha, m, h);
+#endif
     } else {
         BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, reflectedHalf(in_dir, out_dir), m, eta_i, eta_o, frame);
         h.translucent_share = translucentShare(m);
@@ -41,8 +49,8 @@ static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m
 // BSDF toward out_dir, across the face where in_dir and out_dir lie on opposite sides of g_n
 static TermsV faceBSDF(TermsV in_dir, TermsV out_dir, TermsV n, TermsV g_n, Material m, float eta_i, float eta_o,
     unsigned random_state) {
-    FixedArray<TermsV, 4> throughputs;
-    FixedArray<float, 4> pdfs;
+    FixedArray<TermsV, 5> throughputs;
+    FixedArray<float, 5> pdfs;
     return BSDF(in_dir, out_dir, n, m, eta_i, eta_o, dot_0(g_n, negate_0(in_dir)) * dot_0(g_n, out_dir) <= 0,
         random_state, &throughputs, &pdfs);
 }

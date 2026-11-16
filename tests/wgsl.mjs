@@ -97,19 +97,19 @@ fn parity_toward(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: 
 // BSDF toward out_dir, across the face where in_dir and out_dir lie on opposite sides of g_n
 fn parity_face(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, g_n: vec3<f32>, material: Material, eta_i: f32,
     eta_o: f32, random_state: u32) -> vec3<f32> {
-    var throughputs: array<vec3<f32>, 4>;
-    var pdfs: array<f32, 4>;
+    var throughputs: array<vec3<f32>, 5>;
+    var pdfs: array<f32, 5>;
     return BSDF(in_dir, out_dir, n, material, eta_i, eta_o, dot(g_n, - in_dir) * dot(g_n, out_dir) <= 0.0,
         random_state, &throughputs, &pdfs);
 }
 // BSDF's lobes by the sky's balance or the light's power heuristic against a sample of PDF pdf
 fn parity_nee(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: Material, eta_i: f32, eta_o: f32,
     refracted: bool, pdf: f32, power: bool, random_state: u32) -> vec3<f32> {
-    var throughputs: array<vec3<f32>, 4>;
-    var pdfs: array<f32, 4>;
+    var throughputs: array<vec3<f32>, 5>;
+    var pdfs: array<f32, 5>;
     BSDF(in_dir, out_dir, n, material, eta_i, eta_o, refracted, random_state, &throughputs, &pdfs);
     var f = vec3<f32>(0.0);
-    for (var i = 0u; i < 4u; i++) {
+    for (var i = 0u; i < 5u; i++) {
         if (pdfs[i] > 0.0) {
             let ratio = pdfs[i] / pdf;
             if (power) {
