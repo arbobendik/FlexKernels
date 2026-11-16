@@ -2338,7 +2338,7 @@ func temporalIdentity<S: IScene>(scene: S, t: uint, source: Domain, target: Doma
 
 // Temporal round job t of p, previous sample into its current domain (t = 0), current into its previous (t = 1), with
 // the domains of the sample shifted, none for the identity
-public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJob) -> bool {
+public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJob, target: bool) -> bool {
     let initial: Reservoir = scene.loadReservoirInitial(p);
     var dom: Domain = {};
     if (t > 1u || !scene.storedDomainInitial(p, initial.seed, dom)) {
@@ -2348,12 +2348,20 @@ public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJ
     if (q.x < 0) {
         return false;
     }
+    // Count and prepass, target false, trace the target only where the identity can hold
     if (t == 0u) {
         job.r = scene.loadReservoirPrevious(q);
+        if (!target && !scene.sceneUnchanged()) {
+            return job.r.w > 0.0f;
+        }
         return job.r.w > 0.0f && scene.storedDomainInitial(p, job.r.seed, job.dom)
             && !temporalIdentity(scene, 0u, scene.previousDomain(q, job.r.seed), job.dom);
     }
-    job = ShiftJob(scene.previousDomain(q, initial.seed), initial);
+    job.r = initial;
+    if (!target && !scene.sceneUnchanged() && scene.previousScenes()) {
+        return job.r.w > 0.0f;
+    }
+    job.dom = scene.previousDomain(q, initial.seed);
     return job.r.w > 0.0f && !temporalIdentity(scene, 1u, job.dom, dom);
 }
 #else
@@ -2377,13 +2385,22 @@ public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJ
 #endif
 
 // Spatial round job t of p: its sample into the domain of partner t
-public func spatialJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJob) -> bool {
+public func spatialJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJob
+#ifdef FK_FCPT_WALK
+    , target: bool
+#endif
+    ) -> bool {
     if (t > 2u || any(p >= int2(scene.renderSize()))) {
         return false;
     }
     job.r = scene.loadReservoirTemporal(p);
 #ifdef FK_FCPT_WALK
-    return job.r.w > 0.0f && scene.storedDomainTemporal(partner(scene, p, t), job.r.seed, job.dom);
+    let q: int2 = partner(scene, p, t);
+    // Count and prepass, target false, judge the partner by the image alone
+    if (!target) {
+        return job.r.w > 0.0f && all(q >= int2(0)) && all(q < int2(scene.renderSize()));
+    }
+    return job.r.w > 0.0f && scene.storedDomainTemporal(q, job.r.seed, job.dom);
 #else
     return job.r.w > 0.0f && scene.storedDomainTemporal(partner(scene, p, t), job.dom);
 #endif
@@ -2406,7 +2423,11 @@ public func temporalBins<S: IScene>(scene: S, p: int2) -> uint[3] {
 #else
         var job: ShiftJob = {};
 #endif
+#ifdef FK_FCPT_WALK
+        if (temporalJob(scene, p, t, job, false)) {
+#else
         if (temporalJob(scene, p, t, job)) {
+#endif
             bins[t] = shiftBin(job.r);
         }
     }
@@ -2421,7 +2442,11 @@ public func spatialBins<S: IScene>(scene: S, p: int2) -> uint[3] {
 #else
         var job: ShiftJob = {};
 #endif
+#ifdef FK_FCPT_WALK
+        if (spatialJob(scene, p, t, job, false)) {
+#else
         if (spatialJob(scene, p, t, job)) {
+#endif
             bins[t] = shiftBin(job.r);
         }
     }
@@ -2686,12 +2711,15 @@ public func restir_temporal_shift<S: IScene>(scene: S, workgroup_id: uint3, loca
 #else
         var shift_job: ShiftJob = {};
 #endif
-        temporalJob(scene, p, job >> 28u, shift_job);
 #ifdef FK_FCPT_WALK
-        // Job 1 shifts into the previous frame's scene
-        let shifted: Shift = job >> 28u == 1u ? scene.shiftPrevious(shift_job.dom, shift_job.r)
-            : passShift(scene, shift_job.dom, shift_job.r);
+        // No shift where the target is missing; job 1 shifts into the previous frame's scene
+        var shifted: Shift = Shift(float3(0.0f), 0.0f);
+        if (temporalJob(scene, p, job >> 28u, shift_job, true)) {
+            shifted = job >> 28u == 1u ? scene.shiftPrevious(shift_job.dom, shift_job.r)
+                : passShift(scene, shift_job.dom, shift_job.r);
+        }
 #else
+        temporalJob(scene, p, job >> 28u, shift_job);
         let shifted: Shift = shift(scene, shift_job.dom, shift_job.r);
 #endif
         scene.storeTemporalShift(p, job >> 28u, uint4(asuint(shifted.f), asuint(shifted.jac)));
@@ -2723,10 +2751,14 @@ public func restir_shift<S: IScene>(scene: S, workgroup_id: uint3, local_invocat
 #else
         var shift_job: ShiftJob = {};
 #endif
-        spatialJob(scene, p, job >> 28u, shift_job);
 #ifdef FK_FCPT_WALK
-        let shifted: Shift = passShift(scene, shift_job.dom, shift_job.r);
+        // No shift where the partner's domain is missing
+        var shifted: Shift = Shift(float3(0.0f), 0.0f);
+        if (spatialJob(scene, p, job >> 28u, shift_job, true)) {
+            shifted = passShift(scene, shift_job.dom, shift_job.r);
+        }
 #else
+        spatialJob(scene, p, job >> 28u, shift_job);
         let shifted: Shift = shift(scene, shift_job.dom, shift_job.r);
 #endif
         scene.storeShiftData(p, job >> 28u, uint4(asuint(shifted.f), asuint(shifted.jac)));
@@ -2745,17 +2777,14 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
 #else
         scene.storeReservoirPrevious(p, Reservoir(), dom.hit);
 #endif
+#ifndef FK_FCPT_WALK
         let screen_space: float2 = float2(global_invocation_id.xy) / float2(scene.renderSize().xy) * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
         // If there is no triangle render ambient color
-#ifdef FK_FCPT_WALK
-        scene.storeColor(p, 0u, float4(environment(scene, normalize(mul(float3(screen_space, 1.0f), scene.invViewMatrix())),
-            0u, LOBE_NONE), 1.0f));
-#else
         scene.storeColor(p, 0u, float4(environment(scene, normalize(mul(float3(screen_space, 1.0f), scene.invViewMatrix()))), 1.0f));
-#endif
         if (scene.isTemporal() == 1u) {
             scene.storeColor(p, 1u, float4(0.0f));
         }
+#endif
         return;
     }
     let r: Reservoir = scene.loadReservoirTemporal(p);
@@ -2799,19 +2828,19 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
     offerShifted(sel, r, Shift(r.f, 1.0f), canonical_mis);
     scene.storeReservoirPrevious(p, finalize(sel, c_sum), dom.hit);
     scene.storePreviousLayer(p, 5u, uint4(asuint(dom.hit.uv), 0u, 0u));
-    let primary: Surface = scene.surfaceAt(dom.hit, dom.x1, sel.random_state);
 #ifdef FK_FCPT_WALK
-    // Primary hit's emission added by the walk
-    let emission: float3 = float3(0.0f);
+    // Unclamped, the primary hit's emission added by the walk
+    scene.addColor(p, float4(sel.color, 0.0f));
 #else
+    let primary: Surface = scene.surfaceAt(dom.hit, dom.x1, sel.random_state);
     let emission: float3 = select(primary.material.emissive * max(sign(dot(normalize(dom.x0 - dom.x1), primary.smooth_n)), 0.0f), float3(0.0f), primary.skip);
-#endif
     // Clamp color to 16 bit float
     let final_color: float3 = clamp(sel.color + emission, float3(0.0f), float3(65519.0f));
     scene.storeColor(p, 0u, float4(final_color, 1.0f));
     if (scene.isTemporal() == 1u) {
         scene.storeColor(p, 1u, float4(dom.x1, float(dom.hit.instance_index)));
     }
+#endif
 }
 #endif
 
