@@ -1726,6 +1726,12 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
         } else if (replay && b == stop && (!scatter || (rc != RC_SURFACE && rc != RC_ENV))) {
             if (rc == RC_LIGHT && nee && !footprint && end_type == END_SKY) {
+#ifdef FK_FCPT_WALK
+                // No sky sample at hair, as generated
+                if (hair) {
+                    return fail;
+                }
+#endif
                 // Forced reconnection to the environment direction, drawn independently of the vertex (unit Jacobian)
                 let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state
 #ifdef FK_FCPT_WALK
