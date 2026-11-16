@@ -90,6 +90,9 @@ build/cpp-passes/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp-passes
 	$(SLANGC) $(SLANGFLAGS) -DFK_RESTIR=1 -DFK_FCPT_WALK=1 -DFK_RESTIR_PASSES=1 $< -target cpp -o $@
 
+build/passes-cpu: tests/passes.cpp build/cpp-passes/pathtracer.cpp
+	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-passes $< -o $@
+
 build/summing-cpu: tests/summing.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
@@ -138,7 +141,7 @@ test: test-cpu test-wgsl test-vulkan
 test-cpu: build/parity-cpu build/parity-untoon-cpu build/albedo-cpu build/coverage-cpu build/cones-cpu \
 		build/layers-cpu build/pathray-cpu build/media-cpu build/shadowmedia-cpu \
 		build/flight-cpu build/scatternee-cpu build/walk-cpu \
-		build/summing-cpu
+		build/summing-cpu build/passes-cpu
 	$< < tests/golden-cuda.txt > build/cpu.txt
 	build/parity-untoon-cpu < tests/golden-cuda.txt | cmp - build/cpu.txt
 	build/albedo-cpu
@@ -152,6 +155,7 @@ test-cpu: build/parity-cpu build/parity-untoon-cpu build/albedo-cpu build/covera
 	build/scatternee-cpu
 	build/walk-cpu
 	build/summing-cpu
+	build/passes-cpu
 	node tests/compare.mjs tests/golden-cuda.txt build/cpu.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cpu.txt 58
 
