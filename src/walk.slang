@@ -784,13 +784,27 @@ public interface IScene {
     public float3 prevCameraPosition();
     public int4 pairing(int2 texel, uint t);
     public uint4 reservoirPrevious(int2 q, uint layer);
+#ifdef FK_FCPT_WALK
+    // Domain of the sample of seed as the previous frame traced it at q
+    public Domain previousDomain(int2 q, uint seed);
+#else
     public Domain previousDomain(int2 q);
+#endif
     public uint restirNeighbours();
     public Reservoir loadReservoirPrevious(int2 q);
     public Reservoir loadReservoirInitial(int2 p);
     public Reservoir loadReservoirTemporal(int2 p);
+#ifdef FK_FCPT_WALK
+    // Domain of the sample of seed at p
+    public bool storedDomainInitial(int2 p, uint seed, out Domain dom);
+    public bool storedDomainTemporal(int2 p, uint seed, out Domain dom);
+    // The scene the previous frame saw, and whether shifts into it reach it
+    public bool sceneUnchanged();
+    public bool previousScenes();
+#else
     public bool storedDomainInitial(int2 p, out Domain dom);
     public bool storedDomainTemporal(int2 p, out Domain dom);
+#endif
     public uint queueCountAdd(uint bin, uint jobs);
     public uint queueCountLoad(uint bin);
     public uint queueCursorAdd(uint bin, uint jobs);
@@ -951,9 +965,14 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "textureLoad(reservoir_prev, $0, $1, 0)")
     __target_intrinsic(cuda, "fcptReservoirPrevious($0, $1)")
     public uint4 reservoirPrevious(int2 q, uint layer);
+#ifdef FK_FCPT_WALK
+    __target_intrinsic(cuda, "fcptPreviousDomain($0, $1)")
+    public Domain previousDomain(int2 q, uint seed);
+#else
     __target_intrinsic(wgsl, "previousDomain($0)")
     __target_intrinsic(cuda, "fcptPreviousDomain($0)")
     public Domain previousDomain(int2 q);
+#endif
     __target_intrinsic(wgsl, "uniforms_uint.restir_neighbours")
     __target_intrinsic(cuda, "fcptRestirNeighbours()")
     public uint restirNeighbours();
@@ -966,12 +985,23 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "loadReservoir(reservoir_temp, $0)")
     __target_intrinsic(cuda, "fcptLoadReservoirTemporal($0)")
     public Reservoir loadReservoirTemporal(int2 p);
+#ifdef FK_FCPT_WALK
+    __target_intrinsic(cuda, "fcptStoredDomainInitial($0, $1, $2)")
+    public bool storedDomainInitial(int2 p, uint seed, out Domain dom);
+    __target_intrinsic(cuda, "fcptStoredDomainTemporal($0, $1, $2)")
+    public bool storedDomainTemporal(int2 p, uint seed, out Domain dom);
+    __target_intrinsic(cuda, "fcptSceneUnchanged()")
+    public bool sceneUnchanged();
+    __target_intrinsic(cuda, "fcptPreviousScenes()")
+    public bool previousScenes();
+#else
     __target_intrinsic(wgsl, "storedDomain(reservoir_initial, $0, &$1)")
     __target_intrinsic(cuda, "fcptStoredDomainInitial($0, $1)")
     public bool storedDomainInitial(int2 p, out Domain dom);
     __target_intrinsic(wgsl, "storedDomain(reservoir_temp, $0, &$1)")
     __target_intrinsic(cuda, "fcptStoredDomainTemporal($0, $1)")
     public bool storedDomainTemporal(int2 p, out Domain dom);
+#endif
     __target_intrinsic(wgsl, "atomicAdd(&shift_queue.counts[$0], $1)")
     __target_intrinsic(cuda, "fcptQueueCountAdd($0, $1)")
     public uint queueCountAdd(uint bin, uint jobs);
@@ -2143,13 +2173,28 @@ func previousValid<S: IScene>(scene: S, q: int2) -> bool {
 }
 
 // Backprojection of the camera motion, or the dual motion vector of the surface previously seen there (Sec. 6.4)
-public func temporalNeighbor<S: IScene>(scene: S, p: int2, dom: Domain) -> int2 {
+public func temporalNeighbor<S: IScene>(scene: S, p: int2, dom: Domain
+#ifdef FK_FCPT_WALK
+    , seed: uint
+#endif
+    ) -> int2 {
+#ifdef FK_FCPT_WALK
+    // The same domain of the sample of seed at p, which reprojecting a still view can round to a neighbour
+    if (previousValid(scene, p) && sameDomain(scene.previousDomain(p, seed), dom)) {
+        return p;
+    }
+#endif
     // Primary hits are rasterized at pixel centers
     let q: int2 = int2(floor(project(scene, scene.prevViewMatrix(), scene.prevCameraPosition(), dom.x1)));
     if (!previousValid(scene, q)) {
         return int2(-1);
     }
+#ifdef FK_FCPT_WALK
+    // Of q's previous sample
+    let previous: Domain = scene.previousDomain(q, scene.reservoirPrevious(q, 0u).x);
+#else
     let previous: Domain = scene.previousDomain(q);
+#endif
     if (previous.hit.instance_index == dom.hit.instance_index && distance(previous.x1, dom.x1) <= dom.hit.distance * 8.0f / float(scene.renderSize().x)) {
         return q;
     }
@@ -2206,6 +2251,34 @@ __extern_cpp public struct ShiftJob {
 }
 #endif
 
+#ifdef FK_FCPT_WALK
+// Shift t of the temporal round returns its sample unchanged: the same domain in an unchanged scene, for t = 1 also
+// without a previous scene to shift into
+func temporalIdentity<S: IScene>(scene: S, t: uint, source: Domain, target: Domain) -> bool {
+    return sameDomain(source, target) && (scene.sceneUnchanged() || (t == 1u && !scene.previousScenes()));
+}
+
+// Temporal round job t of p, previous sample into its current domain (t = 0), current into its previous (t = 1), with
+// the domains of the sample shifted, none for the identity
+public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJob) -> bool {
+    let initial: Reservoir = scene.loadReservoirInitial(p);
+    var dom: Domain = {};
+    if (t > 1u || !scene.storedDomainInitial(p, initial.seed, dom)) {
+        return false;
+    }
+    let q: int2 = temporalNeighbor(scene, p, dom, initial.seed);
+    if (q.x < 0) {
+        return false;
+    }
+    if (t == 0u) {
+        job.r = scene.loadReservoirPrevious(q);
+        return job.r.w > 0.0f && scene.storedDomainInitial(p, job.r.seed, job.dom)
+            && !temporalIdentity(scene, 0u, scene.previousDomain(q, job.r.seed), job.dom);
+    }
+    job = ShiftJob(scene.previousDomain(q, initial.seed), initial);
+    return job.r.w > 0.0f && !temporalIdentity(scene, 1u, job.dom, dom);
+}
+#else
 // Temporal round job t of p: previous sample into the current domain (t = 0), current into the previous (t = 1)
 public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJob) -> bool {
     var dom: Domain = {};
@@ -2223,6 +2296,7 @@ public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJ
     }
     return job.r.w > 0.0f && (t == 0u || !sameDomain(job.dom, dom));
 }
+#endif
 
 // Spatial round job t of p: its sample into the domain of partner t
 public func spatialJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJob) -> bool {
@@ -2230,7 +2304,11 @@ public func spatialJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJo
         return false;
     }
     job.r = scene.loadReservoirTemporal(p);
+#ifdef FK_FCPT_WALK
+    return job.r.w > 0.0f && scene.storedDomainTemporal(partner(scene, p, t), job.r.seed, job.dom);
+#else
     return job.r.w > 0.0f && scene.storedDomainTemporal(partner(scene, p, t), job.dom);
+#endif
 }
 
 // Compaction bin of shifting r: reconnection type, with environment next event estimation apart from light sampling, and replay depth
@@ -2428,17 +2506,37 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
         return;
     }
     var r: Reservoir = scene.loadReservoirInitial(p);
+#ifdef FK_FCPT_WALK
+    // Neighbour of the domain of r's sample, as the temporal round found it
+    var stored: Domain = {};
+    var q: int2 = int2(-1);
+    if (scene.storedDomainInitial(p, r.seed, stored)) {
+        q = temporalNeighbor(scene, p, stored, r.seed);
+    }
+#else
     let q: int2 = temporalNeighbor(scene, p, dom);
+#endif
     if (q.x >= 0) {
         let temporal: Reservoir = scene.loadReservoirPrevious(q);
         // Optionally lower the confidence cap where the previous frame duplicated samples (Sec. 5), this biases the estimate
         let duplicated: float = select(0.0f, asfloat(scene.duplication(q).x), scene.restirDecorrelation() == 1u);
         let c_t: float = min(temporal.c, confidenceCap(duplicated));
+#ifdef FK_FCPT_WALK
+        // Slots of the shifts the temporal round ran, the samples unchanged for its identities
+        var target: Domain = {};
+        let current_identity: bool = temporal.w > 0.0f && scene.storedDomainInitial(p, temporal.seed, target)
+            && temporalIdentity(scene, 0u, scene.previousDomain(q, temporal.seed), target);
+        let to_current: float4 = current_identity ? float4(temporal.f, 1.0f) : asfloat(scene.temporalShift(p, 0u));
+        let previous_identity: bool = r.w > 0.0f
+            && temporalIdentity(scene, 1u, scene.previousDomain(q, r.seed), stored);
+        let to_previous: float4 = previous_identity ? float4(r.f, 1.0f) : asfloat(scene.temporalShift(p, 1u));
+#else
         let to_current: float4 = asfloat(scene.temporalShift(p, 0u));
         var to_previous: float4 = float4(r.f, 1.0f);
         if (!sameDomain(scene.previousDomain(q), dom)) {
             to_previous = asfloat(scene.temporalShift(p, 1u));
         }
+#endif
         let p_c: float = rgb_to_greyscale(r.f);
         let p_t: float = rgb_to_greyscale(temporal.f);
 #ifdef FK_FCPT_WALK
