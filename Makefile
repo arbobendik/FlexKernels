@@ -20,12 +20,14 @@ all: build/cuda/pathtracer.cuh \
 
 # ReSTIR variants
 build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR=1
-build/cuda-restir/pathtracer.cuh: SLANGFLAGS += -DFK_FCPT_WALK=1
+build/cuda-restir/pathtracer.cuh: SLANGFLAGS += -DFK_FCPT_WALK=1 -DFK_RESTIR_PASSES=1
 build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_FCPT_WALK=1 -DFK_HAIR=1 \
-	-DFK_TOON=1
-build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh build/cpp/pathtracer.cpp build/cpp-restir/pathtracer.cpp: SLANGFLAGS += -DFK_HAIR=1
+	-DFK_TOON=1 -DFK_RESTIR_PASSES=1
+build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh build/cpp/pathtracer.cpp build/cpp-restir/pathtracer.cpp \
+		build/cpp-passes/pathtracer.cpp: SLANGFLAGS += -DFK_HAIR=1
 build/cuda/pathtracer.slang-module: MODULEFLAGS = -DFK_HAIR=1
-build/cuda-restir/pathtracer.cuh build/cpp/pathtracer.cpp build/cpp-restir/pathtracer.cpp: SLANGFLAGS += -DFK_TOON=1
+build/cuda-restir/pathtracer.cuh build/cpp/pathtracer.cpp build/cpp-restir/pathtracer.cpp \
+		build/cpp-passes/pathtracer.cpp: SLANGFLAGS += -DFK_TOON=1
 build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR_PASSES=1
 build/restir-passes/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1
 
@@ -87,6 +89,10 @@ build/albedo-cpu: tests/albedo.cpp build/cpp/pathtracer.cpp
 build/cpp-restir/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp-restir
 	$(SLANGC) $(SLANGFLAGS) -DFK_RESTIR=1 -DFK_FCPT_WALK=1 $< -target cpp -o $@
+
+build/cpp-passes/pathtracer.cpp: $(SOURCE) $(SLANGC)
+	mkdir -p build/cpp-passes
+	$(SLANGC) $(SLANGFLAGS) -DFK_RESTIR=1 -DFK_FCPT_WALK=1 -DFK_RESTIR_PASSES=1 $< -target cpp -o $@
 
 build/summing-cpu: tests/summing.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
@@ -166,7 +172,8 @@ test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module build/cuda-re
 		build/restir-passes/pathtracer.slang-module  # Compile and validate only
 	$(SLANGC) -Ibuild/cuda -warnings-as-errors 30081 $< -target spirv -o build/vulkan.spv
 	spirv-val --target-env vulkan1.3 build/vulkan.spv
-	$(SLANGC) -Ibuild/cuda-restir -DFK_RESTIR=1 -warnings-as-errors 30081 $< -target spirv -o build/vulkan-restir.spv
+	$(SLANGC) -Ibuild/cuda-restir -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1 -warnings-as-errors 30081 $< -target spirv \
+		-o build/vulkan-restir.spv
 	spirv-val --target-env vulkan1.3 build/vulkan-restir.spv
 	$(SLANGC) -Ibuild/restir-passes -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1 -warnings-as-errors 30081 $< -target spirv \
 		-o build/vulkan-passes.spv
