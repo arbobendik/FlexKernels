@@ -128,12 +128,13 @@ static V shadowThrough(Ray ray, float l, bool surface, Hit left = NO_HIT) {
         along += hit.distance, ray.origin = ray.origin + scaled(ray.unit_direction, hit.distance);
     }
 }
-V HookScene_shadowTransmittance_0(Ray ray, float l) { return shadowThrough(ray, l, true); }
 V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t,
     bool surface, float length, float, Hit left, Hit) {
     const V from = ray.origin - segment_start;
     if (checking && !surface) segments++, misfits += fabsf(sqrtf(dotv(from, from)) - length) > 1e-6f;
-    const float inside = fminf(HookScene_traverseInstanceBVH_0(ray, false, l, surface, left, false).distance, l);
+    const Hit first = HookScene_traverseInstanceBVH_0(ray, false, l, surface, left, false);
+    // A ray toward the sky past every surface leaves its medium at once, as the walk's escapes do
+    const float inside = first.instance_index == 0xFFFFFFFFu && !(l < 4294967296.0f) ? 0 : fminf(first.distance, l);
     const V through = shadowThrough(ray, l, surface, left);
     return V(through.x * expf(-extinction.x * inside), through.y * expf(-extinction.y * inside),
         through.z * expf(-extinction.z * inside));
