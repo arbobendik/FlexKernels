@@ -168,6 +168,40 @@ int main() {
             ring[1] / weight[1], ring[2] / weight[2], hemisphere, off);
         failed |= off > 1e-3;
     }
+    // Toon lobes, white: albedo by quadrature against these lobes' albedos integrated apart, sampled as evaluated,
+    // f(l, v) = f(v, l); the diffuse lobe's every sample weighs P(theta_v)
+    const float TOONS[][4] = {{1, 0.5f, 0, 0}, {1, 0.5f, 0, 30}, {1, 0.5f, 0, 60}, {1, 0.5f, 0.5f, 0},
+        {1, 0.5f, 0.5f, 30}, {1, 0.5f, 0.5f, 60}, {1, 0.5f, 0.5f, 80}, {-1, 0.5f, 0, 0}, {-1, 0.5f, 0, 80},
+        {-1, 0.5f, 0.5f, 0}, {-1, 0.5f, 0.5f, 80}, {-1, 0.2f, 0.2f, 0}, {-1, 0.2f, 0.2f, 80}};
+    const double TOON_ALBEDOS[] = {1, 1, 0, 1, 1, 0.666667, 0.222222, 0.853553, 0.237423, 0.652480, 0.277321, 0.936140,
+        0.201805};
+    for (int k = 0; k < 13; k++) {
+        const float w = TOONS[k][0], view = TOONS[k][3] / 57.29578f;
+        const Vector<float, 3> toon(w, w * TOONS[k][1], w * TOONS[k][2]), v(sinf(view), 0, cosf(view)), up(0, 0, 1);
+        double albedo = 0, asymmetry = 0, sampled = 0, squares = 0, spread = 0;
+        for (int i = 0; i < 1024; i++) for (int j = 0; j < 2048; j++) {
+            const float t = (i + 0.5f) / 1024 * PI / 2, phi = (j + 0.5f) / 2048 * 2 * PI;
+            const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
+            const float f = toonBSDF(v, l, up, toon);
+            albedo += f * cosf(t) * sinf(t) * (PI / 2 / 1024) * (2 * PI / 2048);
+            asymmetry = fmax(asymmetry, fabs(f - toonBSDF(l, v, up, toon)));
+        }
+        for (unsigned i = 0; i < 1u << 16; i++) {
+            const float u_1 = (hash(2 * i) >> 8) * 0x1p-24f, u_2 = (hash(2 * i + 1) >> 8) * 0x1p-24f;
+            const Vector<float, 3> l = sampleToon(v, up, toon, u_1, u_2);
+            const float pdf = toonDensity(v, l, up, toon);
+            const float weight = pdf > 0 ? toonBSDF(v, l, up, toon) * fmaxf(l.z, 0) / pdf : 0;
+            sampled += weight / (1 << 16), squares += weight * weight / (1 << 16);
+            if (w > 0) spread = fmax(spread, fabs(weight - TOON_ALBEDOS[k]));
+        }
+        const double error = 4 * sqrt(fmax(squares - sampled * sampled, 0) / (1 << 16)) + 1e-3;
+        const bool bad = !(fabs(albedo - TOON_ALBEDOS[k]) <= 1e-3 && fabs(sampled - TOON_ALBEDOS[k]) <= error
+            && asymmetry <= 1e-5 && spread <= 1e-3);
+        printf("toon %s %g %g at %g deg: albedo %.6f of %.6f, sampled %.4f, diffuse weights off by %.2g, asymmetry "
+            "%.2g%s\n", w > 0 ? "diffuse" : "glossy", TOONS[k][1], TOONS[k][2], TOONS[k][3], albedo, TOON_ALBEDOS[k],
+            sampled, spread, asymmetry, bad ? "  FAILED" : "");
+        failed |= bad;
+    }
     const Vector<float, 3> TINTS[] = {Vector<float, 3>(1, 0, 0), Vector<float, 3>(0, 0, 1)};
     const float WEIGHTS[] = {0.4f, 1}, TINTED_ROUGHNESSES[] = {0.1f, 0.5f}, TINTED_VIEWS[] = {1, 0.2f, 0.02f};
     for (const float weight : WEIGHTS) for (const Vector<float, 3> tint : TINTS) for (int metal = 0; metal < 2; metal++)
