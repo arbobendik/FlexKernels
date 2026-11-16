@@ -1262,11 +1262,21 @@ func environmentMapped<S: IScene>(scene: S) -> bool {
 // => PDF = p * size.x * size.y / (2 * PI^2 * sin(theta))
 func environmentPdf<S: IScene>(scene: S, dir: float3) -> float {
     let size: uint2 = scene.environmentCdfSize() - uint2(1u, 0u);
+#ifdef FK_FCPT_WALK
+    // z up: f = (-dir.x, dir.z, dir.y) of y up => atan2(- f.z, - f.x) = atan2(- dir.y, dir.x), f.y = dir.z
+    let st: float2 = float2(atan2(- dir.y, dir.x) / (2.0f * PI) + 0.5f, acos(clamp(dir.z, -1.0f, 1.0f)) / PI);
+#else
     // Same coordinates as env_map_sample
     let st: float2 = float2(atan2(- dir.z, - dir.x) / (2.0f * PI) + 0.5f, acos(clamp(dir.y, -1.0f, 1.0f)) / PI);
+#endif
     let cell: uint2 = min(uint2(st * float2(size)), size - 1u);
     let p: float = scene.environmentCdf(cell).y * scene.environmentCdf(uint2(size.x, cell.y)).y;
+#ifdef FK_FCPT_WALK
+    // sin(theta) = length(f.xz) = length(dir.xy)
+    return p * float(size.x * size.y) / (2.0f * PI * PI * length(dir.xy));
+#else
     return p * float(size.x * size.y) / (2.0f * PI * PI * length(dir.xz));
+#endif
 }
 
 // First entry of a row or of the marginal column of the environment CDF exceeding u
@@ -1318,7 +1328,13 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     let row: uint = searchCDF(scene, uint2(size.x, 0u), uint2(0u, 1u), size.y, random_0.value);
     let column: uint = searchCDF(scene, uint2(0u, row), uint2(1u, 0u), size.x, random_1.value);
     let angles: float2 = (float2(float(column), float(row)) + float2(random_2.value, random_3.value)) / float2(size) * float2(2.0f * PI, PI);
+#ifdef FK_FCPT_WALK
+    // f = (sin(angles.y) * cos(angles.x), cos(angles.y), sin(angles.y) * sin(angles.x)) of y up
+    // z up: dir = (-f.x, f.z, f.y)
+    let dir: float3 = float3(- sin(angles.y) * cos(angles.x), sin(angles.y) * sin(angles.x), cos(angles.y));
+#else
     let dir: float3 = float3(sin(angles.y) * cos(angles.x), cos(angles.y), sin(angles.y) * sin(angles.x));
+#endif
     let pdf: float = environmentPdf(scene, dir);
     let f: float3 = skyBSDF(ray.unit_direction, dir, surface, eta, is_inside, pdf, lobe_state);
     // Only trace toward directions that contribute
