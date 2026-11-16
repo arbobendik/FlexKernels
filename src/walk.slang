@@ -1939,7 +1939,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     if (lobe_index == LOBE_REFRACT) {
                         ggx_n = refractedHalf(in_dir, dir, surface.smooth_n, eta.x, eta.y);
                     }
-                    if (lobe_index == LOBE_DIFFUSE) {
+                    if (lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_TOON) {
                         ggx_n = sampledHalf(in_dir, surface.smooth_n, material, surface.random_state, frame);
                     }
                     var lobe_terms: BSDFLobes = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta.x, eta.y,
@@ -1960,6 +1960,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                         pdf = sheenVelvetPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
                         lobe_throughput = sheenVelvetBSDF(dir, n_i, alpha, material, lobe_terms);
                         break;
+#ifdef FK_TOON
+                    case LOBE_TOON:
+                        pdf = toonPDF(n_i_dot_l, dot(dir, lobe_terms.toon_axis), abs(n_dot_v), alpha, lobe_terms, eta.x,
+                            eta.y);
+                        lobe_throughput = toonBSDF(dir, n_i, alpha, material, lobe_terms);
+                        break;
+#endif
                     default:
                         pdf = reflectPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
                         lobe_throughput = reflectBSDF(dir, n_i, alpha, material, lobe_terms);
@@ -1973,8 +1980,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 }
             }
             // Delta lobes have no competing light sample, straight transmission keeps the preceding vertex's weights
-            // Diffuse and sheen lobes are never delta
-            let spread_out: bool = lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_SHEEN_VELVET;
+            // Diffuse, sheen and toon lobes are never delta
+            let spread_out: bool = lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_SHEEN_VELVET
+                || lobe_index == LOBE_TOON;
             let delta: bool = AT_HAIR(false, !spread_out && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y)));
 #ifdef FK_FCPT_WALK
             straight = !hair && lobe_index == LOBE_REFRACT && material.ior == 1.0f;
