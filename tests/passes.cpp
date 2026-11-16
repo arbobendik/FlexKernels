@@ -23,7 +23,8 @@ static bool missed = false;
 static Domain domainOf(Vector<int32_t, 2> p, uint32_t seed) {
     const float x = (p.x + 0.5f + edge) / W * 2 - 1, y = (1 - (p.y + 0.5f) / H) * 2 - 1;
     return Domain{Vector<float, 3>(float(seed), 0, 0), Vector<float, 3>(x, y, 1),
-        Hit{Vector<float, 2>(0, 0), missed ? 0xFFFFFFFFu : uint32_t(p.y * W + p.x), 0, 0, sqrtf(x * x + y * y + 1)}, 0};
+        Hit{Vector<float, 2>(0, 0), missed ? 0xFFFFFFFFu : uint32_t(p.y * W + p.x), seed, 0,
+            sqrtf(x * x + y * y + 1)}, 0};
 }
 // Partners off the image and in its last column have no domain
 bool HookScene_storedDomainTemporal_0(Vector<int32_t, 2> q, uint32_t seed, Domain* dom) {
@@ -41,9 +42,13 @@ Vector<uint32_t, 4> HookScene_reservoirPrevious_0(Vector<int32_t, 2> q, uint32_t
 }
 // Previous samples' seeds trace no domain in the current frame
 static bool previous_unseen = false;
+// Seeds asked for domains, in order, while recording, and every path missing
+static std::vector<uint32_t> asked_seeds;
+static bool recording = false, all_miss = false;
 bool HookScene_storedDomainInitial_0(Vector<int32_t, 2> p, uint32_t seed, Domain* dom) {
+    if (recording) asked_seeds.push_back(seed);
     *dom = domainOf(p, seed);
-    return inside(p) && !(previous_unseen && seed >= 2000);
+    return inside(p) && !(previous_unseen && seed >= 2000) && !all_miss;
 }
 // The previous frame's domains moved off the current ones by moved in x0
 static float moved = 0;
@@ -54,15 +59,30 @@ Domain HookScene_previousDomain_0(Vector<int32_t, 2> q, uint32_t seed) {
 }
 static int shifted_previous = 0, walked = 0, asked[2] = {};
 Shift HookScene_shiftPrevious_0(Domain, Reservoir) { return shifted_previous++, Shift{Vector<float, 3>(1, 1, 1), 1}; }
-Shift HookScene_walkCallable_0(Domain, Reservoir, bool replay, float, Selection*) {
+// A path offers its own sample at its scale
+Shift HookScene_walkCallable_0(Domain, Reservoir r, bool replay, float scale, Selection* sel) {
+    r.f = Vector<float, 3>(1, 1, 1);
+    if (!replay) offer(sel, r, Vector<float, 3>(scale, scale, scale));
     return walked += replay, Shift{Vector<float, 3>(1, 1, 1), 1};
+}
+static bool reuse = true;
+static int missed_paths = 0;
+static Vector<float, 4> added[W * H];
+static Reservoir stored[W * H];
+static Hit stored_hit[W * H];
+bool HookScene_restirUsed_0() { return reuse; }
+uint32_t HookScene_samples_0() { return 4; }
+void HookScene_missed_0(Vector<int32_t, 2>, Domain, float) { missed_paths++; }
+void HookScene_addColor_0(Vector<int32_t, 2> p, Vector<float, 4> color) { added[p.y * W + p.x] = color; }
+void HookScene_storeReservoirInitial_0(Vector<int32_t, 2> p, Reservoir r, Hit hit) {
+    stored[p.y * W + p.x] = r, stored_hit[p.y * W + p.x] = hit;
 }
 // The pinhole of domainOf
 Vector<float, 2> HookScene_pixelOf_0(Vector<float, 3> x, bool previous) {
     asked[previous]++;
     return Vector<float, 2>((x.x / x.z * 0.5f + 0.5f) * W, (0.5f - x.y / x.z * 0.5f) * H);
 }
-bool HookScene_currentDomain_0(Vector<int32_t, 2> p, Domain* dom) { return HookScene_storedDomainInitial_0(p, 0, dom); }
+bool HookScene_currentDomain_0(Vector<int32_t, 2> p, Domain* dom) { return *dom = domainOf(p, 0), inside(p); }
 bool HookScene_sceneUnchanged_0() { return unchanged; }
 bool HookScene_previousScenes_0() { return scenes; }
 Matrix<float, 3, 3> HookScene_viewMatrix_0() { return Matrix<float, 3, 3>(1, 0, 0, 0, 1, 0, 0, 0, 1); }
@@ -218,5 +238,38 @@ int main() {
     failed += slot_reads == 0 || stale_reads > 0;
     printf("unseen previous samples: %d shift slots read, %d not written this frame%s\n", slot_reads, stale_reads,
         slot_reads == 0 || stale_reads > 0 ? "  FAILED" : "");
+    // Initial pass: a domain per path by its seed, missed paths to the consumer keeping c = 1, the winner's hit stored,
+    // and ReSTIR off summing every path
+    const auto initial_pass = [&]() {
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) restir_initial_hook(Vector<uint32_t, 3>(x, y, 0));
+    };
+    recording = true, asked_seeds.clear();
+    initial_pass();
+    recording = false;
+    int seeds_off = 0, hits_off = 0, colored = 0;
+    for (int y = 0, k = 0; y < H; y++) for (int x = 0; x < W; x++) {
+        const uint32_t pixel_seed = stream(hash(HookScene_frame_0()), x + W * y);
+        for (uint32_t i = 0; i < 4; i++) seeds_off += asked_seeds[k++] != stream(pixel_seed, i);
+        hits_off += stored_hit[y * W + x].triangle_index != stored[y * W + x].seed || !(stored[y * W + x].w > 0);
+        colored += added[y * W + x].x != 0 || added[y * W + x].w != 1;
+    }
+    all_miss = true;
+    initial_pass();
+    all_miss = false;
+    int unmet = 0;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++)
+        unmet += stored[y * W + x].c == 1
+            && stored[y * W + x].seed == stream(stream(hash(HookScene_frame_0()), x + W * y), 0);
+    reuse = false;
+    initial_pass();
+    reuse = true;
+    int summed = 0;
+    for (const auto& c : added) summed += fabsf(c.x - 1) < 1e-6f && c.w == 1;
+    const bool initial = asked_seeds.size() == 4 * W * H && seeds_off == 0 && hits_off == 0 && colored == 0
+        && missed_paths == 4 * W * H && unmet == W * H && summed == W * H;
+    failed += !initial;
+    printf("initial pass: %d of %zu domains off their path's seed, %d winners' hits off, %d missed paths, %d of %d "
+        "all-missed pixels kept, %d of %d summed to 1%s\n", seeds_off, asked_seeds.size(), hits_off, missed_paths,
+        unmet, W * H, summed, W * H, initial ? "" : "  FAILED");
     return failed;
 }
