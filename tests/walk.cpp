@@ -196,6 +196,8 @@ float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t* state, V
 }
 
 static bool summing = false, seen = false;
+// Standard error of the last furnace's mean
+static double furnace_se = 0;
 static double furnace(const char* name, V camera, V aim, float angle, double truth, int& failed, float absorbs = 0) {
     const int N = 1 << 17;
     double sum = 0, sum2 = 0, through = 0;
@@ -223,6 +225,7 @@ static double furnace(const char* name, V camera, V aim, float angle, double tru
         sum += y, sum2 += y * y;
     }
     const double mean = sum / N, se = sqrt(fmax(sum2 / N - mean * mean, 0) / N);
+    furnace_se = se;
     truth *= through / N;
     const bool ok = truth != truth || (fabs(mean - truth) < fmax(4 * se, 1e-4) && se < 0.01);
     failed += !ok;
@@ -540,6 +543,32 @@ int main() {
     failed += unslotted != 0 || !(slotted > 0);
     printf("light of no slot: density %g, the sun's %g%s\n", unslotted, slotted,
         unslotted != 0 || !(slotted > 0) ? "  FAILED" : "");
+    // Sky sampled = sky unsampled, in fog filling a clear shell and in the absorber behind a translucent face
+    bounces = 64, sky = 1, sun = false, seen = false, summing = false, cdf = true;
+    const auto sky_twins = [&](const char* name, V camera, V aim) {
+        const double sampled = furnace("  sky sampled", camera, aim, 0.3f, NAN, failed), sampled_se = furnace_se;
+        cdf = false;
+        const double escaped = furnace("  sky unsampled", camera, aim, 0.3f, NAN, failed);
+        cdf = true;
+        const bool off = !(fabs(sampled - escaped) < 4 * sqrt(sampled_se * sampled_se + furnace_se * furnace_se));
+        failed += off;
+        printf("%s: sampled %.5f, unsampled %.5f%s\n", name, sampled, escaped, off ? "  FAILED" : "");
+    };
+    for (const float sigma : {0.0f, 0.5f}) {
+        const Medium absorber = {ZERO, scaled(ONE, sigma)};
+        char name[64];
+        camera_fog = absorber;
+        scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none},
+            {center, 3, false, {dielectric(1)}, 1, 1, true, absorber}};
+        snprintf(name, sizeof name, "sky in fog %.1f", sigma);
+        sky_twins(name, V(0, 0, 2), center);
+        camera_fog = none;
+        Material translucent = lambert(0.5f, 0);
+        translucent.translucent = scaled(ONE, 0.5f);
+        scene = {{center, 1, false, {translucent}, 1, 0.5f, true, absorber}};
+        snprintf(name, sizeof name, "sky into a translucent absorber %.1f", sigma);
+        sky_twins(name, camera, center);
+    }
     failed += tracked_misfits > 0 || tracked == 0;
     printf("camera segments: %d misfits of %d tracked%s\n", tracked_misfits, tracked,
         tracked_misfits > 0 || tracked == 0 ? "  FAILED" : "");
