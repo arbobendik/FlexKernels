@@ -176,8 +176,8 @@ test-vulkan: tests/vulkan.slang build/cuda/pathtracer.slang-module build/cuda-re
 		build/restir-passes/pathtracer.slang-module  # Compile and validate only
 	$(SLANGC) -Ibuild/cuda -warnings-as-errors 30081 $< -target spirv -o build/vulkan.spv
 	spirv-val --target-env vulkan1.3 build/vulkan.spv
-	$(SLANGC) -Ibuild/cuda-restir -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1 -warnings-as-errors 30081 $< -target spirv \
-		-o build/vulkan-restir.spv
+	$(SLANGC) -Ibuild/cuda-restir -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1 -DFK_FCPT_WALK=1 -warnings-as-errors 30081 $< \
+		-target spirv -o build/vulkan-restir.spv
 	spirv-val --target-env vulkan1.3 build/vulkan-restir.spv
 	$(SLANGC) -Ibuild/restir-passes -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1 -warnings-as-errors 30081 $< -target spirv \
 		-o build/vulkan-passes.spv
