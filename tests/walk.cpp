@@ -128,11 +128,19 @@ static V shadowThrough(Ray ray, float l, bool surface, Hit left = NO_HIT) {
     }
 }
 static int shift_shadows = 0;
+// A sky drawn from cell (1, 0) of its 4 x 2 alone, its draws' directions held to that cell, z up
+static bool one_cell = false;
+static int cell_draws = 0, cell_misses = 0;
 V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, uint32_t, uint32_t, uint32_t,
     bool surface, float length, float, Hit left, Hit) {
     const V from = ray.origin - segment_start;
     if (checking && !surface) segments++, misfits += fabsf(sqrtf(dotv(from, from)) - length) > 1e-6f;
     shift_shadows++;
+    if (one_cell && !(l < 4294967296.0f)) {
+        // s = atan2(-y, x) / (2 * PI) + 0.5 in [0.25, 0.5), t = acos(z) / PI < 0.5
+        const float s = atan2f(-ray.unit_direction.y, ray.unit_direction.x) / 6.2831853f + 0.5f;
+        cell_draws++, cell_misses += !(s >= 0.25f && s < 0.5f && acosf(ray.unit_direction.z) / 3.14159265f < 0.5f);
+    }
     const Hit first = HookScene_traverseInstanceBVH_0(ray, false, l, surface, left, false);
     // A ray toward the sky past every surface leaves its medium at once, as the walk's escapes do
     const float inside = first.instance_index == 0xFFFFFFFFu && !(l < 4294967296.0f) ? 0 : fminf(first.distance, l);
@@ -157,6 +165,8 @@ static int cdf_reads = 0;
 Vector<uint32_t, 2> HookScene_environmentCdfSize_0() { return Vector<uint32_t, 2>(cdf ? 5 : 1, cdf ? 2 : 1); }
 Vector<float, 4> HookScene_environmentCdf_0(Vector<uint32_t, 2> cell) {
     cdf_reads++;
+    if (one_cell)
+        return cell.x == 4 ? Vector<float, 4>(1, cell.y == 0, 0, 0) : Vector<float, 4>(cell.x >= 1, cell.x == 1, 0, 0);
     return cell.x == 4 ? Vector<float, 4>((cell.y + 1) / 2.0f, 0.5f, 0, 0)
         : Vector<float, 4>((cell.x + 1) / 4.0f, 0.25f, 0, 0);
 }
@@ -569,6 +579,14 @@ int main() {
         snprintf(name, sizeof name, "sky into a translucent absorber %.1f", sigma);
         sky_twins(name, camera, center);
     }
+    // White sphere under a sky of 1 drawn from one cell
+    scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
+    one_cell = true;
+    furnace("white sphere, sky of one cell", camera, center, 0.3f, 1, failed);
+    one_cell = false;
+    failed += cell_draws == 0 || cell_misses > 0;
+    printf("sky of one cell: %d of %d draws off it%s\n", cell_misses, cell_draws,
+        cell_draws == 0 || cell_misses > 0 ? "  FAILED" : "");
     failed += tracked_misfits > 0 || tracked == 0;
     printf("camera segments: %d misfits of %d tracked%s\n", tracked_misfits, tracked,
         tracked_misfits > 0 || tracked == 0 ? "  FAILED" : "");
