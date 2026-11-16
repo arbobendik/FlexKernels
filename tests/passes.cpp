@@ -27,7 +27,10 @@ static Domain domainOf(Vector<int32_t, 2> p, uint32_t seed) {
             sqrtf(x * x + y * y + 1)}, 0};
 }
 // Partners off the image and in its last column have no domain
+// Target domains traced: of partners, and of previous samples here
+static int target_traces = 0;
 bool HookScene_storedDomainTemporal_0(Vector<int32_t, 2> q, uint32_t seed, Domain* dom) {
+    target_traces++;
     *dom = domainOf(q, seed);
     return inside(q) && q.x != W - 1;
 }
@@ -47,6 +50,7 @@ static std::vector<uint32_t> asked_seeds;
 static bool recording = false, all_miss = false;
 bool HookScene_storedDomainInitial_0(Vector<int32_t, 2> p, uint32_t seed, Domain* dom) {
     if (recording) asked_seeds.push_back(seed);
+    target_traces += seed >= 2000;
     *dom = domainOf(p, seed);
     return inside(p) && !(previous_unseen && seed >= 2000) && !all_miss;
 }
@@ -108,6 +112,13 @@ void HookScene_queueJobStore_0(uint32_t index, uint32_t job) { queue[3 + 2 * BIN
 void HookScene_queueDispatchStore_0(uint32_t x, uint32_t y, uint32_t z) { queue[0] = x, queue[1] = y, queue[2] = z; }
 uint32_t HookScene_queuedShifts_0(uint32_t index) { return queue[index]; }
 void HookScene_storeShiftData_0(Vector<int32_t, 2>, uint32_t, Vector<uint32_t, 4>) {}
+Vector<uint32_t, 4> HookScene_shiftData_0(Vector<int32_t, 2>, uint32_t) { return Vector<uint32_t, 4>(0); }
+Vector<uint32_t, 4> HookScene_reservoirTemporal_0(Vector<int32_t, 2> q, uint32_t) {
+    const Reservoir& r = temporal[q.y * W + q.x];
+    return Vector<uint32_t, 4>(r.seed, r.path, *(const uint32_t*)&r.w, *(const uint32_t*)&r.c);
+}
+void HookScene_storeReservoirPrevious_0(Vector<int32_t, 2>, Reservoir, Hit) {}
+void HookScene_storePreviousLayer_0(Vector<int32_t, 2>, uint32_t, Vector<uint32_t, 4>) {}
 
 int main() {
     int failed = 0;
@@ -129,7 +140,7 @@ int main() {
     }
     for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) for (uint32_t t = 0; t < 3; t++) {
         ShiftJob job = {};
-        if (spatialJob_0(Vector<int32_t, 2>(x, y), t, &job)) expected.push_back(x | y << 14 | t << 28);
+        if (spatialJob_0(Vector<int32_t, 2>(x, y), t, &job, false)) expected.push_back(x | y << 14 | t << 28);
     }
     std::vector<uint32_t> sorted = run;
     std::sort(sorted.begin(), sorted.end()), std::sort(expected.begin(), expected.end());
@@ -158,14 +169,15 @@ int main() {
         int count = 0;
         for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
             ShiftJob job = {};
-            if (temporalJob_0(Vector<int32_t, 2>(x, y), t, &job)) count++, misfits += job.dom.x0.x != float(job.r.seed);
+            if (temporalJob_0(Vector<int32_t, 2>(x, y), t, &job, true))
+                count++, misfits += job.dom.x0.x != float(job.r.seed);
         }
         return count;
     };
     int misfits = 0;
     for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) for (uint32_t t = 0; t < 3; t++) {
         ShiftJob job = {};
-        if (spatialJob_0(Vector<int32_t, 2>(x, y), t, &job)) misfits += job.dom.x0.x != float(job.r.seed);
+        if (spatialJob_0(Vector<int32_t, 2>(x, y), t, &job, true)) misfits += job.dom.x0.x != float(job.r.seed);
     }
     const int moved_current = jobs(0, misfits), moved_previous = jobs(1, misfits);
     scenes = false;
@@ -204,7 +216,13 @@ int main() {
     const int temporal_walked = walked;
     walked = 0;
     drain(restir_count_hook, restir_prepass_hook, restir_shift_hook);
-    const bool through = shifted_previous == W * H && temporal_walked == W * H && walked == int(expected.size());
+    // The spatial round walks the jobs whose partner's domain the shift pass finds
+    int found = 0;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) for (uint32_t t = 0; t < 3; t++) {
+        ShiftJob job = {};
+        found += spatialJob_0(Vector<int32_t, 2>(x, y), t, &job, true);
+    }
+    const bool through = shifted_previous == W * H && temporal_walked == W * H && walked == found;
     failed += !through;
     printf("shift passes: %d previous-scene shifts, %d walks in the temporal and %d in the spatial round%s\n",
         shifted_previous, temporal_walked, walked, through ? "" : "  FAILED");
@@ -271,5 +289,37 @@ int main() {
     printf("initial pass: %d of %zu domains off their path's seed, %d winners' hits off, %d missed paths, %d of %d "
         "all-missed pixels kept, %d of %d summed to 1%s\n", seeds_off, asked_seeds.size(), hits_off, missed_paths,
         unmet, W * H, summed, W * H, initial ? "" : "  FAILED");
+    // Count and prepass trace targets only where the identity can hold; a target missing at the shift runs none
+    unchanged = false, scenes = true, moved = 1;
+    using Pass = void (*)(Vector<uint32_t, 3>, uint32_t);
+    const auto judged = [&](Pass count, Pass prepass) {
+        for (uint32_t& word : queue) word = 0;
+        target_traces = 0;
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) count(Vector<uint32_t, 3>(x, y, 0), 0);
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) prepass(Vector<uint32_t, 3>(x, y, 0), 0);
+        return target_traces;
+    };
+    const int changed_temporal = judged(restir_temporal_count_hook, restir_temporal_prepass_hook),
+        changed_spatial = judged(restir_count_hook, restir_prepass_hook);
+    unchanged = true;
+    const int unchanged_temporal = judged(restir_temporal_count_hook, restir_temporal_prepass_hook);
+    unchanged = false, previous_unseen = true, walked = shifted_previous = 0;
+    drain(restir_temporal_count_hook, restir_temporal_prepass_hook, restir_temporal_shift_hook);
+    previous_unseen = false, moved = 0;
+    const bool lazy = changed_temporal == 0 && changed_spatial == 0 && unchanged_temporal > 0 && walked == 0
+        && shifted_previous == W * H;
+    failed += !lazy;
+    printf("judging jobs: %d and %d targets traced in a changed scene, %d unchanged; unseen targets %d walks, %d "
+        "previous-scene shifts%s\n", changed_temporal, changed_spatial, unchanged_temporal, walked, shifted_previous,
+        lazy ? "" : "  FAILED");
+    // Spatial reuse's colour to the consumer unclamped, without the primary surface
+    for (int i = 0; i < W * H; i++)
+        ::temporal[i].f = Vector<float, 3>(1e9f, 1e9f, 1e9f), ::temporal[i].c = 1, added[i] = Vector<float, 4>(0);
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) restir_spatial_hook(Vector<uint32_t, 3>(x, y, 0));
+    int unclamped = 0, offered = 0;
+    for (int i = 0; i < W * H; i++) offered += ::temporal[i].w > 0, unclamped += added[i].x > 65519 && added[i].w == 0;
+    failed += unclamped != offered;
+    printf("spatial colour: %d of %d pixels above 65519 to addColor%s\n", unclamped, offered,
+        unclamped != offered ? "  FAILED" : "");
     return failed;
 }
