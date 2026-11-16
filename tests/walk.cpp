@@ -587,6 +587,31 @@ int main() {
     failed += cell_draws == 0 || cell_misses > 0;
     printf("sky of one cell: %d of %d draws off it%s\n", cell_misses, cell_draws,
         cell_draws == 0 || cell_misses > 0 ? "  FAILED" : "");
+    // Sky samples of a surface, shifted onto the same vertex as hair, which takes none
+    bounces = 64, sky = 1, sun = false, seen = false, summing = false, cdf = true, camera_fog = none;
+    scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
+    {
+        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, V(0, 0, -1)}, true, 1e30f, true, NO_HIT, true);
+        const Domain dom = {camera, camera + scaled(V(0, 0, -1), hit.distance), hit};
+        int sky_samples = 0, valued = 0;
+        for (int i = 0; i < 16384; i++) {
+            scene[0].hair = false;
+            Reservoir path = {};
+            path.seed = hash(3 * i + 2);
+            Selection sel = {};
+            sel.random_state = hash(3 * i + 3);
+            walk_hook(dom, path, false, 1, &sel);
+            const Reservoir r = finalize(sel, 1);
+            // Reconnected to the light vertex, ending in a sky sample
+            if (!(r.w > 0) || (r.path >> 10 & 3) != 2 || (r.path >> 12 & 7) != 4) continue;
+            scene[0].hair = true;
+            sky_samples++, valued += shift_hook(dom, r).f.x > 0;
+        }
+        scene[0].hair = false;
+        failed += sky_samples == 0 || valued > 0;
+        printf("sky samples shifted onto hair: %d of %d nonzero%s\n", valued, sky_samples,
+            sky_samples == 0 || valued > 0 ? "  FAILED" : "");
+    }
     failed += tracked_misfits > 0 || tracked == 0;
     printf("camera segments: %d misfits of %d tracked%s\n", tracked_misfits, tracked,
         tracked_misfits > 0 || tracked == 0 ? "  FAILED" : "");
