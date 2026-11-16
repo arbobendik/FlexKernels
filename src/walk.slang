@@ -315,14 +315,15 @@ func boundsVolume(surface: Surface) -> bool {
     return false;
 #endif
 }
-func mediumSides(surface: Surface, medium: Medium, filling: uint, dir: float3) -> MediumSides {
+// Leaving a volume enters the medium outside it
+func mediumSides(surface: Surface, medium: Medium, filling: uint, dir: float3, outside: Medium) -> MediumSides {
     var sides: MediumSides = MediumSides(medium, medium, uint2(filling), surface.geometry_n);
 #ifdef FK_FCPT_WALK
     if (surface.encloses) {
         sides.behind = surface.volume;
         sides.fillings.x = surface.fills;
         if (dot(dir, surface.geometry_n) > 0.0f) {
-            sides.front = {};
+            sides.front = outside;
             sides.fillings.y = UINT_MAX;
         }
     }
@@ -331,13 +332,13 @@ func mediumSides(surface: Surface, medium: Medium, filling: uint, dir: float3) -
 }
 
 #ifdef FK_FCPT_WALK
-func shadowContext(surface: Surface, turned: bool, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint, length: float, width: float, own: Hit, fiber: bool) -> ShadowContext {
+func shadowContext(surface: Surface, turned: bool, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint, length: float, width: float, own: Hit, fiber: bool, outside: Medium) -> ShadowContext {
     // A face bounding no volume: the same medium on both sides
     var context: ShadowContext = ShadowContext(extinction, extinction, uint2(filling), surface.geometry_n, depth, lobe, true, length, width, own, fiber);
     if (surface.encloses) {
         var faced: Surface = surface;
         faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
-        let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction, 0.0f), filling, dir);
+        let sides: MediumSides = mediumSides(faced, Medium(float3(0.0f), extinction, 0.0f), filling, dir, outside);
         // The face's sides as the faced normal sees them
         context = ShadowContext(sides.behind.extinction, sides.front.extinction, sides.fillings, surface.geometry_n, depth, lobe, true, length, width, own, fiber);
         if (turned) {
@@ -679,6 +680,7 @@ public interface IScene {
     public bool varyingUsed();
     public bool hairUsed();
     public bool shadowFirst();
+    public Medium outsideMedium(Hit hit);
     public Medium cameraMedium(float3 direction, float distance, out uint filling);
     public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, inout float g, uint depth, uint lobe, bool camera);
     public float3 hitPosition(Hit hit);
@@ -786,6 +788,10 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "false")
     __target_intrinsic(cuda, "fcptShadowFirst()")
     public bool shadowFirst();
+    // Medium a ray enters leaving the volume of hit's face, none by default
+    __target_intrinsic(wgsl, "Medium()")
+    __target_intrinsic(cuda, "fcptOutsideMedium($0)")
+    public Medium outsideMedium(Hit hit);
     // Medium the camera is in, its varying material key or UINT_MAX
     __target_intrinsic(wgsl, "Medium()")
     __target_intrinsic(cuda, "fcptCameraMedium($0, $1, $2)")
@@ -1660,7 +1666,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         if (samples_light) {
 #ifdef FK_FCPT_WALK
             light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, sided, stream(r.seed, b + STREAM_NEE)
-                , shadowContext(surface, turned, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair)
+                , shadowContext(surface, turned, extinction_in, filling, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance, width, hit, hair, scene.outsideMedium(hit))
                 );
 #else
             light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), stream(r.seed, b + STREAM_NEE)
@@ -1956,7 +1962,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 var faced: Surface = surface;
                 faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
                 let sides: MediumSides = mediumSides(faced, Medium(scatter_in, extinction_in, g_in), filling,
-                    ray.unit_direction);
+                    ray.unit_direction, scene.outsideMedium(hit));
                 let front: bool = (dot(dir, surface.geometry_n) > 0.0f) == (dot(surface.geometry_n, faced.geometry_n) > 0.0f);
                 scatter_in = select(sides.behind.scatter, sides.front.scatter, front);
                 extinction_in = select(sides.behind.extinction, sides.front.extinction, front);

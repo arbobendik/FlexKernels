@@ -7,6 +7,7 @@ int main() {
     const V up(0, 0, 1), ZERO(0, 0, 0), ONE(1, 1, 1);
     const unsigned NONE = 0xFFFFFFFFu, FILLS = 7, AIR = 3;
     const Medium carried = {V(0.1f, 0.1f, 0.1f), V(0.2f, 0.2f, 0.2f)}, volume = {V(1, 2, 3), V(4, 5, 6)};
+    Medium outside = {V(0.3f, 0.3f, 0.3f), V(0.7f, 0.7f, 0.7f)};  // Medium outside all volumes
     int cases = 0, differ = 0;
     for (const bool encloses : {false, true})
         for (const float arriving : {-1.0f, 1.0f})  // Along -f (entering a volume behind f) or along f (leaving it)
@@ -18,7 +19,7 @@ int main() {
                         Surface surface = {up, f, 1e-4f, {ONE, ZERO, 1, 0, 0, 1, ZERO, ONE, 1}, false, 0, 1,
                             encloses, volume, FILLS};
                         Medium medium = carried;
-                        const MediumSides sides = mediumSides_0(&surface, &medium, AIR, in);
+                        const MediumSides sides = mediumSides_0(&surface, &medium, AIR, in, &outside);
                         const bool front = (dot_0(dir, g) > 0.0f) == (dot_0(g, sides.face) > 0.0f);
                         const Medium left = front ? sides.front : sides.behind;
                         const unsigned filling = front ? sides.fillings.y : sides.fillings.x;
@@ -28,7 +29,7 @@ int main() {
                         if (encloses) {
                             const bool back = dot_0(g, f) < 0, ahead = dot_0(g, f) > 0;
                             fcpt[back] = volume, fill[back] = FILLS;
-                            if (dot_0(in, f) > 0) fcpt[ahead] = Medium{ZERO, ZERO}, fill[ahead] = NONE;
+                            if (dot_0(in, f) > 0) fcpt[ahead] = outside, fill[ahead] = NONE;
                         }
                         const unsigned i = dot_0(dir, g) > 0;
                         cases++, differ += left.scatter.x != fcpt[i].scatter.x
