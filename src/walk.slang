@@ -1160,15 +1160,15 @@ func hairLight<S: IScene>(scene: S, surface: Surface, in_dir: float3, light: Tre
 // Delta lights or no competing BSDF sample: w_power = 1
 func lightBSDF(in_dir: float3, light: TreeSample, smooth_n: float3, geometry_n: float3, material: Material, eta_i: float, eta_o: float, competing: bool, random_state: uint) -> float3 {
     let refracted: bool = dot(geometry_n, - in_dir) * dot(geometry_n, light.dir) <= 0.0f;
-    var throughputs: float3[4];
-    var pdfs: float[4];
+    var throughputs: float3[5];
+    var pdfs: float[5];
     let f: float3 = BSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, random_state, throughputs,
         pdfs);
     if (!competing || light.density == 0.0f) {
         return f * light.radiance;
     }
     var weighted: float3 = float3(0.0f);
-    for (var i: uint = 0u; i < 4u; i++) {
+    for (var i: uint = 0u; i < 5u; i++) {
         if (pdfs[i] > 0.0f) {
             let ratio: float = pdfs[i] / light.density;
             weighted += throughputs[i] * pdfs[i] / (light.density * (1.0f + ratio * ratio));
@@ -1293,11 +1293,11 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
 // => throughput * PDF_lobe / pdf * w_balance = throughput * PDF_lobe / (PDF_lobe + pdf)
 // Each lobe reached toward dir by its term in terms, their sum returned
 func skyLobes(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float,
-    random_state: uint, out terms: float3[4], out pdfs: float[4]) -> float3 {
+    random_state: uint, out terms: float3[5], out pdfs: float[5]) -> float3 {
     let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
     BSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y, refracted, random_state, terms, pdfs);
     var f: float3 = float3(0.0f);
-    for (var i: uint = 0u; i < 4u; i++) {
+    for (var i: uint = 0u; i < 5u; i++) {
         if (pdfs[i] > 0.0f) {
             terms[i] = terms[i] * pdfs[i] / (pdfs[i] + pdf);
             f += terms[i];
@@ -1308,8 +1308,8 @@ func skyLobes(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_ins
 
 // skyLobes' sum
 [CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
-    var terms: float3[4];
-    var pdfs: float[4];
+    var terms: float3[5];
+    var pdfs: float[5];
     return skyLobes(in_dir, dir, surface, eta, is_inside, pdf, random_state, terms, pdfs);
 }
 
@@ -1908,7 +1908,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     if (lobe_index == LOBE_REFRACT) {
                         ggx_n = refractedHalf(in_dir, dir, surface.smooth_n, eta.x, eta.y);
                     }
-                    if (lobe_index == LOBE_DIFFUSE) {
+                    if (lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_TOON) {
                         ggx_n = sampledHalf(in_dir, surface.smooth_n, material, surface.random_state, frame);
                     }
                     var lobe_terms: BSDFLobes = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta.x, eta.y,
@@ -1929,6 +1929,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                         pdf = sheenVelvetPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
                         lobe_throughput = sheenVelvetBSDF(dir, n_i, alpha, material, lobe_terms);
                         break;
+#ifdef FK_TOON
+                    case LOBE_TOON:
+                        pdf = toonPDF(n_i_dot_l, dot(dir, lobe_terms.toon_axis), abs(n_dot_v), alpha, lobe_terms, eta.x,
+                            eta.y);
+                        lobe_throughput = toonBSDF(dir, n_i, alpha, material, lobe_terms);
+                        break;
+#endif
                     default:
                         pdf = reflectPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
                         lobe_throughput = reflectBSDF(dir, n_i, alpha, material, lobe_terms);
@@ -1942,8 +1949,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 }
             }
             // Delta lobes have no competing light sample, straight transmission keeps the preceding vertex's weights
-            // Diffuse and sheen lobes are never delta
-            let spread_out: bool = lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_SHEEN_VELVET;
+            // Diffuse, sheen and toon lobes are never delta
+            let spread_out: bool = lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_SHEEN_VELVET
+                || lobe_index == LOBE_TOON;
             let delta: bool = AT_HAIR(false, !spread_out && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y)));
 #ifdef FK_FCPT_WALK
             straight = !hair && lobe_index == LOBE_REFRACT && material.ior == 1.0f;
