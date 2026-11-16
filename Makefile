@@ -70,6 +70,14 @@ $(SLANGC):
 	curl -sSfL https://github.com/shader-slang/slang/releases/download/v$(SLANG_VERSION)/slang-$(SLANG_VERSION)-linux-x86_64.tar.gz \
 		| tar -xz -C $(SLANG_PATH)
 
+# The CPU build without FK_TOON, against which a material without toon must stay bit-identical
+build/cpp-untoon/pathtracer.cpp: $(SOURCE) $(SLANGC)
+	mkdir -p build/cpp-untoon
+	$(SLANGC) $(SLANGFLAGS) -DFK_HAIR=1 $< -target cpp -o $@
+
+build/parity-untoon-cpu: tests/parity.cpp build/cpp-untoon/pathtracer.cpp
+	$(CXX) -std=c++20 -O2 -DFK_UNTOON=1 -Ibuild/cpp-untoon $< -o $@
+
 build/parity-cpu: tests/parity.cpp build/cpp/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -Ibuild/cpp $< -o $@
 
@@ -125,11 +133,12 @@ lint: $(ACTIONLINT)
 
 test: test-cpu test-wgsl test-vulkan
 
-test-cpu: build/parity-cpu build/albedo-cpu build/coverage-cpu build/cones-cpu \
+test-cpu: build/parity-cpu build/parity-untoon-cpu build/albedo-cpu build/coverage-cpu build/cones-cpu \
 		build/layers-cpu build/pathray-cpu build/media-cpu build/shadowmedia-cpu \
 		build/flight-cpu build/scatternee-cpu build/walk-cpu \
 		build/summing-cpu
 	$< < tests/golden-cuda.txt > build/cpu.txt
+	build/parity-untoon-cpu < tests/golden-cuda.txt | cmp - build/cpu.txt
 	build/albedo-cpu
 	build/coverage-cpu
 	build/cones-cpu
