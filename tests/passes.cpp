@@ -10,9 +10,13 @@ static uint32_t queue[3 + 2 * BINS + 3 * W * H];
 static bool inside(Vector<int32_t, 2> p) { return p.x >= 0 && p.y >= 0 && p.x < W && p.y < H; }
 
 Vector<uint32_t, 2> HookScene_renderSize_0() { return Vector<uint32_t, 2>(W, H); }
-uint32_t HookScene_frame_0() { return 3; }
+static uint32_t frame_number = 3;
+uint32_t HookScene_frame_0() { return frame_number; }
 uint32_t HookScene_restirNeighbours_0() { return 3; }
+// A mutual pairing texture: each even column paired with the next, the sizes 254, 230 and 210 even
+static bool mutual = false;
 Vector<int32_t, 4> HookScene_pairing_0(Vector<int32_t, 2> texel, uint32_t t) {
+    if (mutual) return Vector<int32_t, 4>(texel.x % 2 == 0 ? 1 : -1, 0, 0, 0);
     return Vector<int32_t, 4>(int(t) + 1 - texel.x % 3, texel.y % 2 - 1, 0, 0);
 }
 Reservoir HookScene_loadReservoirTemporal_0(Vector<int32_t, 2> p) { return temporal[p.y * W + p.x]; }
@@ -122,6 +126,24 @@ void HookScene_storePreviousLayer_0(Vector<int32_t, 2>, uint32_t, Vector<uint32_
 
 int main() {
     int failed = 0;
+    // Over a mutual pairing texture every flip and transpose pairs both ways: partner(partner(p)) = p, for pixels
+    // across the texture's wrap
+    mutual = true;
+    int unpaired = 0, flips = 0, pairs = 0;
+    for (frame_number = 0; frame_number < 64; frame_number++) for (uint32_t t = 0; t < 3; t++) {
+        flips |= 1 << (hash(frame_number * 3 + t) & 7);
+        for (int y = 0; y < 300; y += 7) for (int x = 0; x < 600; x += 3) {
+            const Vector<int32_t, 2> p(x, y), q = partner_0(p, t);
+            // Partners off the image are dropped by every caller
+            if (q.x < 0 || q.y < 0) continue;
+            const Vector<int32_t, 2> back = partner_0(q, t);
+            unpaired += back.x != p.x || back.y != p.y, pairs++;
+        }
+    }
+    mutual = false, frame_number = 3;
+    failed += unpaired > 0 || flips != 255 || pairs == 0;
+    printf("mutual pairing: %d of %d pairs over every flip and transpose unpaired%s\n", unpaired, pairs,
+        unpaired > 0 || flips != 255 ? "  FAILED" : "");
     // Reservoirs of every reconnection type, end type and depth, every fifth empty
     for (int i = 0; i < W * H; i++) {
         temporal[i] = Reservoir{};
