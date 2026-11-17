@@ -1026,9 +1026,22 @@ func toonMix(inout drawn: SampleBSDF, v: float3, n_i: float3, material: Material
     return exp(distance * log(absorption_coefficient));
 }
 
-// Light sampling except at smooth mirrors and glass, whose lobes are delta
-[CudaDeviceExport] public func samplesLights(material: Material) -> bool {
-    return material.roughness > 0.0f || (material.metallic < 1.0f && material.transmission < 1.0f);
+[CudaDeviceExport] public func vertexEta(material: Material, n_dot_v: float) -> float2 {
+    let is_entering: bool = n_dot_v < 0.0f;
+    // Incident side is air, outgoing side is material (entering)
+    let eta_i: float = select(1.0f, material.ior, is_entering);
+    // Incident side is material, outgoing side is air (exiting)
+    let eta_o: float = select(material.ior, 1.0f, is_entering);
+    return float2(eta_i, eta_o);
+}
+
+// Decide between next event estimation and emission on the next hit, as the path tracer does
+[CudaDeviceExport] public func neeDecision(material: Material, n_dot_v: float, eta_i: float, eta_o: float) -> bool {
+    // Calculate fresnel term
+    let F_n: float3 = mix(float3(fresnel(abs(n_dot_v), eta_i, eta_o)), material.albedo, material.metallic);
+    let F_n_greyscale: float = rgb_to_greyscale(F_n);
+    let diffuse_factor_estimate: float = max((1.0f - F_n_greyscale) * (1.0f - material.metallic) * (1.0f - material.transmission), 0.0f);
+    return diffuse_factor_estimate > 0.04f || material.roughness > 0.2f;
 }
 
 // Per lobe: BSDF * n_dot_l = throughput * PDF_lobe, light sample of PDF pdf

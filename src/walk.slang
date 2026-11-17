@@ -717,11 +717,6 @@ __extern_cpp public struct SkySample {
     __extern_cpp public uint random_state;
 }
 
-func vertexEta(material: Material, n_dot_v: float) -> float2 {
-    let is_entering: bool = n_dot_v < 0.0f;
-    return float2(select(1.0f, material.ior, is_entering), select(material.ior, 1.0f, is_entering));
-}
-
 // Whether the path tracer considers dir to point towards the incorrect side of the surface
 func wrongSide(is_inside: bool, refracted: bool, dir: float3, geometry_n: float3) -> bool {
     return (is_inside == refracted) != (dot(dir, geometry_n) > 0.0f);
@@ -1744,7 +1739,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let material: Material = surface.material;
         let n_dot_v: float = dot(surface.smooth_n, - ray.unit_direction);
         let eta: float2 = vertexEta(material, n_dot_v);
-        var nee: bool = scatter && samplesLights(material);
+        var nee: bool = scatter && neeDecision(material, n_dot_v, eta.x, eta.y);
         // Light is sampled at the top layer alone
         if (layersUsed() && (passed || layer != 0u)) {
             nee = false;
