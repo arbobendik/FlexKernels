@@ -41,7 +41,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `sampleGGXVNDF`, `sampleCosWeightedHemisphere`, `tangentToWorld`, `worldToTangent` | cu:131, 153, 162, 172 | wgsl:726, 748, 757, 767 | 1 | **Shared** | Identical |
 | `normalMapTBN`, `tangentToWorldNormalMap` | cu:184, 203 | wgsl:779, 801 | 2, FlexLight | **Shared** | FlexLight's `mat3x3<f32>` and handedness, which flips the tangent where flex-cuda-pt turned the bitangent; Slang writes the columns as `float3x3(t, b, n)` and `tbn * v` as `mul(v, tbn)`, which WGSL gets back as written. CUDA takes the prelude's `Matrix<float, 3, 3>`, named `SlangMatrix` across the header, for its own `Matrix` |
 | `BSDF`, `SampleBSDF`, `BSDFLobes`, `sampleHalfVector`, `bsdfLobes`, `lobeThroughput`, `lobeDensity`, `sampleBSDF`, `connectBSDF` | cu:438, 210, 221, 235, 246, 278, 325, 360, 411 | wgsl:807-1032 | 2, FlexLight | **Shared** | FlexLight's plain Fresnel, its diffuse and refraction then dimmed by what the dielectric reflects, refraction of the share not metallic, and clamped density on its `Material`, whose albedo tints every surface interaction, the diffuse, metallic reflection and refraction, its absorption left to `beerLambert`; the dielectric's Fresnel then by Blender's Specular IOR Level and Tint, its reflectance at normal incidence scaled and tinted, white at grazing; flex-cuda-pt's Smith masking goes |
-| `samplesLights` | inline in `walk` cu:1094 (`bd5216f`) | `neeDecision` wgsl:1356 | 2, flex-cuda-pt | **Shared** | renderer.cu's surfaces that sample lights, all but smooth mirrors and glass, as emission is weighted against light sampling with the light tree; in place of FlexLight's `neeDecision` between the two, plain Fresnel |
+| `neeDecision`, `vertexEta` | inline in `walk` cu:1094 (`bd5216f`) | `neeDecision` wgsl:1356 | 2, FlexLight | **Shared** | FlexLight's surfaces that sample lights, those whose estimated diffuse share exceeds 0.04 or rougher than 0.2, by plain Fresnel at the viewing angle; emission at the next vertex takes the full weight where its predecessor sampled none |
 | `neeBSDF` | `lightBSDF` cu:998 (`2782758`) | `skyBSDF` wgsl:1195 (`be9b457`) | 2, FlexLight | **Shared** | FlexLight's balance heuristic per lobe, over the density of the sample, on the side the consumer's `wrongSide` selects; flex-cuda-pt's power heuristic as an option, in FlexLight's form |
 | `straightThrough` | inline in `sampleLight` cu:960 (`2782758`) | – | 2 | **Shared** | Shadow rays passing straight through equal IORs, as `sampleBSDF`'s refraction lobe carries them on average; flex-cuda-pt's lacked the share of metallic reflection, now `1 - metallic`. FlexLight's shadow rays stop at every surface |
 | `shadowLift`, `shadowLength`, `occluderTransmittance` | `sampleLight` cu:917-931 (1ae631c) | `sampleLightTree` PC:746 (0d8bb26) | 2 | **Shared** | One shadow segment for both consumers at the user's direction: FlexLight's lift of the end by the emitter's offset, turned toward the start, which the consumer adds where it forms the segment; renderer.cu's length, short of the end by a relative 1e-4, in place of FlexLight's skip of the emitter's triangle; and renderer.cu's transmittance of an occluder's layer. FlexLight's shadow rays take the lift and the length; flex-cuda-pt's the length and the transmittance, the lift pending a measurement of its own |
@@ -80,7 +80,6 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `Domain`, `Vertex` | cu:569-579 | wgsl:1827-1840 | 3 | Local | Hold `Hit`; WGSL's `Vertex` adds `inside` |
 | `extractBits` | cu:590 | builtin | 1 | Local | WGSL builtin |
 | `wrongSide` | cu:639 | wgsl:1988 | 3 | Local | The incoming direction's side of the face vs FlexLight's `inside` state of the path |
-| `vertexEta` | inline in `walk` | wgsl:1939 | 1 | Local | Not a CUDA function |
 | `RESTIR_*`, `END_NEE`, `END_EMIT`, `RC_*`, `PATH_*` (but `PATH_INSIDE`), `STREAM_NEE`, `STREAM_RR`, `STREAM_SELECT` | cu:529-562 | wgsl:1738-1777 | 1 | Local, inlined | Equal, constants (see `PI`). `END_ENV` is 2 vs 3, `STREAM_JITTER`/`STREAM_COVERAGE` vs `STREAM_SPHERE`/`STREAM_SKY` |
 | `walk`, `shift`, `pixelDomain` | cu:793, 1046, 645 | wgsl:1996, 2335, `currentDomain`... 1892-1923 | 3 | Local | Behind `ITracer` and a scene interface, see below |
 | `project`, `previousValid`, `temporalNeighbor`, `partner` | cu:1059-1094 | wgsl:2297-2323 | 3 | Local | Camera basis vs view matrix; pairing `char2*` vs `texture_2d_array<i32>` |
@@ -151,7 +150,7 @@ grazing incidence and exitance): every shared function on the case's directions,
 random state, `sampleGGXVNDF` also directly on the outgoing direction mirrored above the surface, and on the case's
 `Material` FlexLight's BSDF through the half vector of its directions, each lobe's throughput where `sampleBSDF` can
 choose it toward its side and density, `sampleBSDF`, `connectBSDF` per lobe weighted by its density, `BSDF`,
-`samplesLights`, `neeBSDF` by each heuristic against a density of 0.5 plus the transparency, the normal map of the
+`neeDecision`, `neeBSDF` by each heuristic against a density of 0.5 plus the transparency, the normal map of the
 triangle of its directions, two reservoirs resampled by their shifts, `beerLambert` over the sum of the IORs,
 `straightThrough` along the incoming direction, two light tree nodes of the case picked toward a point of it, a
 triangle's density in solid angle, the power heuristic against a density of the case and against none and a sphere of
@@ -183,7 +182,6 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
   The light tree's are renderer.cu's (`bd5216f`), transcribed into the kernel, whose generated CUDA returned the same
   words as renderer.cu's own on a million random nodes, points and picks, with and without `--use_fast_math`.
   The sphere's are pbrt-v4's formulas written out in the kernel, `1 - cos` of the cone by its square root.
-  `samplesLights`' is renderer.cu's condition written out in the kernel.
   ReSTIR's decisions, `facingSign` to `canonicalWeight`, are FlexLight's expressions of a4acf92 written out in the
   kernel with 754e9a0's constants, which a4acf92 keeps, on lavapipe every word of the generated code's, and on NVIDIA.
   On Intel Mesa the first temporal weight is 1 or 2 ulps off in 39 cases, also with FlexLight's text as the
