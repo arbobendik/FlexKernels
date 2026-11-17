@@ -259,7 +259,41 @@ int main() {
     cdf = true;
     summing = true;
     furnace("white sphere, ReSTIR off", camera, center, 0.3f, 1, failed);
+    // A white sheen over it drawn as its own lobe, reconnected and replayed by ReSTIR
+    scene[0].layer[0].sheen = ONE, scene[0].layer[0].sheen_roughness = 0.5f;
+    furnace("white sheen, ReSTIR off", camera, center, 0.3f, 1, failed);
     summing = false;
+    furnace("white sheen", camera, center, 0.3f, 1, failed);
+    {
+        // Paths leaving the sphere by its sheen lobe (walk.slang's PATH_LOBE_PREV at bit 15, LOBE_SHEEN 4) that a
+        // neighbouring primary hit takes, shifted there and back up to the environment reconnection's rounding
+        const auto seen = [&](V dir) {
+            const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, dir}, true, 1e30f, true, NO_HIT, true);
+            return Domain{camera, camera + scaled(dir, hit.distance), hit};
+        };
+        const Domain near = seen(V(0, 0, -1)), off = seen(V(sinf(0.02f), 0, -cosf(0.02f)));
+        int sheened = 0, back = 0;
+        for (int i = 0; i < 16384; i++) {
+            Reservoir path = {};
+            path.seed = hash(3 * i + 2);
+            Selection sel = {};
+            sel.random_state = hash(3 * i + 3);
+            walk_hook(near, path, false, 1, &sel);
+            const Reservoir r = finalize(sel, 1);
+            if (!(r.w > 0) || (r.path >> 15 & 7u) != 4u) continue;
+            const Shift to = shift_hook(off, r);
+            if (!(to.f.x > 0)) continue;
+            Reservoir moved = r;
+            moved.f = to.f;
+            const Shift home = shift_hook(near, moved);
+            sheened++, back += fabsf(home.f.x - r.f.x) <= 1e-4f * r.f.x;
+        }
+        const bool kept = sheened > 256 && back == sheened;
+        failed += !kept;
+        printf("replay of the sheen lobe: %d of %d paths there and back within 1e-4%s\n", back, sheened,
+            kept ? "" : "  FAILED");
+    }
+    scene[0].layer[0] = lambert(1, 0);
     scene[0].coverage = 0.3f;
     furnace("white sphere covered at 0.3", camera, center, 0.3f, 1, failed);
     scene[0].layer[0] = lambert(0, 0);
