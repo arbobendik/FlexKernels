@@ -26,9 +26,9 @@ public static const uint PATH_RC = 10u;
 public static const uint PATH_TYPE = 12u;
 #ifdef FK_RESTIR
 public static const uint PATH_LOBE_PREV = 15u;
-public static const uint PATH_LOBE = 17u;
-public static const uint PATH_NEE = 19u;
-public static const uint PATH_INSIDE = 20u;
+public static const uint PATH_LOBE = 18u;
+public static const uint PATH_NEE = 21u;
+public static const uint PATH_INSIDE = 22u;
 
 // Random streams besides the per vertex ones
 public static const uint STREAM_NEE = 64u;
@@ -1661,7 +1661,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 candidate.radiance = safeDivide(f * select(weight, 1.0f, extractBits(chain.path, PATH_K, 5u) == b), chain_throughput);
             } else if (prev.rough) {
                 // Reconnection to the environment direction, guarded by the roughness threshold only (Sec. 4.2)
-                candidate.path = insertBits(insertBits(insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_ENV, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 2u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
+                candidate.path = insertBits(insertBits(insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_ENV, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 3u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
                 candidate.jac = prev.pdf;
                 candidate.dir = ray.unit_direction;
             }
@@ -1776,7 +1776,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let chain_found: bool = extractBits(chain.path, PATH_RC, 2u) == RC_SURFACE;
         // Reconnection at this vertex for paths ending here
         var here: Reservoir = chain;
-        here.path = insertBits(insertBits(insertBits(insertBits(0u, b, PATH_K, 5u), RC_SURFACE, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 2u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
+        here.path = insertBits(insertBits(insertBits(insertBits(0u, b, PATH_K, 5u), RC_SURFACE, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 3u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
         here.jac = prev.pdf * geometry_density;
         withReservoirHit(here, hit);
         let arrived: bool = replay && rc == RC_SURFACE && b == k;
@@ -1928,7 +1928,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         if (scatter) {
             // Replaying, x_k-1 connects to the reconnection vertex and x_k leaves along the stored direction with the stored lobes
             let connect: bool = replay && b == stop;
-            var lobe_index: uint = select(extractBits(r.path, PATH_LOBE_PREV, 2u), extractBits(r.path, PATH_LOBE, 2u), arrived);
+            var lobe_index: uint = select(extractBits(r.path, PATH_LOBE_PREV, 3u), extractBits(r.path, PATH_LOBE, 3u), arrived);
             var dir: float3 = r.dir;
             var refracted: bool = lobe_index == LOBE_REFRACT;
             var wrong_side: bool = false;
@@ -1984,7 +1984,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     connectBSDF(ray.unit_direction, dir, surface.smooth_n, material, eta.x, eta.y, lobe_index, surface.random_state));
             }
             // Delta lobes have no competing light sample, straight transmission keeps the preceding vertex's weights
-            let delta: bool = AT_HAIR(false, lobe_index != LOBE_DIFFUSE && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y)));
+            // The diffuse and sheen lobes are never delta
+            let spread_out: bool = lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_SHEEN;
+            let delta: bool = AT_HAIR(false, !spread_out && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y)));
 #ifdef FK_FCPT_WALK
             straight = !hair && lobe_index == LOBE_REFRACT && material.ior == 1.0f;
             // Camera status kept by a refraction at equal indices, which bends no ray
@@ -2004,8 +2006,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 nee_vertex.none = true;
             }
             // Inverse ray footprint criterion for the density of the direction leaving this vertex (Eq. 5)
-            let inverse_footprint: bool = withinInverseFootprint(lobe.pdf, lobe_index == LOBE_DIFFUSE, prev.cos, hit.distance, threshold);
-            let rough: bool = roughLobe(lobe.pdf, lobe_index == LOBE_DIFFUSE, material.roughness);
+            let inverse_footprint: bool = withinInverseFootprint(lobe.pdf, spread_out, prev.cos, hit.distance, threshold);
+            let rough: bool = roughLobe(lobe.pdf, spread_out, material.roughness);
             if (arrived) {
                 if (!inverse_footprint) {
                     return fail;
@@ -2038,7 +2040,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             if (!replay && !chain_found && footprint && inverse_footprint) {
                 chain = here;
-                chain.path = insertBits(insertBits(chain.path, lobe_index, PATH_LOBE, 2u), select(0u, 1u, nee), PATH_NEE, 1u);
+                chain.path = insertBits(insertBits(chain.path, lobe_index, PATH_LOBE, 3u), select(0u, 1u, nee), PATH_NEE, 1u);
                 chain.jac *= lobe.pdf;
                 chain.dir = dir;
                 chain_throughput = throughput;
@@ -2162,7 +2164,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 candidate.radiance = safeDivide(f * select(weight, 1.0f, extractBits(chain.path, PATH_K, 5u) == b), chain_throughput);
             } else if (prev.rough) {
                 // Reconnection to the environment direction, guarded by the roughness threshold only (Sec. 4.2)
-                candidate.path = insertBits(insertBits(insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_ENV, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 2u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
+                candidate.path = insertBits(insertBits(insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_ENV, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 3u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
                 candidate.jac = prev.pdf;
                 candidate.dir = ray.unit_direction;
             }

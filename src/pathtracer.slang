@@ -1111,6 +1111,8 @@ static const float HAIR_TILTS[4] = {-2.0f, 1.0f, 4.0f, 0.0f};
 
 public static const uint LOBE_DIFFUSE = 0u;
 public static const uint LOBE_REFRACT = 1u;
+// 3 is the walk's LOBE_NONE of camera rays
+public static const uint LOBE_SHEEN = 4u;
 
 __include walk;
 
