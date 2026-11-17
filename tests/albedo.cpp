@@ -7,7 +7,9 @@ int main() {
     const Vector<float, 3> ZERO(0, 0, 0), ONE(1, 1, 1);
     const Material MATERIALS[] = {{ONE, ZERO, 0.5f, 1, 0, 1.5f, ZERO, ONE, 1}, {ONE, ZERO, 0.2f, 0, 0, 1.5f, ZERO, ONE, 1},
         {ONE, ZERO, 1, 0, 0, 1.5f, ZERO, ONE, 1}, {Vector<float, 3>(0.5f, 0.5f, 0.5f), ZERO, 0.2f, 1, 1, 1.5f, ZERO, ONE, 1}};
-    const float ALBEDOS[][3] = {{0.9158f, 0.8551f, 0.8315f}, {0.9998f, 0.9990f, 0.9877f}, {0.9209f, 0.9420f, 0.9478f},
+    // White metal at r 0.5: GGX's single scattering (0.9158, 0.8551, 0.8315) by its rebounces, 1 / Ebar = 1.1369,
+    // limited to 1 / E_up at normal view
+    const float ALBEDOS[][3] = {{0.9945f, 0.9722f, 0.9453f}, {0.9998f, 0.9990f, 0.9877f}, {0.9209f, 0.9420f, 0.9478f},
         {0.4992f, 0.4978f, 0.4875f}};
     int failed = 0;
     for (int m = 0; m < 4; m++) for (int k = 0; k < 3; k++) {
@@ -293,12 +295,22 @@ int main() {
     const auto stretched = [&](int m, Vector<float, 3> albedo) {
         return Material{albedo, ZERO, ROUGHNESS, float(m < 2), float(m == 2), 1.5f, ZERO, ONE, 1, ZERO, ZERO, 0.5f, ANISOTROPIES[m], 0.1f, X};
     };
+    // Metal's rebounces as FK takes them: 1 / (1 - F (1 - Ebar)) limited to 1 / E_up(mu, r), r of the smoother axis
+    const auto rebounce = [&](float F, float mu, float r) {
+        const float a = r * r, lost = powf(a, 1.81585f) * (2.15372f - 0.73285f * a) / (1 + 1.28095f * a);
+        const float up = fminf(1.000645f - r * (0.003755f + mu * (-0.041334f + mu * (-0.909385f + mu * 0.352754f)))
+            - r * r * (0.276028f + mu * (1.270234f + mu * 0.0474f)) - r * r * r * (0.314529f - mu * 0.348307f)
+            + r * r * r * r * 0.272297f, 1);
+        return fminf(1 / (1 - F * lost), 1 / up);
+    };
     const auto unit = [&](Vector<float, 3> a) { const float l = sqrtf(dot(a, a)); return Vector<float, 3>(a.x / l, a.y / l, a.z / l); };
     const Vector<float, 3> T(cosf(0.2f * PI), sinf(0.2f * PI), 0), B(-T.y, T.x, 0);
     for (int m = 0; m < 3; m++) for (int k = 0; k < 6; k++) {
         const Material M = stretched(m, ONE);
         const float aspect = sqrtf(1 - 0.9f * fabsf(ANISOTROPIES[m])), ax = ANISOTROPIES[m] < 0 ? ALPHA * aspect : ALPHA / aspect,
             ay = ALPHA * ALPHA / ax, sine = sqrtf(1 - COSINES[k / 2] * COSINES[k / 2]);
+        // The factor at this view, of the smoother axis
+        const auto factor = [&](float F) { return rebounce(F, COSINES[k / 2], sqrtf(fminf(ax, ay))); };
         const auto D = [&](Vector<float, 3> h) { const float x = dot(h, T) / ax, y = dot(h, B) / ay; return 1 / (PI * ax * ay * powf(x * x + y * y + h.z * h.z, 2)); };
         const auto G1 = [&](Vector<float, 3> w) { return 2 * w.z / (w.z + sqrtf(powf(ax * dot(w, T), 2) + powf(ay * dot(w, B), 2) + w.z * w.z)); };
         const Vector<float, 3> in_dir(k % 2 ? 0 : sine, k % 2 ? sine : 0, -COSINES[k / 2]), v(-in_dir.x, -in_dir.y, -in_dir.z);
@@ -315,18 +327,23 @@ int main() {
             const float f = faceBSDF(in_dir, l, n, n, M, 1, 1.5f, hash(i)).x;
             sum += s.throughput.x / (1 << 18), squares += s.throughput.x * s.throughput.x / (1 << 18);
             if (s.pdf > 0 && s.throughput.x > 0) worst = fmax(worst, fmax(fabs(c.pdf / s.pdf - 1), fabs(f / (s.throughput.x * s.pdf) - 1)));
-            if (m < 2 && s.throughput.x > 0) worst = fmax(worst, fmax(fabs(f / (D(unit(v + l)) * G1(v) * G1(l) / (4 * v.z)) - 1),
-                fabs(f / l.z / (faceBSDF(Vector<float, 3>(-l.x, -l.y, -l.z), v, n, n, M, 1, 1.5f, 0u).x / v.z) - 1)));
+            if (m < 2 && s.throughput.x > 0) worst = fmax(worst, fmax(fabs(f / (factor(1) * D(unit(v + l)) * G1(v)
+                * G1(l) / (4 * v.z)) - 1),
+                // Reciprocal but for the factor, which takes each direction's own view
+                fabs(f / factor(1) / l.z / (faceBSDF(Vector<float, 3>(-l.x, -l.y, -l.z), v, n, n, M, 1, 1.5f, 0u).x
+                / rebounce(1, l.z, sqrtf(fminf(ax, ay))) / v.z) - 1)));
             for (int r = 0; m < 2 && r < 2; r++) {
                 const Vector<float, 3> t = sampleBSDF(in_dir, n, stretched(m, COLORS[r]), 1, 1.5f, hash(i), Vector<float, 2>(0, 0)).throughput;
                 colored[r][0] += t.x / (1 << 18), colored[r][1] += t.y / (1 << 18), colored[r][2] += t.z / (1 << 18);
             }
         }
         const double error = 3 * sqrt(fmax(squares - sum * sum, 0) / (1 << 18));
-        bool bad = albedo > 1 || fabs(sum - albedo) > error || worst > 1e-4;
+        // At most 1 at every view, metal's rebounces included
+        bool bad = albedo > 1 + error || fabs(sum - albedo) > error || worst > 1e-4;
         for (int r = 0; m < 2 && r < 2; r++) {
             const double color[3] = {COLORS[r].x, COLORS[r].y, COLORS[r].z};
-            for (int ch = 0; ch < 3; ch++) bad |= colored[r][ch] > 1 || fabs(colored[r][ch] - albedo * color[ch]) > error;
+            for (int ch = 0; ch < 3; ch++)
+                bad |= fabs(colored[r][ch] - albedo * color[ch] * factor(color[ch]) / factor(1)) > error;
         }
         printf("anisotropic %s %g along %c at cosine %g: albedo %.4f, sampled %.4f +- %.4f", m < 2 ? "metal" : "glass",
             ANISOTROPIES[m], k % 2 ? 'y' : 'x', COSINES[k / 2], albedo, sum, error);
