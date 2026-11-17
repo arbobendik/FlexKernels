@@ -208,6 +208,8 @@ float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t* state, V
 static bool summing = false, seen = false;
 // Standard error of the last furnace's mean
 static double furnace_se = 0;
+// Channel the furnace reads
+static int furnace_channel = 0;
 static double furnace(const char* name, V camera, V aim, float angle, double truth, int& failed, float absorbs = 0) {
     const int N = 1 << 17;
     double sum = 0, sum2 = 0, through = 0;
@@ -230,7 +232,7 @@ static double furnace(const char* name, V camera, V aim, float angle, double tru
         walk_hook(dom, path, false, 1, &sel);
         misfits += dotv(handed_direction, dir) < 1 - 1e-6f
             || fabsf(handed_distance - hit.distance) > 1e-5f * hit.distance;
-        const double y = sel.color.x + (seen ? sel.glow.x : 0);
+        const double y = sel.color[furnace_channel] + (seen ? sel.glow[furnace_channel] : 0);
         through += exp(-absorbs * hit.distance);
         sum += y, sum2 += y * y;
     }
@@ -259,6 +261,29 @@ int main() {
     cdf = true;
     summing = true;
     furnace("white sphere, ReSTIR off", camera, center, 0.3f, 1, failed);
+    {
+        // White and coloured metal by their rebounces, limited per view: never above what they receive (1 and 4 standard
+        // errors) and not below the values measured with the limit, less 0.002 and 4 standard errors
+        const float ROUGHNESS[3] = {0.25f, 0.5f, 1};
+        const float COLOR[3] = {0.9f, 0.5f, 0.2f};
+        const double LOWER[3][4] = {{0.9941, 0.8953, 0.4973, 0.1989}, {0.9936, 0.8903, 0.4738, 0.1825},
+            {0.9160, 0.7175, 0.2543, 0.0800}};
+        int off = 0;
+        for (int k = 0; k < 3; k++) for (int c = 0; c < 4; c++) {
+            const V albedo = c == 0 ? ONE : V(COLOR[0], COLOR[1], COLOR[2]);
+            scene[0].layer[0] = Material{albedo, ZERO, ROUGHNESS[k], 1, 0, 1.5f, ONE, ONE, 1, ZERO, ZERO, 0.5f, 0, 0,
+                ZERO};
+            furnace_channel = c == 0 ? 0 : c - 1;
+            char name[64];
+            snprintf(name, sizeof name, "  metal %s r%g channel %d", c == 0 ? "white" : "coloured", ROUGHNESS[k],
+                furnace_channel);
+            const double mean = furnace(name, camera, center, 0.3f, NAN, failed);
+            off += mean > 1 + 4 * furnace_se || mean < LOWER[k][c] - 0.002 - 4 * furnace_se;
+        }
+        furnace_channel = 0, scene[0].layer[0] = lambert(1, 0);
+        failed += off > 0;
+        printf("metal rebounces: %d of 12 rows above 1 or below their measured value%s\n", off, off > 0 ? "  FAILED" : "");
+    }
     // A white sheen over it drawn as its own lobe, reconnected and replayed by ReSTIR
     scene[0].layer[0].sheen = ONE, scene[0].layer[0].sheen_roughness = 0.5f;
     furnace("white sheen, ReSTIR off", camera, center, 0.3f, 1, failed);
