@@ -85,7 +85,9 @@ static Reservoir stored[W * H];
 static Hit stored_hit[W * H];
 bool HookScene_restirUsed_0() { return reuse; }
 uint32_t HookScene_samples_0() { return 4; }
-void HookScene_missed_0(Vector<int32_t, 2>, Domain, float) { missed_paths++; }
+Vector<float, 3> HookScene_missed_0(Vector<int32_t, 2>, Domain, float) {
+    return missed_paths++, Vector<float, 3>(0, 0, 0);
+}
 void HookScene_addColor_0(Vector<int32_t, 2> p, Vector<float, 4> color) { added[p.y * W + p.x] = color; }
 void HookScene_storeReservoirInitial_0(Vector<int32_t, 2> p, Reservoir r, Hit hit) {
     stored[p.y * W + p.x] = r, stored_hit[p.y * W + p.x] = hit;
