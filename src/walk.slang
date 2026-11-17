@@ -1937,7 +1937,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     reconnection = scene.hitPosition(rc_hit);
                 }
                 // A translucent material's diffuse lobe connects through to the other side of its smooth normal too
-                refracted = refracted || (isTranslucent(material) && lobe_index == LOBE_DIFFUSE && dot(surface.smooth_n, select(r.dir, reconnection - ray.origin, rc == RC_SURFACE)) * n_dot_v < 0.0f);
+                refracted = refracted || (((isTranslucent(material) && lobe_index == LOBE_DIFFUSE) || lobe_index == LOBE_CORRECTING) && dot(surface.smooth_n, select(r.dir, reconnection - ray.origin, rc == RC_SURFACE)) * n_dot_v < 0.0f);
                 if (rc == RC_SURFACE) {
                     dir = normalize(reconnection - (ray.origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, is_inside != refracted)));
                 }
@@ -1979,8 +1979,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     connectBSDF(ray.unit_direction, dir, surface.smooth_n, material, eta.x, eta.y, lobe_index, surface.random_state));
             }
             // Delta lobes have no competing light sample, straight transmission keeps the preceding vertex's weights
-            // The diffuse and the sheen or velvet lobe are never delta
-            let spread_out: bool = lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_SHEEN_VELVET;
+            // The diffuse, the sheen or velvet and the correcting lobe are never delta
+            let spread_out: bool = lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_SHEEN_VELVET
+                || lobe_index == LOBE_CORRECTING;
             let delta: bool = AT_HAIR(false, !spread_out && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y)));
 #ifdef FK_FCPT_WALK
             straight = !hair && lobe_index == LOBE_REFRACT && material.ior == 1.0f;
