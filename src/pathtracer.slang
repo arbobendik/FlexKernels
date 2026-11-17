@@ -524,7 +524,8 @@ __extern_cpp public struct AnisotropicFrame {
     let total: bool = eta_i * eta_i * (1.0f - v_dot_h * v_dot_h) >= eta_o * eta_o;
     let F_dielectric: float3 = total ? float3(1.0f) : material.specular_tint * f0 + (1.0f - material.specular_tint * f0)
         * (F_level - f0) / (1.0f - f0);
-    // E = sheenAlbedo(n_dot_v, sheen_roughness)
+    // E(mu, r) = integral_hemisphere sheenBRDF(l, v, n, r) * n_dot_l dl, mu = n_dot_v, bilinear over sqrt(mu) and sqrt(r)
+    // between the nodes of SHEEN_ALBEDO = ln(E), or of VELVET_ALBEDO = E for velvet
     // Base lobes scaled by 1 - sheen * min(E, 1)
     // Sheen lobe = sheen / max(E, 1) * sheenBRDF, chosen by greyscale(sheen) * min(E, 1)
     // => sheen lobe albedo = sheen * E / max(E, 1) <= sheen
@@ -533,11 +534,27 @@ __extern_cpp public struct AnisotropicFrame {
     var sheen: float3 = float3(0.0f);
     var view: float3 = float3(0.0f);
     if (sheenUsed() && rgb_to_greyscale(material.sheen) > 0.0f) {
+        let x: float = clamp(sqrt(max(dot(n_i, v), 0.0f)), 0.0f, 1.0f) * float(SHEEN_NODES - 1u);
+        let i: uint = min(uint(x), SHEEN_NODES - 2u);
+        var least: float = sqrt(SHEEN_LEAST);
 #ifdef FK_VELVET
-        let albedo: float = material.velvet > 0.0f ? velvetAlbedo(dot(n_i, v), material.sheen_roughness)
-            : sheenAlbedo(dot(n_i, v), material.sheen_roughness);
-#else
-        let albedo: float = sheenAlbedo(dot(n_i, v), material.sheen_roughness);
+        least = select(least, sqrt(VELVET_LEAST), material.velvet > 0.0f);
+#endif
+        let y: float = (clamp(sqrt(max(material.sheen_roughness, 0.0f)), least, 1.0f) - least) / (1.0f - least)
+            * float(SHEEN_NODES - 1u);
+        let j: uint = min(uint(y), SHEEN_NODES - 2u);
+        let k: uint = i * SHEEN_NODES + j;
+        let u: float = x - float(i);
+        let t: float = y - float(j);
+        var a: float = SHEEN_ALBEDO[k] + (SHEEN_ALBEDO[k + SHEEN_NODES] - SHEEN_ALBEDO[k]) * u;
+        var b: float = SHEEN_ALBEDO[k + 1u] + (SHEEN_ALBEDO[k + SHEEN_NODES + 1u] - SHEEN_ALBEDO[k + 1u]) * u;
+        var albedo: float = exp(a + (b - a) * t);
+#ifdef FK_VELVET
+        if (material.velvet > 0.0f) {
+            a = VELVET_ALBEDO[k] + (VELVET_ALBEDO[k + SHEEN_NODES] - VELVET_ALBEDO[k]) * u;
+            b = VELVET_ALBEDO[k + 1u] + (VELVET_ALBEDO[k + SHEEN_NODES + 1u] - VELVET_ALBEDO[k + 1u]) * u;
+            albedo = a + (b - a) * t;
+        }
 #endif
         scale = 1.0f - material.sheen * min(albedo, 1.0f);
         sheen_component = rgb_to_greyscale(material.sheen) * min(albedo, 1.0f);
@@ -605,21 +622,6 @@ __extern_cpp public struct AnisotropicFrame {
         / max(4.0f * (n_dot_l + n_dot_v - n_dot_l * n_dot_v), BIAS);
 }
 
-// E(mu, r) = exp(bilinear interpolation of SHEEN_ALBEDO over sqrt(mu) and sqrt(r))
-[CudaDeviceExport] public func sheenAlbedo(mu: float, r: float) -> float {
-    let least: float = sqrt(SHEEN_LEAST);
-    let x: float = clamp(sqrt(max(mu, 0.0f)), 0.0f, 1.0f) * float(SHEEN_NODES - 1u);
-    let y: float = (clamp(sqrt(max(r, 0.0f)), least, 1.0f) - least) / (1.0f - least) * float(SHEEN_NODES - 1u);
-    let i: uint = min(uint(x), SHEEN_NODES - 2u);
-    let j: uint = min(uint(y), SHEEN_NODES - 2u);
-    let u: float = x - float(i);
-    let t: float = y - float(j);
-    let k: uint = i * SHEEN_NODES + j;
-    let a: float = SHEEN_ALBEDO[k] + (SHEEN_ALBEDO[k + SHEEN_NODES] - SHEEN_ALBEDO[k]) * u;
-    let b: float = SHEEN_ALBEDO[k + 1u] + (SHEEN_ALBEDO[k + SHEEN_NODES + 1u] - SHEEN_ALBEDO[k + 1u]) * u;
-    return exp(a + (b - a) * t);
-}
-
 #ifdef FK_VELVET
 // Velvet (Ashikhmin et al. 2000), s = max(r, 0.01)
 // D = exp(-cot(theta_h)^2 / s^2) / (PI * s^2 * sin(theta_h)^4), cot(theta_h)^2 = n_dot_h^2 / sin(theta_h)^2
@@ -637,20 +639,6 @@ __extern_cpp public struct AnisotropicFrame {
     return D * G / max(4.0f * n_dot_l * n_dot_v, BIAS);
 }
 
-// E(mu, s) = bilinear interpolation of VELVET_ALBEDO over sqrt(mu) and sqrt(s)
-[CudaDeviceExport] public func velvetAlbedo(mu: float, r: float) -> float {
-    let least: float = sqrt(VELVET_LEAST);
-    let x: float = clamp(sqrt(max(mu, 0.0f)), 0.0f, 1.0f) * float(SHEEN_NODES - 1u);
-    let y: float = (clamp(sqrt(max(r, 0.0f)), least, 1.0f) - least) / (1.0f - least) * float(SHEEN_NODES - 1u);
-    let i: uint = min(uint(x), SHEEN_NODES - 2u);
-    let j: uint = min(uint(y), SHEEN_NODES - 2u);
-    let u: float = x - float(i);
-    let t: float = y - float(j);
-    let k: uint = i * SHEEN_NODES + j;
-    let a: float = VELVET_ALBEDO[k] + (VELVET_ALBEDO[k + SHEEN_NODES] - VELVET_ALBEDO[k]) * u;
-    let b: float = VELVET_ALBEDO[k + 1u] + (VELVET_ALBEDO[k + SHEEN_NODES + 1u] - VELVET_ALBEDO[k + 1u]) * u;
-    return a + (b - a) * t;
-}
 #endif
 
 #ifdef FK_TOON
