@@ -2,6 +2,7 @@
 // and E[w(λ) / p(λ)] = (1, 1, 1) for λ drawn by sampleWavelength
 #include <stdio.h>
 #include <math.h>
+#include <initializer_list>
 #include "pathtracer.cpp"
 
 int main() {
@@ -78,5 +79,27 @@ int main() {
             prism.dispersion, sum[0] / weight[0], sum[1] / weight[1], sum[2] / weight[2], worst,
             worst < 0.01 ? "" : "  FAILED");
     }
+    // Energy per wavelength: smooth glass reflects and refracts all, R + T = 1 at n(λ); rough glass keeps at most 1
+    const float CUTS[] = {0.4f, 0.48f, 0.56f, 0.64f, 0.72f}, COSINES[] = {1, 0.5f, 0.2f};
+    double smooth = 0, rough = 0;
+    for (float wavelength : CUTS) for (float c : COSINES) for (float roughness : {0.0f, 0.3f}) {
+        Material glass = {Vector<float, 3>(1, 1, 1), Vector<float, 3>(0, 0, 0), roughness, 0, 1, 1.5f,
+            Vector<float, 3>(1, 1, 1), Vector<float, 3>(1, 1, 1), 1, Vector<float, 3>(0, 0, 0),
+            Vector<float, 3>(0, 0, 0), 0.5f, 0, 0, Vector<float, 3>(0, 0, 0)};
+        glass.dispersion = 0.2f;
+        const Vector<float, 3> in_dir(sqrtf(1 - c * c), 0, -c), n(0, 0, 1);
+        Material refractive = glass;
+        refractive.ior = dispersedIor(glass.ior, glass.dispersion, wavelength);
+        const Vector<float, 2> eta = vertexEta(refractive, c);
+        double sum = 0;
+        for (unsigned i = 0; i < 1u << 16; i++)
+            sum += sampleBSDF(in_dir, n, glass, eta.x, eta.y, hash(i), Vector<float, 2>(0, 0)).throughput.x / (1 << 16);
+        if (roughness == 0) smooth = fmax(smooth, fabs(sum - 1));
+        else rough = fmax(rough, sum - 1);
+    }
+    const bool kept = smooth < 1e-5 && rough < 0.005;
+    ok = ok && kept;
+    printf("energy per wavelength: smooth glass off 1 by %.1e, rough glass at most %+.4f over 1%s\n", smooth, rough,
+        kept ? "" : "  FAILED");
     return !ok;
 }
