@@ -100,7 +100,7 @@ struct TestScene : IScene {
     }
     float2 pixelOf(float3 position, bool previous) { return position.xy * (previous ? 2.0f : 1.0f); }
     bool restirUsed() { return true; }
-    void missed(int2 p, Domain dom, float scale) { queue[uint(p.x)] = asuint(dom.x1.x * scale); }
+    float3 missed(int2 p, Domain dom, float scale) { return dom.x1 * scale; }
     void addColor(int2 p, float4 color) { queue[uint(p.y)] = asuint(color.x + color.w); }
     uint queueCountAdd(uint bin, uint jobs) { uint before; InterlockedAdd(queue[bin], jobs, before); return before; }
     uint queueCountLoad(uint bin) { return queue[bin]; }

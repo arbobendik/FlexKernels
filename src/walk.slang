@@ -810,8 +810,8 @@ public interface IScene {
     public float2 pixelOf(float3 position, bool previous);
     // Reuse on, or each path's contribution summed
     public bool restirUsed();
-    // A path of p whose camera ray dom met nothing, its weight scale
-    public void missed(int2 p, Domain dom, float scale);
+    // The colour a path of p sees whose camera ray dom met nothing, at its weight scale
+    public float3 missed(int2 p, Domain dom, float scale);
     // Color added to p's accumulation, w its sample count
     public void addColor(int2 p, float4 color);
 #else
@@ -1022,7 +1022,7 @@ public struct HookScene : IScene {
     __target_intrinsic(cuda, "fcptRestirUsed()")
     public bool restirUsed();
     __target_intrinsic(cuda, "fcptMissed($0, $1, $2)")
-    public void missed(int2 p, Domain dom, float scale);
+    public float3 missed(int2 p, Domain dom, float scale);
     __target_intrinsic(cuda, "fcptAddColor($0, $1)")
     public void addColor(int2 p, float4 color);
 #else
@@ -2577,12 +2577,14 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     initial.r.seed = stream(pixel_seed, 0u);
     var hit: Hit = noHit();
     let scale: float = 1.0f / float(scene.samples());
+    // The colour of the paths that miss, summed here and added with the rest once
+    var seen: float3 = float3(0.0f);
     for (var i: uint = 0u; i < scene.samples(); i++) {
         var r: Reservoir = emptyReservoir();
         r.seed = stream(pixel_seed, i);
         var path: Domain = {};
         if (!scene.storedDomainInitial(p, r.seed, path)) {
-            scene.missed(p, path, scale);
+            seen += scene.missed(p, path, scale);
             continue;
         }
         passWalk(scene, path, r, false, scale, initial);
@@ -2591,7 +2593,9 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
             hit = path.hit;
         }
     }
-    scene.addColor(p, float4(initial.glow + select(float3(0.0f), initial.color, initial.sums), 1.0f));
+    // The camera medium's glow at the paths' share, the walks having summed it unscaled
+    seen += initial.glow / float(scene.samples());
+    scene.addColor(p, float4(initial.sums ? seen + initial.color : seen, 1.0f));
     scene.storeReservoirInitial(p, finalize(initial, 1.0f), hit);
 }
 #else
