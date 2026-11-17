@@ -52,7 +52,9 @@ Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, 
             const V on = ray.origin + scaled(ray.unit_direction, t) - scene[i].center;
             if (!(t > near) || (own && !(t > 1e-4f * scene[i].radius))
                 || dotv(on, scene[i].axis) < scene[i].cap * scene[i].radius) continue;
-            if (t < hit.distance) hit.instance_index = i, hit.distance = t;
+            // The point's polar and azimuthal angles about the center as its uv
+            if (t < hit.distance) hit.instance_index = i, hit.distance = t,
+                hit.uv = Vector<float, 2>(acosf(fmaxf(-1, fminf(1, on.z / scene[i].radius))), atan2f(on.y, on.x));
             break;
         }
     }
@@ -114,7 +116,11 @@ Light HookScene_light_0(uint32_t) { return Light{SUN, 0, ONE, 1e8f, 0}; }
 uint32_t HookScene_triangleOffset_0(uint32_t) { return 0; }
 Matrix<float, 3, 3> HookScene_worldTriangle_0(uint32_t, uint32_t) { return Matrix<float, 3, 3>(0.0f); }
 V HookScene_calculatePointLightContrib_0(uint32_t) { return ZERO; }
-V HookScene_hitPosition_0(Hit) { return ZERO; }
+V HookScene_hitPosition_0(Hit hit) {
+    const Shape& s = scene[hit.instance_index];
+    const V on(sinf(hit.uv.x) * cosf(hit.uv.y), sinf(hit.uv.x) * sinf(hit.uv.y), cosf(hit.uv.x));
+    return s.center + scaled(on, s.radius);
+}
 // Shadows pass index-matched clear surfaces and the uncovered share of others, media by exp(-extinction * d)
 static V shadowThrough(Ray ray, float l, bool surface, Hit left = NO_HIT) {
     float share = 1;
@@ -180,6 +186,7 @@ Medium HookScene_cameraMedium_0(V direction, float distance, uint32_t* filling) 
 static int majorants_of_none = 0;
 bool HookScene_varyingUsed_0() { return true; }
 bool HookScene_hairUsed_0() { return true; }
+bool HookScene_dispersionUsed_0() { return true; }
 bool HookScene_shadowFirst_0() { return true; }
 static Medium world = {ZERO, ZERO};
 // Asked of the face being left, the one shaded last
@@ -606,6 +613,40 @@ int main() {
         false, none}};
     scene[0].hair = true;
     twins("hidden emitter past hair", camera, center, 0.1f, 1);
+    // Reconnections at walls of albedo 0.5 seen straight (state 0) or through a dispersive shell (state 1): each shift
+    // keeps its path's spectral state and fails with it flipped
+    bounces = 8, sky = 0;
+    Material shell = dielectric(1.5f);
+    shell.dispersion = 0.2f;
+    for (unsigned spectral = 0; spectral < 2; spectral++) {
+        scene = {{center, 2, true, {lambert(0.5f, 1)}, 1, 1, false, none}};
+        if (spectral) scene.push_back({center, 0.5f, false, {shell}, 1, 1, false, none});
+        const auto from = [&](V dir) {
+            const Hit hit = HookScene_traverseInstanceBVH_0(Ray{center, dir}, true, 1e30f, true, NO_HIT, true);
+            return Domain{center, center + scaled(dir, hit.distance), hit};
+        };
+        const Domain near = from(V(0, 0, -1)), off = from(V(sinf(0.05f), 0, -cosf(0.05f)));
+        int reconnecting = 0, stated = 0, kept = 0, refused = 0;
+        for (int i = 0; i < 4096; i++) {
+            Reservoir path = {};
+            path.seed = hash(3 * i + 2);
+            Selection sel = {};
+            sel.random_state = hash(3 * i + 3);
+            walk_hook(near, path, false, 1, &sel);
+            const Reservoir r = finalize(sel, 1);
+            if (!(r.w > 0) || (r.path >> 10 & 3u) != 1u) continue;
+            reconnecting++, stated += (r.path >> 23 & 1u) == spectral;
+            if (!(shift_hook(off, r).jac > 0)) continue;
+            Reservoir flipped = r;
+            flipped.path ^= 1u << 23;
+            const Shift to = shift_hook(off, flipped);
+            kept++, refused += to.jac == 0 && to.f.x == 0;
+        }
+        const bool ok = kept > 100 && refused == kept && stated == reconnecting;
+        failed += !ok;
+        printf("reconnections, spectral state %u: %d of %d stated, %d kept, %d refused flipped%s\n", spectral, stated,
+            reconnecting, kept, refused, ok ? "" : "  FAILED");
+    }
     sky = 1, cdf = true;
     sun = slot_leaf = true;
     const float unslotted = lightPdf_0(ZERO, ZERO, ZERO, 0xFFFFFFFFu, SUN), slotted = lightPdf_0(ZERO, ZERO, ZERO, 0, SUN);
