@@ -80,7 +80,6 @@ public float inverseSqrt(float x) {
 [ForceInline] public float select(float f, float t, bool cond) { return select(cond, t, f); }
 [ForceInline] public float3 select(float3 f, float3 t, bool cond) { return select(cond, t, f); }
 [ForceInline] public float3 select(float3 f, float3 t, bool3 cond) { return select(cond, t, f); }
-#ifdef FK_VELVET
 // E(mu, s) = integral_hemisphere f_sheen(l, v, n, s) * n_dot_l dl, mu = n_dot_v, f_sheen the velvet lobe
 // VELVET_ALBEDO = E on SHEEN_NODES x SHEEN_NODES nodes, uniform in sqrt(mu) from 0 to 1 (rows) and in sqrt(s) from
 // sqrt(VELVET_LEAST) to 1, raised so that its bilinear reading is never below E
@@ -151,10 +150,15 @@ public static const float VELVET_ALBEDO[576] = {
     3.13075e-09f, 1.26481e-07f, 2.12952e-06f, 1.90777e-05f, 0.00010754f, 0.000428927f, 0.00131605f, 0.00330014f, 0.00707077f,
     0.0133791f, 0.0229194f, 0.0362238f, 0.0535936f, 0.0750723f, 0.100459f, 0.12935f, 0.161196f, 0.195364f,
 };
-#endif
 [ForceInline] public bool sheenUsed() {
     __target_switch {
     case glsl: __intrinsic_asm "(SHEEN)";
+    default: return true;
+    }
+}
+[ForceInline] public bool velvetUsed() {
+    __target_switch {
+    case glsl: __intrinsic_asm "(VELVET)";
     default: return true;
     }
 }
@@ -220,10 +224,8 @@ __extern_cpp public struct Material {
     __extern_cpp public float anisotropy = 0.0f;
     __extern_cpp public float anisotropic_rotation = 0.0f;
     __extern_cpp public float3 tangent = float3(0.0f);
-#ifdef FK_VELVET
     // 1 for a sheen lobe of Ashikhmin's velvet, 0 for Charlie's
     __extern_cpp public float velvet = 0.0f;
-#endif
 #ifdef FK_TOON
     // (w, w * Size, w * Smooth) of a Toon BSDF taking weight |w|, glossy for w < 0
     __extern_cpp public float3 toon = float3(0.0f);
@@ -537,9 +539,7 @@ __extern_cpp public struct AnisotropicFrame {
         let x: float = clamp(sqrt(max(dot(n_i, v), 0.0f)), 0.0f, 1.0f) * float(SHEEN_NODES - 1u);
         let i: uint = min(uint(x), SHEEN_NODES - 2u);
         var least: float = sqrt(SHEEN_LEAST);
-#ifdef FK_VELVET
-        least = select(least, sqrt(VELVET_LEAST), material.velvet > 0.0f);
-#endif
+        least = select(least, sqrt(VELVET_LEAST), velvetUsed() && material.velvet > 0.0f);
         let y: float = (clamp(sqrt(max(material.sheen_roughness, 0.0f)), least, 1.0f) - least) / (1.0f - least)
             * float(SHEEN_NODES - 1u);
         let j: uint = min(uint(y), SHEEN_NODES - 2u);
@@ -549,13 +549,11 @@ __extern_cpp public struct AnisotropicFrame {
         var a: float = SHEEN_ALBEDO[k] + (SHEEN_ALBEDO[k + SHEEN_NODES] - SHEEN_ALBEDO[k]) * u;
         var b: float = SHEEN_ALBEDO[k + 1u] + (SHEEN_ALBEDO[k + SHEEN_NODES + 1u] - SHEEN_ALBEDO[k + 1u]) * u;
         var albedo: float = exp(a + (b - a) * t);
-#ifdef FK_VELVET
-        if (material.velvet > 0.0f) {
+        if (velvetUsed() && material.velvet > 0.0f) {
             a = VELVET_ALBEDO[k] + (VELVET_ALBEDO[k + SHEEN_NODES] - VELVET_ALBEDO[k]) * u;
             b = VELVET_ALBEDO[k + 1u] + (VELVET_ALBEDO[k + SHEEN_NODES + 1u] - VELVET_ALBEDO[k + 1u]) * u;
             albedo = a + (b - a) * t;
         }
-#endif
         scale = 1.0f - material.sheen * min(albedo, 1.0f);
         sheen_component = rgb_to_greyscale(material.sheen) * min(albedo, 1.0f);
         sheen = material.sheen / max(albedo, 1.0f);
@@ -772,19 +770,17 @@ func toonInvert(target: float, lobe: ToonLobe) -> float {
         let inv_r: float = 1.0f / max(material.sheen_roughness, SHEEN_LEAST);
         var f: float = (2.0f + inv_r) * pow(max(1.0f - n_dot_h * n_dot_h, 0.0f), 0.5f * inv_r) * 0.5f * INV_PI
             / max(4.0f * (n_dot_l + n_dot_v - n_dot_l * n_dot_v), BIAS);
-#ifdef FK_VELVET
         // Velvet (Ashikhmin et al. 2000), s = max(r, 0.01)
         // D = exp(-cot(theta_h)^2 / s^2) / (PI * s^2 * sin(theta_h)^4), cot(theta_h)^2 = n_dot_h^2 / sin(theta_h)^2
         // G = min(1, 2 * n_dot_h * n_dot_v / h_dot_v, 2 * n_dot_h * n_dot_l / h_dot_v)
         // => f = D * G / (4 * n_dot_l * n_dot_v)
-        if (material.velvet > 0.0f) {
+        if (velvetUsed() && material.velvet > 0.0f) {
             let s2: float = max(material.sheen_roughness, 0.01f) * max(material.sheen_roughness, 0.01f);
             let sin2: float = max(1.0f - n_dot_h * n_dot_h, BIAS);
             f = exp(- n_dot_h * n_dot_h / (sin2 * s2)) / (PI * s2 * sin2 * sin2)
                 * min(1.0f, 2.0f * n_dot_h * min(n_dot_l, n_dot_v) / max(abs(dot(h, lobes.view)), BIAS))
                 / max(4.0f * n_dot_l * n_dot_v, BIAS);
         }
-#endif
         // BSDF = sheen * f, PDF = p_sheen / (2 * PI), uniform over the hemisphere
         // => throughput = sheen * f * n_dot_l * 2 * PI / p_sheen
         return lobes.sheen * (f * n_dot_l * 2.0f * PI / lobes.p_sheen);

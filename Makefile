@@ -21,13 +21,13 @@ all: build/cuda/pathtracer.cuh \
 # ReSTIR variants
 build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR=1
 build/cuda-restir/pathtracer.cuh: SLANGFLAGS += -DFK_FCPT_WALK=1 -DFK_RESTIR_PASSES=1
-build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_FCPT_WALK=1 -DFK_HAIR=1 -DFK_VELVET=1 \
+build/cuda-restir/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_FCPT_WALK=1 -DFK_HAIR=1 \
 	-DFK_TOON=1 -DFK_RESTIR_PASSES=1
 build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh build/cpp/pathtracer.cpp build/cpp-restir/pathtracer.cpp \
 		build/cpp-passes/pathtracer.cpp: SLANGFLAGS += -DFK_HAIR=1
 build/cuda/pathtracer.slang-module: MODULEFLAGS = -DFK_HAIR=1
 build/cuda-restir/pathtracer.cuh build/cpp/pathtracer.cpp build/cpp-restir/pathtracer.cpp \
-		build/cpp-passes/pathtracer.cpp: SLANGFLAGS += -DFK_VELVET=1 -DFK_TOON=1
+		build/cpp-passes/pathtracer.cpp: SLANGFLAGS += -DFK_TOON=1
 build/wgsl-restir/pathtracer.wgsl: SLANGFLAGS += -DFK_RESTIR_PASSES=1
 build/restir-passes/pathtracer.slang-module: MODULEFLAGS = -DFK_RESTIR=1 -DFK_RESTIR_PASSES=1
 
@@ -71,7 +71,7 @@ $(SLANGC):
 # The CPU build without FK_TOON, against which a material without toon must stay bit-identical
 build/cpp-untoon/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp-untoon
-	$(SLANGC) $(SLANGFLAGS) -DFK_HAIR=1 -DFK_VELVET=1 $< -target cpp -o $@
+	$(SLANGC) $(SLANGFLAGS) -DFK_HAIR=1 $< -target cpp -o $@
 
 build/parity-untoon-cpu: tests/parity.cpp build/cpp-untoon/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -Ibuild/cpp-untoon $< -o $@
