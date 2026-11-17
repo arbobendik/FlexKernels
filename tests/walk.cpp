@@ -333,6 +333,15 @@ int main() {
     furnace("black sphere covered at 0.3", camera, center, 0.3f, 0.49, failed);
     scene = {{center, 1, false, {dielectric(1.5f), dielectric(1.5f)}, 2, 1, false, none}};
     furnace("coat over glass", camera, center, 0.3f, 1, failed);
+    // Each wavelength's weights integrate to white: a dispersive glass in the white sky keeps 1 in red, the channel
+    // with the most negative weight
+    Material dispersive = dielectric(1.5f);
+    dispersive.dispersion = 0.2f;
+    scene = {{center, 1, false, {dispersive}, 1, 1, false, none}};
+    furnace("dispersive glass", camera, center, 0.3f, 1, failed);
+    summing = true;
+    furnace("dispersive glass, ReSTIR off", camera, center, 0.3f, 1, failed);
+    summing = false;
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, fog}};
     furnace("medium of albedo 1", camera, center, 0.3f, 1, failed);
     scene[0].volume.g = 0.8f;
