@@ -1836,6 +1836,14 @@ __extern_cpp public struct BSDFLobes {
     __extern_cpp public float3 sheen;
     __extern_cpp public float p_sheen_velvet;
     __extern_cpp public float3 view;
+    // Correcting lobe: metal's and glass's reflected and glass's transmitted weights over 1 - Ebar of the side each
+    // leaves to, its share of samples, the share of those sent through, and the glass table of the side it is seen from
+    __extern_cpp public float3 correcting_metal;
+    __extern_cpp public float3 correcting_reflect;
+    __extern_cpp public float3 correcting_transmit;
+    __extern_cpp public float p_correcting;
+    __extern_cpp public float correcting_through;
+    __extern_cpp public uint correcting_side;
     // Anisotropic frame and G1_v * D of its VNDF, 0 when isotropic
     __extern_cpp public float3 tangent;
     __extern_cpp public float2 alphas;
@@ -1938,6 +1946,33 @@ __extern_cpp public struct AnisotropicFrame {
     let diffuse_weight: float3 = (1.0f - material.transmission) * (1.0f - material.metallic) * (1.0f - F_dielectric)
         * scale;
     let refract_weight: float3 = material.transmission * (1.0f - material.metallic) * (1.0f - F_dielectric) * scale;
+    // Correcting lobe (Kulla and Conty 2017): the energy single scattering loses, 1 - E(mu_o), returned
+    // metal: f = F_c * (1 - E(mu_o)) * (1 - E(mu_l)) / (PI * (1 - Ebar)),
+    // F_c = Fbar^2 * Ebar / (1 - Fbar * (1 - Ebar)), Fbar = albedo, metal's F
+    // glass seen from side s: f_r = (1 - k) * (1 - E_s(mu_o)) * (1 - E_s(mu_l)) / (PI * (1 - Ebar_s)) on side s,
+    // f_t = k * albedo * (1 - E_s(mu_o)) * (1 - E_t(mu_l)) / (PI * (1 - Ebar_t)) on the other side t, k from
+    // GGX_GLASS_THROUGH
+    // => integral f * |n_dot_l| dl = 1 - E(mu_o)
+    let mu_o: float = clamp(dot(n_i, v), 0.0f, 1.0f);
+    let side: uint = eta_i <= eta_o ? 0u : 1u;
+    let metal_average: float = ggxAlbedoAverage(material.roughness);
+    let metal_lost: float = 1.0f - ggxAlbedo(mu_o, material.roughness);
+    let glass_lost: float = 1.0f - ggxGlassAlbedo(side, mu_o, material.roughness, material.ior);
+    let through: float = ggxGlassRow(1u, side, material.roughness, material.ior);
+    let metal_weight: float3 = material.metallic * scale * material.albedo * material.albedo * metal_average
+        / (1.0f - material.albedo * (1.0f - metal_average));
+    let glass_weight: float = material.transmission * (1.0f - material.metallic) * rgb_to_greyscale(scale);
+    let correcting_metal: float3 = metal_weight * metal_lost / max(1.0f - metal_average, BIAS);
+    let correcting_reflect: float3 = float3(glass_weight * (1.0f - through) * glass_lost
+        / max(1.0f - ggxGlassRow(0u, side, material.roughness, material.ior), BIAS));
+    let correcting_transmit: float3 = glass_weight * through * material.albedo * glass_lost
+        / max(1.0f - ggxGlassRow(0u, 1u - side, material.roughness, material.ior), BIAS);
+    let correcting_reflect_component: float = rgb_to_greyscale(metal_weight) * metal_lost
+        + glass_weight * (1.0f - through) * glass_lost;
+    let correcting_transmit_component: float = glass_weight * through * rgb_to_greyscale(material.albedo) * glass_lost;
+    let correcting_component: float = select(0.0f,
+        max(correcting_reflect_component + correcting_transmit_component, 0.0f), material.roughness > 0.0f);
+    let correcting_through: float = correcting_transmit_component / max(correcting_component, BIAS);
     // Add fresnel term for improved sampling performance
     let reflect_component: float = max(reflect_weight * F_greyscale, 0.0f);
     let diffuse_component: float = max(rgb_to_greyscale(diffuse_weight), 0.0f);
@@ -1962,6 +1997,7 @@ __extern_cpp public struct AnisotropicFrame {
 #endif
     let p_reflect: float = reflect_component * base_component_inv;
     let p_refract: float = refract_component * base_component_inv;
+    let p_correcting: float = 0.0f;
     // Anisotropic G1_v * D, the VNDF's numerator
     var visible: float = 0.0f;
     if (frame.alphas.x > 0.0f) {
@@ -1969,10 +2005,11 @@ __extern_cpp public struct AnisotropicFrame {
     }
 #ifdef FK_TOON
     return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse,
-        p_reflect, p_refract, 0.0f, sheen, p_sheen_velvet, view, frame.tangent, frame.alphas, visible,
+        p_reflect, p_refract, 0.0f, sheen, p_sheen_velvet, view, correcting_metal, correcting_reflect,
+        correcting_transmit, p_correcting, correcting_through, side, frame.tangent, frame.alphas, visible,
         toon_component / max(diffuse_component + toon_component, BIAS));
 #else
-    return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect, p_refract, 0.0f, sheen, p_sheen_velvet, view, frame.tangent, frame.alphas, visible);
+    return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect, p_refract, 0.0f, sheen, p_sheen_velvet, view, correcting_metal, correcting_reflect, correcting_transmit, p_correcting, correcting_through, side, frame.tangent, frame.alphas, visible);
 #endif
 }
 
@@ -2155,6 +2192,18 @@ func toonInvert(target: float, lobe: ToonLobe) -> float {
         // => throughput = sheen * f * n_dot_l * 2 * PI / p_sheen_velvet
         return lobes.sheen * (f * n_dot_l * 2.0f * PI / lobes.p_sheen_velvet);
     }
+    if (lobe == LOBE_CORRECTING) {
+        // f * |n_dot_l| / PDF, PDF = p_correcting * (the side's share) * |n_dot_l| / PI
+        // => throughput = PI * f / (p_correcting * share), the PI of f cancelling
+        let mu_l: float = dot(n_i, l);
+        if (mu_l < 0.0f) {
+            return lobes.correcting_transmit * (1.0f - ggxGlassAlbedo(1u - lobes.correcting_side, - mu_l,
+                material.roughness, material.ior)) / (lobes.p_correcting * lobes.correcting_through);
+        }
+        return (lobes.correcting_metal * (1.0f - ggxAlbedo(mu_l, material.roughness)) + lobes.correcting_reflect
+            * (1.0f - ggxGlassAlbedo(lobes.correcting_side, mu_l, material.roughness, material.ior)))
+            / (lobes.p_correcting * (1.0f - lobes.correcting_through));
+    }
     if (lobe == LOBE_REFRACT) {
         let m_n_i_dot_l: float = - dot(n_i, l);
         // Microfacet term
@@ -2203,6 +2252,11 @@ func toonInvert(target: float, lobe: ToonLobe) -> float {
         let share: float = lobes.translucent_share;
         return select(0.0f, select(lobes.p_diffuse * n_i_dot_l * INV_PI, lobes.p_diffuse * abs(n_i_dot_l) * INV_PI
             * select(1.0f - share, share, n_i_dot_l < 0.0f), share > 0.0f), n_i_dot_v > 0.0f);
+    }
+    if (lobe == LOBE_CORRECTING) {
+        // PDF = p_correcting * (1 - through) * n_dot_l / PI in front, p_correcting * through * |n_dot_l| / PI behind
+        return select(0.0f, lobes.p_correcting * abs(n_i_dot_l) * INV_PI
+            * select(1.0f - lobes.correcting_through, lobes.correcting_through, n_i_dot_l < 0.0f), n_i_dot_v > 0.0f);
     }
     if (lobe == LOBE_SHEEN_VELVET) {
         // PDF = p_sheen_velvet / (2 * PI), uniform over the hemisphere
@@ -2488,6 +2542,8 @@ public static const uint LOBE_DIFFUSE = 0u;
 public static const uint LOBE_REFRACT = 1u;
 // 3 is the walk's LOBE_NONE of camera rays
 public static const uint LOBE_SHEEN_VELVET = 4u;
+// Returns the energy single scattering of the GGX lobes loses
+public static const uint LOBE_CORRECTING = 5u;
 
 __include walk;
 
