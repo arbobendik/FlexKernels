@@ -1984,8 +1984,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     connectBSDF(ray.unit_direction, dir, surface.smooth_n, material, eta.x, eta.y, lobe_index, surface.random_state));
             }
             // Delta lobes have no competing light sample, straight transmission keeps the preceding vertex's weights
-            // The diffuse and sheen lobes are never delta
-            let spread_out: bool = lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_SHEEN;
+            // The diffuse and the sheen or velvet lobe are never delta
+            let spread_out: bool = lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_SHEEN_VELVET;
             let delta: bool = AT_HAIR(false, !spread_out && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y)));
 #ifdef FK_FCPT_WALK
             straight = !hair && lobe_index == LOBE_REFRACT && material.ior == 1.0f;
