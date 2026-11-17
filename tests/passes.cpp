@@ -71,9 +71,11 @@ Domain HookScene_previousDomain_0(Vector<int32_t, 2> q, uint32_t seed) {
 }
 static int shifted_previous = 0, walked = 0, asked[2] = {};
 Shift HookScene_shiftPrevious_0(Domain, Reservoir) { return shifted_previous++, Shift{Vector<float, 3>(1, 1, 1), 1}; }
-// A path offers its own sample at its scale
+// A path offers its own sample at its scale and sums its camera medium's glow unscaled, as the walk does
+static Vector<float, 3> path_glow(0, 0, 0);
 Shift HookScene_walkCallable_0(Domain, Reservoir r, bool replay, float scale, Selection* sel) {
     r.f = Vector<float, 3>(1, 1, 1);
+    if (!replay) sel->glow = sel->glow + path_glow;
     if (!replay) offer(sel, r, Vector<float, 3>(scale, scale, scale));
     return walked += replay, Shift{Vector<float, 3>(1, 1, 1), 1};
 }
@@ -84,10 +86,13 @@ static Reservoir stored[W * H];
 static Hit stored_hit[W * H];
 bool HookScene_restirUsed_0() { return reuse; }
 uint32_t HookScene_samples_0() { return 4; }
-Vector<float, 3> HookScene_missed_0(Vector<int32_t, 2>, Domain, float) {
-    return missed_paths++, Vector<float, 3>(0, 0, 0);
+// A missed path sees 0.5 at its scale
+static Vector<float, 3> missed_color(0, 0, 0);
+Vector<float, 3> HookScene_missed_0(Vector<int32_t, 2>, Domain, float scale) {
+    return missed_paths++, Vector<float, 3>(missed_color.x * scale, missed_color.y * scale, missed_color.z * scale);
 }
-void HookScene_addColor_0(Vector<int32_t, 2> p, Vector<float, 4> color) { added[p.y * W + p.x] = color; }
+static int add_calls = 0;
+void HookScene_addColor_0(Vector<int32_t, 2> p, Vector<float, 4> color) { add_calls++, added[p.y * W + p.x] = color; }
 void HookScene_storeReservoirInitial_0(Vector<int32_t, 2> p, Reservoir r, Hit hit) {
     stored[p.y * W + p.x] = r, stored_hit[p.y * W + p.x] = hit;
 }
@@ -369,6 +374,22 @@ int main() {
     printf("initial pass: %d of %zu domains off their path's seed, %d winners' hits off, %d missed paths, %d of %d "
         "all-missed pixels kept, %d of %d summed to 1%s\n", seeds_off, asked_seeds.size(), hits_off, missed_paths,
         unmet, W * H, summed, W * H, initial ? "" : "  FAILED");
+    // The camera medium's glow of 4 paths, 0.2 each, adds 0.2; missed paths' colours, 0.5 each at the paths' share, add
+    // 0.5 with the glow in one call per pixel
+    path_glow = Vector<float, 3>(0.2f, 0.2f, 0.2f), add_calls = 0;
+    initial_pass();
+    int glowing = 0;
+    for (const auto& c : added) glowing += fabsf(c.x - 0.2f) < 1e-6f;
+    const int glow_calls = add_calls;
+    missed_color = Vector<float, 3>(0.5f, 0.5f, 0.5f), all_miss = true, add_calls = 0;
+    initial_pass();
+    int seen = 0;
+    for (const auto& c : added) seen += fabsf(c.x - 0.5f) < 1e-6f;
+    path_glow = missed_color = Vector<float, 3>(0, 0, 0), all_miss = false;
+    const bool shared = glowing == W * H && seen == W * H && glow_calls == W * H && add_calls == W * H;
+    failed += !shared;
+    printf("initial colour: %d of %d pixels add the glow once, %d of %d their missed paths' colour, %d and %d "
+        "calls%s\n", glowing, W * H, seen, W * H, glow_calls, add_calls, shared ? "" : "  FAILED");
     // Count and prepass trace no target, an unchanged view none at all; a target missing at the shift runs none
     unchanged = false, scenes = true, moved = 1;
     using Pass = void (*)(Vector<uint32_t, 3>, uint32_t);
