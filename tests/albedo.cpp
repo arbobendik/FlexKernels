@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <initializer_list>
 #include "pathtracer.cpp"
 
 int main() {
@@ -6,7 +7,8 @@ int main() {
     const Vector<float, 3> ZERO(0, 0, 0), ONE(1, 1, 1);
     const Material MATERIALS[] = {{ONE, ZERO, 0.5f, 1, 0, 1.5f, ZERO, ONE, 1}, {ONE, ZERO, 0.2f, 0, 0, 1.5f, ZERO, ONE, 1},
         {ONE, ZERO, 1, 0, 0, 1.5f, ZERO, ONE, 1}, {Vector<float, 3>(0.5f, 0.5f, 0.5f), ZERO, 0.2f, 1, 1, 1.5f, ZERO, ONE, 1}};
-    const float ALBEDOS[][3] = {{0.9158f, 0.8551f, 0.8315f}, {0.9998f, 0.9990f, 0.9877f}, {0.9209f, 0.9420f, 0.9478f},
+    // White metal at r 0.5 whole, the correcting lobe returning what its single scattering (0.9158, 0.8551, 0.8315) loses
+    const float ALBEDOS[][3] = {{1, 1, 1}, {0.9998f, 0.9990f, 0.9877f}, {0.9209f, 0.9420f, 0.9478f},
         {0.4992f, 0.4978f, 0.4875f}};
     int failed = 0;
     for (int m = 0; m < 4; m++) for (int k = 0; k < 3; k++) {
@@ -292,20 +294,37 @@ int main() {
         const auto D = [&](Vector<float, 3> h) { const float x = dot(h, T) / ax, y = dot(h, B) / ay; return 1 / (PI * ax * ay * powf(x * x + y * y + h.z * h.z, 2)); };
         const auto G1 = [&](Vector<float, 3> w) { return 2 * w.z / (w.z + sqrtf(powf(ax * dot(w, T), 2) + powf(ay * dot(w, B), 2) + w.z * w.z)); };
         const Vector<float, 3> in_dir(k % 2 ? 0 : sine, k % 2 ? sine : 0, -COSINES[k / 2]), v(-in_dir.x, -in_dir.y, -in_dir.z);
-        double albedo = 0, sum = 0, squares = 0, colored[2][3] = {}, worst = 0;
+        double albedo = 0, sum = 0, squares = 0, colored[2][3] = {}, expected[2][3] = {}, worst = 0;
         for (int i = 0; i < 1024; i++) for (int j = 0; j < 1024; j++) {
             const float t = (i + 0.5f) / 1024 * PI, phi = (j + 0.5f) / 1024 * 2 * PI;
             const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
             albedo += BSDF(in_dir, l, n, n, M, 1, 1.5f, 0u).x * sinf(t) * (PI / 1024) * (2 * PI / 1024);
+            // The coloured metals' albedo by the same quadrature, the correcting lobe's colour not linear in it
+            for (int r = 0; m < 2 && r < 2; r++) {
+                const Vector<float, 3> f = BSDF(in_dir, l, n, n, stretched(m, COLORS[r]), 1, 1.5f, 0u);
+                expected[r][0] += f.x * sinf(t) * (PI / 1024) * (2 * PI / 1024);
+                expected[r][1] += f.y * sinf(t) * (PI / 1024) * (2 * PI / 1024);
+                expected[r][2] += f.z * sinf(t) * (PI / 1024) * (2 * PI / 1024);
+            }
         }
         for (unsigned i = 0; i < 1u << 18; i++) {
             const SampleBSDF s = sampleBSDF(in_dir, n, M, 1, 1.5f, hash(i), Vector<float, 2>(0, 0));
             const SampleBSDF c = connectBSDF(in_dir, s.unit_direction, n, M, 1, 1.5f, s.lobe, hash(i));
             const Vector<float, 3> l = s.unit_direction;
             const float f = BSDF(in_dir, l, n, n, M, 1, 1.5f, hash(i)).x;
+            // BSDF sums every lobe reaching l; the reflection alone is GGX's single scattering
+            float lobes = 0;
+            // Diffuse, refraction, reflection, sheen or velvet, correcting; 3 is the walk's LOBE_NONE
+            for (const uint32_t lobe : {0u, 1u, 2u, 4u, 5u}) {
+                const SampleBSDF each = connectBSDF(in_dir, l, n, M, 1, 1.5f, lobe, hash(i));
+                lobes += each.throughput.x * each.pdf;
+            }
+            const SampleBSDF reflection = connectBSDF(in_dir, l, n, M, 1, 1.5f, 2u, hash(i));
             sum += s.throughput.x / (1 << 18), squares += s.throughput.x * s.throughput.x / (1 << 18);
-            if (s.pdf > 0 && s.throughput.x > 0) worst = fmax(worst, fmax(fabs(c.pdf / s.pdf - 1), fabs(f / (s.throughput.x * s.pdf) - 1)));
-            if (m < 2 && s.throughput.x > 0) worst = fmax(worst, fmax(fabs(f / (D(unit(v + l)) * G1(v) * G1(l) / (4 * v.z)) - 1),
+            if (s.pdf > 0 && s.throughput.x > 0) worst = fmax(worst, fmax(fmax(fabs(c.pdf / s.pdf - 1),
+                fabs(c.throughput.x / s.throughput.x - 1)), fabs(f / lobes - 1)));
+            if (m < 2 && s.lobe == 2 && s.throughput.x > 0) worst = fmax(worst, fmax(fabs(reflection.throughput.x * reflection.pdf
+                / (D(unit(v + l)) * G1(v) * G1(l) / (4 * v.z)) - 1),
                 fabs(f / l.z / (BSDF(Vector<float, 3>(-l.x, -l.y, -l.z), v, n, n, M, 1, 1.5f, 0u).x / v.z) - 1)));
             for (int r = 0; m < 2 && r < 2; r++) {
                 const Vector<float, 3> t = sampleBSDF(in_dir, n, stretched(m, COLORS[r]), 1, 1.5f, hash(i), Vector<float, 2>(0, 0)).throughput;
@@ -313,11 +332,10 @@ int main() {
             }
         }
         const double error = 3 * sqrt(fmax(squares - sum * sum, 0) / (1 << 18));
-        bool bad = albedo > 1 || fabs(sum - albedo) > error || worst > 1e-4;
-        for (int r = 0; m < 2 && r < 2; r++) {
-            const double color[3] = {COLORS[r].x, COLORS[r].y, COLORS[r].z};
-            for (int ch = 0; ch < 3; ch++) bad |= colored[r][ch] > 1 || fabs(colored[r][ch] - albedo * color[ch]) > error;
-        }
+        // The correcting lobe's isotropic tables, read at the material's roughness, may lift an anisotropic white past 1
+        bool bad = albedo > 1.005 || fabs(sum - albedo) > error || worst > 1e-4;
+        for (int r = 0; m < 2 && r < 2; r++)
+            for (int ch = 0; ch < 3; ch++) bad |= colored[r][ch] > 1.005 || fabs(colored[r][ch] - expected[r][ch]) > error;
         printf("anisotropic %s %g along %c at cosine %g: albedo %.4f, sampled %.4f +- %.4f", m < 2 ? "metal" : "glass",
             ANISOTROPIES[m], k % 2 ? 'y' : 'x', COSINES[k / 2], albedo, sum, error);
         if (m < 2) printf(", red %.4f, blue %.4f", colored[0][0], colored[1][2]);
@@ -350,7 +368,9 @@ int main() {
             for (unsigned j = 0; j < 4096; j++) {
                 const float z = (b / 8 + (j % 64 + 0.5f) / 64) / 4 - 1, phi = (b % 8 + (j / 64 + 0.5f) / 64) / 8 * 2 * PI - PI;
                 const Vector<float, 3> d(sqrtf(1 - z * z) * cosf(phi), sqrtf(1 - z * z) * sinf(phi), z);
-                for (unsigned lobe = 1; lobe < 3; lobe++) expect += connectBSDF(oblique, d, n, M, 1, 1.5f, lobe, hash(j)).pdf * PI / 16 / 4096;
+                // Refraction, reflection and the correcting lobe
+                for (const unsigned lobe : {1u, 2u, 5u})
+                    expect += connectBSDF(oblique, d, n, M, 1, 1.5f, lobe, hash(j)).pdf * PI / 16 / 4096;
             }
             worst_bin = fmax(worst_bin, fabs(share[b] - expect) / (0.0005 + sqrt(expect / (1 << 22))));
         }
