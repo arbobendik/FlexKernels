@@ -674,7 +674,27 @@ __extern_cpp public struct BSDFLobes {
         toon_axis = toon_glossy ? normalize(2.0f * dot(n_i, v) * n_i - v) : n_i;
     }
 #endif
-    var F: float3 = mix(F_dielectric, material.albedo, material.metallic) * scale;
+    // On-surface rebounces of the metallic lobe, summed as a series: a ray single scattering loses meets
+    // the microsurface again and leaves with Ebar, else bounces on, each meeting weighted by F = albedo
+    // albedo = F * E + F^2 * Ebar * (1 - E) / (1 - F * (1 - Ebar)), E(mu) taken as Ebar
+    // => albedo = F * Ebar * m, m = 1 / (1 - F * (1 - Ebar))
+    // Limited per view so that no view returns more than it receives: m <= 1 / E_up(mu, r) with E_up >= E
+    // 1 - Ebar(alpha) = alpha^1.81585 * (2.15372 - 0.73285 alpha) / (1 + 1.28095 alpha), alpha = r^2: a fit of the white
+    // GGX lobe's average single-bounce return, measured by sampleBSDF, off by at most 0.0005
+    // E_up(mu, r) = 1.000645 - sum c_ij r^i mu^j (i >= 1, i + j <= 4): a fit of the single-bounce return from above,
+    // at or above it at every measured (mu, r), at most 0.118 (low r, grazing) and on average 0.014 above it
+    // r = roughness; anisotropic metal takes r of its smoother axis, whose single bounce returns the most, so its E_up stays above
+    let smoother: float = select(material.roughness, sqrt(min(frame.alphas.x, frame.alphas.y)), frame.alphas.x > 0.0f);
+    let alpha: float = smoother * smoother;
+    let lost: float = select(0.0f, pow(alpha, 1.81585f) * (2.15372f - 0.73285f * alpha) / (1.0f + 1.28095f * alpha),
+        alpha > 0.0f);
+    let mu: float = clamp(dot(n_i, v), 0.0f, 1.0f);
+    let return_up: float = min(1.000645f - smoother * (0.003755f + mu * (-0.041334f + mu * (-0.909385f + mu * 0.352754f)))
+        - smoother * smoother * (0.276028f + mu * (1.270234f + mu * 0.0474f)) - smoother * smoother * smoother
+        * (0.314529f - mu * 0.348307f)
+        + smoother * smoother * smoother * smoother * 0.272297f, 1.0f);
+    let rebounce: float3 = min(1.0f / (1.0f - material.albedo * lost), float3(1.0f / max(return_up, BIAS)));
+    var F: float3 = mix(F_dielectric, material.albedo * rebounce, material.metallic) * scale;
     let F_greyscale: float = rgb_to_greyscale(F);
     // BSDF weights (these are artistic choices to balance the lobes)
     let reflect_weight: float = 1.0f;
