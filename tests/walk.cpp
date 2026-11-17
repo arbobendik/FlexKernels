@@ -212,6 +212,8 @@ float HookScene_trackMedium_0(uint32_t, V, V, float distance, uint32_t* state, V
 }
 
 static bool summing = false, seen = false;
+// The pixel by its resampled sample, f * W after finalize, in place of the offered sum
+static bool resampled = false;
 // Standard error of the last furnace's mean
 static double furnace_se = 0;
 // Channel the furnace reads
@@ -238,7 +240,9 @@ static double furnace(const char* name, V camera, V aim, float angle, double tru
         walk_hook(dom, path, false, 1, &sel);
         misfits += dotv(handed_direction, dir) < 1 - 1e-6f
             || fabsf(handed_distance - hit.distance) > 1e-5f * hit.distance;
-        const double y = sel.color[furnace_channel] + (seen ? sel.glow[furnace_channel] : 0);
+        const Reservoir kept = finalize(sel, 1);
+        const double y = resampled ? kept.f[furnace_channel] * kept.w
+            : sel.color[furnace_channel] + (seen ? sel.glow[furnace_channel] : 0);
         through += exp(-absorbs * hit.distance);
         sum += y, sum2 += y * y;
     }
@@ -311,6 +315,20 @@ int main() {
     summing = true;
     furnace("dispersive glass, ReSTIR off", camera, center, 0.3f, 1, failed);
     summing = false;
+    // Rough over a red ball, offers of different colours along a path: the resampled f * W against the summed offers
+    scene[0].layer[0].roughness = 0.3f;
+    Material red = lambert(1, 0);
+    red.albedo = V(0.8f, 0.2f, 0.05f);
+    scene.push_back({center, 0.5f, false, {red}, 1, 1, false, none});
+    summing = true;
+    const double summed = furnace("dispersive glass on red, summed", camera, center, 0.3f, NAN, failed);
+    const double summed_se = furnace_se;
+    summing = false, resampled = true;
+    const double chosen = furnace("  resampled", camera, center, 0.3f, NAN, failed);
+    resampled = false;
+    const bool agree = fabs(chosen - summed) < 4 * sqrt(summed_se * summed_se + furnace_se * furnace_se);
+    failed += !agree;
+    printf("dispersive glass on red: resampled %.5f, summed %.5f%s\n", chosen, summed, agree ? "" : "  FAILED");
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, fog}};
     furnace("medium of albedo 1", camera, center, 0.3f, 1, failed);
     scene[0].volume.g = 0.8f;
