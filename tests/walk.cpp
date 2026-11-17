@@ -265,7 +265,7 @@ int main() {
     summing = false;
     furnace("white sheen", camera, center, 0.3f, 1, failed);
     {
-        // Paths leaving the sphere by its sheen lobe (walk.slang's PATH_LOBE_PREV at bit 15, LOBE_SHEEN 4) that a
+        // Paths leaving the sphere by its sheen lobe (walk.slang's PATH_LOBE_PREV at bit 15, LOBE_SHEEN_VELVET 4) that a
         // neighbouring primary hit takes, shifted there and back up to the environment reconnection's rounding
         const auto seen = [&](V dir) {
             const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, dir}, true, 1e30f, true, NO_HIT, true);
