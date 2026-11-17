@@ -428,9 +428,12 @@ func emitting(surface: Surface, top: bool) -> Surface {
     return select(a / b, float3(0.0f), b == float3(0.0f));
 }
 
+// Resampling target: greyscale of the magnitude, > 0 wherever a signed f is not 0
+[CudaDeviceExport] public func resamplingTarget(f: float3) -> float { return rgb_to_greyscale(abs(f)); }
+
 // Weighted reservoir sampling (Sec. 6.3): w_sum += w, candidate kept with probability w / w_sum
 [CudaDeviceExport] public func offer(inout sel: Selection, candidate: Reservoir, weight: float3) {
-    let w: float = rgb_to_greyscale(weight);
+    let w: float = resamplingTarget(weight);
     // Reject 0, NaN and infinite weights
     if (!(w > 0.0f && w < 3.0e38f)) {
         return;
@@ -462,7 +465,7 @@ func emitting(surface: Surface, top: bool) -> Surface {
 
 [CudaDeviceExport] public func finalize(sel: Selection, c: float) -> Reservoir {
     var r: Reservoir = sel.r;
-    let p_hat: float = rgb_to_greyscale(r.f);
+    let p_hat: float = resamplingTarget(r.f);
     r.w = select(0.0f, sel.w_sum / p_hat, p_hat > 0.0f);
     r.c = c;
     return r;
@@ -1582,7 +1585,7 @@ uint extractBits(uint e, uint offset, uint count) {
         let f: float3 = select(float3(0.0f), throughput * light.radiance * (phase
             * powerHeuristic(light.density, competing)), sampled);
         if (replay && b == stop) {
-            if (rc == RC_LIGHT && rgb_to_greyscale(f) > 0.0f) {
+            if (rc == RC_LIGHT && resamplingTarget(f) > 0.0f) {
                 ended = Shift(f, 1.0f);
                 return true;
             }
@@ -1596,7 +1599,7 @@ uint extractBits(uint e, uint offset, uint count) {
                 candidate.path = insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_LIGHT, PATH_RC, 2u);
             }
             offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
-            let survival_probability: float = survivalProbability(throughput, density);
+            let survival_probability: float = survivalProbability(abs(throughput), density);
             if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
                 return true;
             }
@@ -2240,7 +2243,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             var survival_probability: float = 1.0f;
             if (point_light_lighting || scatter) {
-                survival_probability = survivalProbability(throughput, density);
+                survival_probability = survivalProbability(abs(throughput), density);
             }
             if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
                 break;
@@ -2817,8 +2820,8 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
             to_previous = asfloat(scene.temporalShift(p, 1u));
         }
 #endif
-        let p_c: float = rgb_to_greyscale(r.f);
-        let p_t: float = rgb_to_greyscale(temporal.f);
+        let p_c: float = resamplingTarget(r.f);
+        let p_t: float = resamplingTarget(temporal.f);
 #ifdef FK_FCPT_WALK
         var sel: Selection = emptySelection();
 #else
@@ -2828,7 +2831,7 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
         // Temporal MIS weights, p_t->c = g_previous the previous sample shifted here, p_c->t = g_current
         // m_c = c * p_c / (c * p_c + c_t * p_t->c)
         // m_t = c_t * p_t / (c_t * p_t + c * p_c->t)
-        let weights: float2 = float2(r.c * p_c / (r.c * p_c + c_t * rgb_to_greyscale(to_previous.xyz)), c_t * p_t / (c_t * p_t + r.c * rgb_to_greyscale(to_current.xyz)));
+        let weights: float2 = float2(r.c * p_c / (r.c * p_c + c_t * resamplingTarget(to_previous.xyz)), c_t * p_t / (c_t * p_t + r.c * resamplingTarget(to_current.xyz)));
         offerShifted(sel, r, Shift(r.f, 1.0f), weights.x);
         offerShifted(sel, temporal, Shift(to_current.xyz, to_current.w), weights.y);
         r = finalize(sel, r.c + c_t);
@@ -2951,7 +2954,7 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
     }
     // Confidence of the current pixel is split evenly across the pairs
     let c_pair: float = r.c / max(count, 1.0f);
-    let p_c: float = rgb_to_greyscale(r.f);
+    let p_c: float = resamplingTarget(r.f);
     var canonical_mis: float = select(0.0f, 1.0f, count == 0.0f);
 #ifdef FK_FCPT_WALK
     var sel: Selection = emptySelection();
@@ -2969,11 +2972,11 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
             let share: float = (neighbor.c + c_pair) / c_sum;  // Pair's share of all confidence (Sec. 3.2)
             if (p_c > 0.0f) {
                 // Pairwise MIS weight of the canonical sample, g_there its target shifted to the neighbor
-                canonical_mis += share * c_pair * p_c / (c_pair * p_c + neighbor.c * rgb_to_greyscale(to_there.xyz));
+                canonical_mis += share * c_pair * p_c / (c_pair * p_c + neighbor.c * resamplingTarget(to_there.xyz));
             }
             // Pairwise MIS weight of the neighbor's sample, g_here its target shifted to the current pixel
-            let p_n: float = rgb_to_greyscale(neighbor.f);
-            offerShifted(sel, neighbor, Shift(to_here.xyz, to_here.w), share * neighbor.c * p_n / (neighbor.c * p_n + c_pair * rgb_to_greyscale(to_here.xyz)));
+            let p_n: float = resamplingTarget(neighbor.f);
+            offerShifted(sel, neighbor, Shift(to_here.xyz, to_here.w), share * neighbor.c * p_n / (neighbor.c * p_n + c_pair * resamplingTarget(to_here.xyz)));
         }
     }
     offerShifted(sel, r, Shift(r.f, 1.0f), canonical_mis);
@@ -2986,7 +2989,7 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
     let primary: Surface = scene.surfaceAt(dom.hit, dom.x1, sel.random_state);
     let emission: float3 = select(primary.material.emissive * max(sign(dot(normalize(dom.x0 - dom.x1), primary.smooth_n)), 0.0f), float3(0.0f), primary.skip);
     // Clamp color to 16 bit float
-    let final_color: float3 = clamp(sel.color + emission, float3(0.0f), float3(65519.0f));
+    let final_color: float3 = clamp(sel.color + emission, float3(-65519.0f), float3(65519.0f));
     scene.storeColor(p, 0u, float4(final_color, 1.0f));
     if (scene.isTemporal() == 1u) {
         scene.storeColor(p, 1u, float4(dom.x1, float(dom.hit.instance_index)));
