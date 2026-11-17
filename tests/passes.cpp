@@ -52,8 +52,11 @@ static bool previous_unseen = false;
 // Seeds asked for domains, in order, while recording, and every path missing
 static std::vector<uint32_t> asked_seeds;
 static bool recording = false, all_miss = false;
+// Domains asked of the current and the previous frame
+static int domain_asks = 0, previous_asks = 0;
 bool HookScene_storedDomainInitial_0(Vector<int32_t, 2> p, uint32_t seed, Domain* dom) {
     if (recording) asked_seeds.push_back(seed);
+    domain_asks++;
     target_traces += seed >= 2000;
     *dom = domainOf(p, seed);
     return inside(p) && !(previous_unseen && seed >= 2000) && !all_miss;
@@ -61,6 +64,7 @@ bool HookScene_storedDomainInitial_0(Vector<int32_t, 2> p, uint32_t seed, Domain
 // The previous frame's domains moved off the current ones by moved in x0
 static float moved = 0;
 Domain HookScene_previousDomain_0(Vector<int32_t, 2> q, uint32_t seed) {
+    previous_asks++;
     Domain dom = domainOf(q, seed);
     dom.x0.y = moved;
     return dom;
@@ -108,11 +112,15 @@ void HookScene_storeTemporalShift_0(Vector<int32_t, 2> p, uint32_t t, Vector<uin
 }
 Vector<uint32_t, 4> HookScene_duplication_0(Vector<int32_t, 2>) { return Vector<uint32_t, 4>(0); }
 uint32_t HookScene_restirDecorrelation_0() { return 0; }
-void HookScene_storeReservoirTemporal_0(Vector<int32_t, 2>, Reservoir, Hit) {}
+static Reservoir reused[W * H];
+void HookScene_storeReservoirTemporal_0(Vector<int32_t, 2> p, Reservoir r, Hit) { reused[p.y * W + p.x] = r; }
 // The neighbours the count pass stored this frame
 static Vector<int32_t, 2> neighbors[W * H];
+static int neighbor_loads = 0;
 void HookScene_storeTemporalNeighbor_0(Vector<int32_t, 2> p, Vector<int32_t, 2> q) { neighbors[p.y * W + p.x] = q; }
-Vector<int32_t, 2> HookScene_loadTemporalNeighbor_0(Vector<int32_t, 2> p) { return neighbors[p.y * W + p.x]; }
+Vector<int32_t, 2> HookScene_loadTemporalNeighbor_0(Vector<int32_t, 2> p) {
+    return neighbor_loads++, neighbors[p.y * W + p.x];
+}
 uint32_t HookScene_queueCountAdd_0(uint32_t bin, uint32_t jobs) { return (queue[3 + bin] += jobs) - jobs; }
 uint32_t HookScene_queueCountLoad_0(uint32_t bin) { return queue[3 + bin]; }
 uint32_t HookScene_queueCursorAdd_0(uint32_t bin, uint32_t jobs) { return (queue[3 + BINS + bin] += jobs) - jobs; }
@@ -193,6 +201,8 @@ int main() {
     }
     const auto jobs = [&](uint32_t t, int& misfits) {
         int count = 0;
+        for (int y = 0; y < H; y++) for (int x = 0; x < W; x++)
+            restir_temporal_count_hook(Vector<uint32_t, 3>(x, y, 0), 0);
         for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
             ShiftJob job = {};
             if (temporalJob_0(Vector<int32_t, 2>(x, y), t, &job, true))
@@ -282,6 +292,48 @@ int main() {
     failed += slot_reads == 0 || stale_reads > 0;
     printf("unseen previous samples: %d shift slots read, %d not written this frame%s\n", slot_reads, stale_reads,
         slot_reads == 0 || stale_reads > 0 ? "  FAILED" : "");
+    // An unchanged view asks no domain in the whole round and runs no job; a pixel whose own sample misses keeps
+    // its previous reservoir
+    unchanged = true, all_miss = true, domain_asks = previous_asks = walked = shifted_previous = 0;
+    drain(restir_temporal_count_hook, restir_temporal_prepass_hook, restir_temporal_shift_hook);
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) restir_temporal_hook(Vector<uint32_t, 3>(x, y, 0));
+    int history = 0;
+    for (const Reservoir& r : reused) history += r.c == 2;
+    unchanged = all_miss = false;
+    const bool still_view = domain_asks == 0 && previous_asks == 0 && walked + shifted_previous == 0 && queue[0] == 0
+        && history == W * H;
+    failed += !still_view;
+    printf("unchanged view: %d domains and %d previous domains asked, %d jobs run; %d of %d missed samples keep their "
+        "history%s\n", domain_asks, previous_asks, walked + shifted_previous, history, W * H,
+        still_view ? "" : "  FAILED");
+    // A changed view asks each pixel's own domain once in the count pass, a target per job in the shift pass, and
+    // none in restir_temporal, which reads the neighbour the count pass stored
+    unchanged = false, scenes = true, moved = 1, walked = shifted_previous = 0;
+    for (uint32_t& word : queue) word = 0;
+    recording = true, asked_seeds.clear(), domain_asks = 0;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++)
+        restir_temporal_count_hook(Vector<uint32_t, 3>(x, y, 0), 0);
+    recording = false;
+    int own = 0;
+    for (int i = 0; i < W * H; i++) own += asked_seeds[i] == uint32_t(1000 + i);
+    const int count_asks = domain_asks;
+    domain_asks = 0;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++)
+        restir_temporal_prepass_hook(Vector<uint32_t, 3>(x, y, 0), 0);
+    const int prepass_asks = domain_asks;
+    domain_asks = previous_asks = 0;
+    for (uint32_t group = 0; group < queue[0] * queue[1]; group++) for (uint32_t local = 0; local < 64; local++)
+        restir_temporal_shift_hook(Vector<uint32_t, 3>(group % 65535, group / 65535, 0), local);
+    const int shift_asks = domain_asks + previous_asks, shift_jobs = walked + shifted_previous;
+    domain_asks = previous_asks = neighbor_loads = 0;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) restir_temporal_hook(Vector<uint32_t, 3>(x, y, 0));
+    moved = 0;
+    const bool lookups = count_asks == W * H && own == W * H && prepass_asks == 0 && shift_asks == shift_jobs
+        && shift_jobs > 0 && domain_asks + previous_asks == 0 && neighbor_loads == W * H;
+    failed += !lookups;
+    printf("changed view: %d own domains of %d asked by the count pass, %d by the prepass, %d for %d jobs, %d by "
+        "restir_temporal reading %d stored neighbours%s\n", count_asks, own, prepass_asks, shift_asks, shift_jobs,
+        domain_asks + previous_asks, neighbor_loads, lookups ? "" : "  FAILED");
     // Initial pass: a domain per path by its seed, missed paths to the consumer keeping c = 1, the winner's hit stored,
     // and ReSTIR off summing every path
     const auto initial_pass = [&]() {
@@ -315,7 +367,7 @@ int main() {
     printf("initial pass: %d of %zu domains off their path's seed, %d winners' hits off, %d missed paths, %d of %d "
         "all-missed pixels kept, %d of %d summed to 1%s\n", seeds_off, asked_seeds.size(), hits_off, missed_paths,
         unmet, W * H, summed, W * H, initial ? "" : "  FAILED");
-    // Count and prepass trace targets only where the identity can hold; a target missing at the shift runs none
+    // Count and prepass trace no target, an unchanged view none at all; a target missing at the shift runs none
     unchanged = false, scenes = true, moved = 1;
     using Pass = void (*)(Vector<uint32_t, 3>, uint32_t);
     const auto judged = [&](Pass count, Pass prepass) {
@@ -332,7 +384,7 @@ int main() {
     unchanged = false, previous_unseen = true, walked = shifted_previous = 0;
     drain(restir_temporal_count_hook, restir_temporal_prepass_hook, restir_temporal_shift_hook);
     previous_unseen = false, moved = 0;
-    const bool lazy = changed_temporal == 0 && changed_spatial == 0 && unchanged_temporal > 0 && walked == 0
+    const bool lazy = changed_temporal == 0 && changed_spatial == 0 && unchanged_temporal == 0 && walked == 0
         && shifted_previous == W * H;
     failed += !lazy;
     printf("judging jobs: %d and %d targets traced in a changed scene, %d unchanged; unseen targets %d walks, %d "
