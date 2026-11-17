@@ -39,6 +39,8 @@ __extern_cpp public struct Material {
     // (w, w * Size, w * Smooth) of a Toon BSDF taking weight |w|, glossy for w < 0
     __extern_cpp public float3 toon = float3(0.0f);
 #endif
+    // Scale over Abbe number of the spread of the IOR by wavelength, 0 for none
+    __extern_cpp public float dispersion = 0.0f;
 };
 
 __extern_cpp public struct RandomSphere {
