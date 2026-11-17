@@ -793,9 +793,13 @@ public interface IScene {
     // Domain of the sample of seed at p
     public bool storedDomainInitial(int2 p, uint seed, out Domain dom);
     public bool storedDomainTemporal(int2 p, uint seed, out Domain dom);
-    // The scene the previous frame saw, and whether shifts into it reach it
+    // Whether the previous frame had this frame's camera and scene, so that every sample keeps the domain it had
+    // there; and whether shifts reach the previous frame's scene
     public bool sceneUnchanged();
     public bool previousScenes();
+    // The temporal neighbour of p's sample, as the round's count pass stored it this frame
+    public void storeTemporalNeighbor(int2 p, int2 q);
+    public int2 loadTemporalNeighbor(int2 p);
     // Shift of r into dom in the previous frame's scene
     public Shift shiftPrevious(Domain dom, Reservoir r);
     // The walk, run on cuda by the consumer
@@ -1001,6 +1005,10 @@ public struct HookScene : IScene {
     public bool sceneUnchanged();
     __target_intrinsic(cuda, "fcptPreviousScenes()")
     public bool previousScenes();
+    __target_intrinsic(cuda, "fcptStoreTemporalNeighbor($0, $1)")
+    public void storeTemporalNeighbor(int2 p, int2 q);
+    __target_intrinsic(cuda, "fcptLoadTemporalNeighbor($0)")
+    public int2 loadTemporalNeighbor(int2 p);
     __target_intrinsic(cuda, "fcptShiftPrevious($0, $1)")
     public Shift shiftPrevious(Domain dom, Reservoir r);
     __target_intrinsic(cuda, "fcptWalk($0, $1, $2, $3, $4)")
@@ -2233,6 +2241,21 @@ public func temporalNeighbor<S: IScene>(scene: S, p: int2, dom: Domain
     return select(int2(-1), dual, previousValid(scene, dual));
 }
 
+#ifdef FK_FCPT_WALK
+// Temporal neighbour of p's sample of seed: p itself in an unchanged view, where every sample keeps its domain, a
+// missed one too; else by its domain's reprojection, none for a missed sample or off the image
+func sampleNeighbor<S: IScene>(scene: S, p: int2, seed: uint) -> int2 {
+    if (scene.sceneUnchanged()) {
+        return previousValid(scene, p) ? p : int2(-1);
+    }
+    var dom: Domain = {};
+    if (any(p >= int2(scene.renderSize())) || !scene.storedDomainInitial(p, seed, dom)) {
+        return int2(-1);
+    }
+    return temporalNeighbor(scene, p, dom, seed);
+}
+#endif
+
 // Partner of p in reuse texture t, randomly flipped, transposed and offset every frame (Sec. 3.2)
 public func partner<S: IScene>(scene: S, p: int2, t: uint) -> int2 {
     var sizes: int[3] = { 254, 230, 210 };
@@ -2301,39 +2324,30 @@ __extern_cpp public struct ShiftJob {
 #endif
 
 #ifdef FK_FCPT_WALK
-// Shift t of the temporal round returns its sample unchanged: the same domain in an unchanged scene, for t = 1 also
-// without a previous scene to shift into
-func temporalIdentity<S: IScene>(scene: S, t: uint, source: Domain, target: Domain) -> bool {
-    return sameDomain(source, target) && (scene.sceneUnchanged() || (t == 1u && !scene.previousScenes()));
-}
-
-// Temporal round job t of p, previous sample into its current domain (t = 0), current into its previous (t = 1), with
-// the domains of the sample shifted, none for the identity
+// Temporal round job t of p: previous sample into its current domain (t = 0), current into its previous (t = 1);
+// none in an unchanged view, where both keep their domains, or off the image
 public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJob, target: bool) -> bool {
-    let initial: Reservoir = scene.loadReservoirInitial(p);
-    var dom: Domain = {};
-    if (t > 1u || !scene.storedDomainInitial(p, initial.seed, dom)) {
+    if (t > 1u || any(p >= int2(scene.renderSize())) || scene.sceneUnchanged()) {
         return false;
     }
-    let q: int2 = temporalNeighbor(scene, p, dom, initial.seed);
+    let q: int2 = scene.loadTemporalNeighbor(p);
     if (q.x < 0) {
         return false;
     }
-    // Count and prepass, target false, trace the target only where the identity can hold
     if (t == 0u) {
+        // Count and prepass, target false, trace no target; the shift pass finds none where the sample misses
         job.r = scene.loadReservoirPrevious(q);
-        if (!target && !scene.sceneUnchanged()) {
-            return job.r.w > 0.0f;
-        }
-        return job.r.w > 0.0f && scene.storedDomainInitial(p, job.r.seed, job.dom)
-            && !temporalIdentity(scene, 0u, scene.previousDomain(q, job.r.seed), job.dom);
+        return job.r.w > 0.0f && (!target || scene.storedDomainInitial(p, job.r.seed, job.dom));
     }
-    job.r = initial;
-    if (!target && !scene.sceneUnchanged() && scene.previousScenes()) {
+    job.r = scene.loadReservoirInitial(p);
+    if (!target && scene.previousScenes()) {
         return job.r.w > 0.0f;
     }
-    job.dom = scene.previousDomain(q, initial.seed);
-    return job.r.w > 0.0f && !temporalIdentity(scene, 1u, job.dom, dom);
+    job.dom = scene.previousDomain(q, job.r.seed);
+    // Without previous scenes the same domain is the identity
+    var own: Domain = {};
+    return job.r.w > 0.0f && (scene.previousScenes()
+        || !(scene.storedDomainInitial(p, job.r.seed, own) && sameDomain(job.dom, own)));
 }
 #else
 // Temporal round job t of p: previous sample into the current domain (t = 0), current into the previous (t = 1)
@@ -2605,12 +2619,8 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
     }
     var r: Reservoir = scene.loadReservoirInitial(p);
 #ifdef FK_FCPT_WALK
-    // Neighbour of the domain of r's sample, as the temporal round found it
-    var stored: Domain = {};
-    var q: int2 = int2(-1);
-    if (scene.storedDomainInitial(p, r.seed, stored)) {
-        q = temporalNeighbor(scene, p, stored, r.seed);
-    }
+    // Neighbour of r's sample: its own pixel in an unchanged view, else the count pass's
+    let q: int2 = scene.sceneUnchanged() ? sampleNeighbor(scene, p, r.seed) : scene.loadTemporalNeighbor(p);
 #else
     let q: int2 = temporalNeighbor(scene, p, dom);
 #endif
@@ -2620,13 +2630,12 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
         let duplicated: float = select(0.0f, asfloat(scene.duplication(q).x), scene.restirDecorrelation() == 1u);
         let c_t: float = min(temporal.c, confidenceCap(duplicated));
 #ifdef FK_FCPT_WALK
-        // Slots of the shifts the temporal round ran, the samples unchanged for its identities
-        var target: Domain = {};
-        let current_identity: bool = temporal.w > 0.0f && scene.storedDomainInitial(p, temporal.seed, target)
-            && temporalIdentity(scene, 0u, scene.previousDomain(q, temporal.seed), target);
-        let to_current: float4 = current_identity ? float4(temporal.f, 1.0f) : asfloat(scene.temporalShift(p, 0u));
-        let previous_identity: bool = r.w > 0.0f
-            && temporalIdentity(scene, 1u, scene.previousDomain(q, r.seed), stored);
+        // Both samples keep their domains in an unchanged view; else the shifts the round ran, zero where none ran
+        let unchanged: bool = scene.sceneUnchanged();
+        let to_current: float4 = unchanged ? float4(temporal.f, 1.0f) : asfloat(scene.temporalShift(p, 0u));
+        var own: Domain = {};
+        let previous_identity: bool = unchanged || (!scene.previousScenes() && r.w > 0.0f
+            && scene.storedDomainInitial(p, r.seed, own) && sameDomain(scene.previousDomain(q, r.seed), own));
         let to_previous: float4 = previous_identity ? float4(r.f, 1.0f) : asfloat(scene.temporalShift(p, 1u));
 #else
         let to_current: float4 = asfloat(scene.temporalShift(p, 0u));
@@ -2655,6 +2664,13 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
 #ifdef FK_RESTIR_PASSES
 // The temporal round of the shift queue
 public func restir_temporal_count<S: IScene>(scene: S, global_invocation_id: uint3, local_invocation_index: uint) {
+#ifdef FK_FCPT_WALK
+    // The neighbour once per pixel and frame, which the round's later passes load; none to store unchanged
+    let p: int2 = int2(global_invocation_id.xy);
+    if (!scene.sceneUnchanged() && all(p < int2(scene.renderSize()))) {
+        scene.storeTemporalNeighbor(p, sampleNeighbor(scene, p, scene.loadReservoirInitial(p).seed));
+    }
+#endif
     countShifts(scene, temporalBins(scene, int2(global_invocation_id.xy)), local_invocation_index);
 }
 
