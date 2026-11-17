@@ -2198,7 +2198,11 @@ public func partner<S: IScene>(scene: S, p: int2, t: uint) -> int2 {
     let flip: int2 = select(int2(1), int2(-1), bool2((random & 1u) != 0u, (random & 2u) != 0u));
     let transpose: bool = (random & 4u) != 0u;
     let offset: int2 = int2(int((random >> 8u) & 255u), int((random >> 16u) & 255u));
-    let texel: int2 = ((select(p, p.yx, transpose) * flip + offset) % size + size) % size;
+    // NVIDIA's Vulkan driver takes the remainder of a negative operand as unsigned, p >= 0 keeps every operand >= 0
+    // -q mod size = size - q % size
+    // => texel = ((flip < 0 ? size - q % size : q % size) + offset) % size
+    let q: int2 = select(p, p.yx, transpose) % size;
+    let texel: int2 = (select(q, int2(size) - q, flip < int2(0)) + offset) % size;
     let delta: int2 = scene.pairing(texel, t).xy * flip;
     return p + select(delta, delta.yx, transpose);
 }
