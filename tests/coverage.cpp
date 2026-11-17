@@ -40,7 +40,7 @@ int main() {
     surface.coverage = 0;
     const Surface through = uncovered_0(&surface, 0.5f);
     Material passing = through.material, covered = WHITE;
-    const Vector<float, 2> eta = vertexEta_0(&passing, -in.z), eta_covered = vertexEta_0(&covered, -in.z);
+    const Vector<float, 2> eta = vertexEta(passing, -in.z), eta_covered = vertexEta(covered, -in.z);
     int straight = 0, bent = 0;
     for (int i = 0; i < 1024; i++) {
         const Vector<float, 2> NO_SCREEN(0, 0);

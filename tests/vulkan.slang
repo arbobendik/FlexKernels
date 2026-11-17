@@ -193,7 +193,8 @@ void main(uint3 id: SV_DispatchThreadID, uint local: SV_GroupIndex, uint3 group:
     const Vertex v = Vertex(r.w > 0.0f, LOBE_REFRACT, r.c, dot(dom.x0, dom.x1), (r.path >> PATH_INSIDE & 1u) != 0u);
 #endif
     reservoirs[id.x] = finalize(sel, r.c * childShare(bounds, bounds, r.f, n, child) * solidAngle(probability, r.f, n)
-        + importance(bounds, r.f, n) * sine(pick) * powerHeuristic(r.w, r.jac) * float(samplesLights(material))
+        + importance(bounds, r.f, n) * sine(pick) * powerHeuristic(r.w, r.jac)
+        * float(neeDecision(material, dot(n, r.dir), 1.0f, material.ior))
 #ifdef FK_RESTIR
         + v.pdf * v.cos * dom.hit.distance * float(v.rough != v.inside)
         + walkOver(dom, r)

@@ -23,12 +23,12 @@ int main() {
             Surface coat = {up, up, 1e-4f, {ONE, ZERO, 0, 0, 1, 1.5f, ZERO, ONE, 1}, false, 0, 1};
             Surface base = {up, up, 1e-4f, {ONE, ZERO, roughness, 0, transmission, 1.5f, ZERO, ONE, 1}, false, 0, 1};
             for (int i = 0; i < 4096; i++) {
-                Vector<float, 2> eta = vertexEta_0(&coat.material, -in.z);
+                Vector<float, 2> eta = vertexEta(coat.material, -in.z);
                 const SampleBSDF c = sampleBSDF(in, up, coat.material, eta.x, eta.y, hash(3 * i + 1), NO_SCREEN);
                 if (!passesLayer_0(2, c.refracted, false)) continue;
                 Surface b = facingRay_0(&base, c.unit_direction);
                 bool inside = arrivesBehind_0(c.unit_direction, b.geometry_n);
-                eta = vertexEta_0(&b.material, dot_0(b.smooth_n, -c.unit_direction));
+                eta = vertexEta(b.material, dot_0(b.smooth_n, -c.unit_direction));
                 const SampleBSDF d = sampleBSDF(c.unit_direction, b.smooth_n, b.material, eta.x, eta.y, hash(3 * i + 2),
                     NO_SCREEN);
                 met++, wrong += wrongSide_0(inside, d.refracted, d.unit_direction, b.geometry_n);
@@ -37,7 +37,7 @@ int main() {
                 if (!passesLayer_0(2, d.refracted, true) || !(d.unit_direction.z > 0)) continue;
                 Surface a = facingRay_0(&coat, d.unit_direction);
                 inside = arrivesBehind_0(d.unit_direction, a.geometry_n);
-                eta = vertexEta_0(&a.material, dot_0(a.smooth_n, -d.unit_direction));
+                eta = vertexEta(a.material, dot_0(a.smooth_n, -d.unit_direction));
                 const SampleBSDF e = sampleBSDF(d.unit_direction, a.smooth_n, a.material, eta.x, eta.y,
                     hash(3 * i + 3), NO_SCREEN);
                 met++, wrong += wrongSide_0(inside, e.refracted, e.unit_direction, a.geometry_n);

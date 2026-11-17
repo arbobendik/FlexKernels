@@ -570,7 +570,7 @@ int main() {
         scene = {{ZERO, 1, false, {glass}, 1, 1, false, none}};
         scene[0].axis = V(-1, 0, 0), scene[0].cap = 0.95f;
         const V through(1, 0, 0), face(-1, 0, 0);
-        const Vector<float, 2> eta = vertexEta_0(&glass, 1);
+        const Vector<float, 2> eta = vertexEta(glass, 1);
         const double reach = 1e4 + 1 - 1e-4, f = BSDF(through, through, face, face, glass, eta.x, eta.y, 0).x;
         furnace("rough glass lit from behind", V(-5, 0, 0), V(-1, 0, 0), 0, f * 1e8 / (reach * reach), failed);
     }
