@@ -109,6 +109,10 @@ void HookScene_storeTemporalShift_0(Vector<int32_t, 2> p, uint32_t t, Vector<uin
 Vector<uint32_t, 4> HookScene_duplication_0(Vector<int32_t, 2>) { return Vector<uint32_t, 4>(0); }
 uint32_t HookScene_restirDecorrelation_0() { return 0; }
 void HookScene_storeReservoirTemporal_0(Vector<int32_t, 2>, Reservoir, Hit) {}
+// The neighbours the count pass stored this frame
+static Vector<int32_t, 2> neighbors[W * H];
+void HookScene_storeTemporalNeighbor_0(Vector<int32_t, 2> p, Vector<int32_t, 2> q) { neighbors[p.y * W + p.x] = q; }
+Vector<int32_t, 2> HookScene_loadTemporalNeighbor_0(Vector<int32_t, 2> p) { return neighbors[p.y * W + p.x]; }
 uint32_t HookScene_queueCountAdd_0(uint32_t bin, uint32_t jobs) { return (queue[3 + bin] += jobs) - jobs; }
 uint32_t HookScene_queueCountLoad_0(uint32_t bin) { return queue[3 + bin]; }
 uint32_t HookScene_queueCursorAdd_0(uint32_t bin, uint32_t jobs) { return (queue[3 + BINS + bin] += jobs) - jobs; }
