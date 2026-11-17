@@ -92,6 +92,8 @@ struct TestScene : IScene {
     bool storedDomainTemporal(int2 p, uint seed, out Domain dom) { dom = previousDomain(p.yx, seed); return p.y > 0; }
     bool sceneUnchanged() { return true; }
     bool previousScenes() { return false; }
+    void storeTemporalNeighbor(int2 p, int2 q) { queue[uint(p.x)] = uint(q.y); }
+    int2 loadTemporalNeighbor(int2 p) { return int2(p.y, int(queue[uint(p.x)])); }
     Shift shiftPrevious(Domain dom, Reservoir r) { return Shift(dom.x1 * r.w, r.c); }
     Shift walkCallable(Domain dom, Reservoir r, bool replay, float scale, inout Selection sel) {
         sel.w_sum += scale;
@@ -135,11 +137,7 @@ float walkOver(Domain dom, Reservoir r) {
     float passes = 0.0f;
 #ifdef FK_RESTIR_PASSES
     const int2 p = int2(int(r.seed % 64u), int(r.seed / 64u % 48u));
-#ifdef FK_FCPT_WALK
     const int2 q = temporalNeighbor(scene, p, dom, r.seed) + partner(scene, p, r.path % 3u);
-#else
-    const int2 q = temporalNeighbor(scene, p, dom) + partner(scene, p, r.path % 3u);
-#endif
     const uint[3] bins = temporalBins(scene, p);
     const uint[3] spatial = spatialBins(scene, q);
     passes = float(q.x * q.y) + float(bins[0] + bins[1] + spatial[2] + shiftBin(r));
