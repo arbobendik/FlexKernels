@@ -20,7 +20,8 @@ struct Material {
     sheen_roughness: f32,
     anisotropy: f32,
     anisotropic_rotation: f32,
-    tangent: vec3<f32>
+    tangent: vec3<f32>,
+    velvet: f32
 };
 `;
 const LIGHT_TREE = /* wgsl */ `
