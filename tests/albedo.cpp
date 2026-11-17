@@ -78,62 +78,67 @@ int main() {
     const float ROUGHNESSES[] = {0.05f, 0.1f, 0.3f, 0.5f, 1}, VIEWS[] = {1, 0.5f, 0.2f, 0.02f};
     for (const float r : ROUGHNESSES) for (const float mu : VIEWS) {
         const Vector<float, 3> in_dir(sqrtf(1 - mu * mu), 0, -mu), v(-in_dir.x, 0, mu);
-        double albedo = 0, alone = 0, over = 0, worst = 0;
+        const Material SHEEN[] = {{ZERO, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r},
+            {ONE, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r}};
+        // By quadrature: the sheen lobe alone, E / max(E_table, 1), and over white, at most 1 where E_table >= E
+        double albedo = 0, white = 0, alone = 0, over = 0, worst = 0, alone2 = 0, over2 = 0;
         for (int i = 0; i < 512; i++) for (int j = 0; j < 1024; j++) {
             const float t = (i + 0.5f) / 512 * PI / 2, phi = (j + 0.5f) / 1024 * 2 * PI;
             const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
-            albedo += sheenBRDF(l, v, n, r) * cosf(t) * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
+            albedo += BSDF(in_dir, l, n, n, SHEEN[0], 1, 1, 0).x * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
+            white += BSDF(in_dir, l, n, n, SHEEN[1], 1, 1, 0).x * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
         }
-        const float table = sheenAlbedo(mu, r);
-        const Material SHEEN[] = {{ZERO, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r},
-            {ONE, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r}};
         for (unsigned i = 0; i < 1u << 18; i++) {
             const SampleBSDF s = sampleBSDF(in_dir, n, SHEEN[0], 1, 1, hash(i), Vector<float, 2>(0, 0));
             const SampleBSDF w = sampleBSDF(in_dir, n, SHEEN[1], 1, 1, hash(i), Vector<float, 2>(0, 0));
             const SampleBSDF c = connectBSDF(in_dir, w.unit_direction, n, SHEEN[1], 1, 1, w.lobe, hash(i));
-            const float f = BSDF(in_dir, w.unit_direction, n, n, SHEEN[1], 1, 1, hash(i)).x;
             alone += s.throughput.x / (1 << 18), over += w.throughput.x / (1 << 18);
-            if (w.pdf > 0) worst = fmax(worst, fmax(fabs(c.pdf / w.pdf - 1), fabs(f / (w.throughput.x * w.pdf) - 1)));
+            alone2 += s.throughput.x * s.throughput.x / (1 << 18), over2 += w.throughput.x * w.throughput.x / (1 << 18);
+            if (w.pdf > 0)
+                worst = fmax(worst, fmax(fabs(c.pdf / w.pdf - 1), fabs(c.throughput.x / w.throughput.x - 1)));
         }
-        const double expect = albedo / fmax(1, table);
-        printf("sheen %g at cosine %g: albedo %.4f, table %.4f, alone %.4f of %.4f, over white %.4f, worst mismatch %.2g\n",
-            r, mu, albedo, table, alone, expect, over, worst);
-        failed |= table < albedo * 0.999 || fabs(alone - expect) > 0.01 * fmax(expect, 0.05) || over > 1.002
-            || over < 0.99 || worst > 1e-5;
+        // 4 standard errors of the sampled means
+        const double se = 4 * sqrt(fmax(alone2 - alone * alone, 0) / (1 << 18)) + 0.002,
+            over_se = 4 * sqrt(fmax(over2 - over * over, 0) / (1 << 18)) + 0.002;
+        printf("sheen %g at cosine %g: alone %.4f of %.4f, over white %.4f of %.4f, worst mismatch %.2g\n", r, mu,
+            alone, albedo, over, white, worst);
+        failed |= fabs(alone - albedo) > se || fabs(over - white) > over_se || white > 1.002 || white < 0.99
+            || worst > 1e-5;
     }
     // White velvet: alone its albedo E, over a white diffuse at most what it receives, sampled as connected and
     // evaluated, f(l, v) = f(v, l)
     const float VELVET_ROUGHNESSES[] = {0.1f, 0.3f, 0.6f, 1};
     for (const float r : VELVET_ROUGHNESSES) for (const float mu : VIEWS) {
         const Vector<float, 3> in_dir(sqrtf(1 - mu * mu), 0, -mu), v(-in_dir.x, 0, mu);
-        double albedo = 0, alone = 0, over = 0, worst = 0, asymmetry = 0, alone2 = 0, over2 = 0;
+        const Material VELVET[] = {{ZERO, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r, 0, 0, ZERO, 1},
+            {ONE, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r, 0, 0, ZERO, 1}};
+        // By quadrature as for the sheen; f(l, v) = f(v, l) where neither view's table exceeds 1
+        double albedo = 0, white = 0, alone = 0, over = 0, worst = 0, asymmetry = 0, alone2 = 0, over2 = 0;
         for (int i = 0; i < 512; i++) for (int j = 0; j < 1024; j++) {
             const float t = (i + 0.5f) / 512 * PI / 2, phi = (j + 0.5f) / 1024 * 2 * PI;
             const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
-            const float f = velvetBRDF(l, v, n, r);
+            const float f = BSDF(in_dir, l, n, n, VELVET[0], 1, 1, 0).x / cosf(t);
+            const float g = BSDF(-l, v, n, n, VELVET[0], 1, 1, 0).x / mu;
             albedo += f * cosf(t) * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
-            asymmetry = fmax(asymmetry, fabs(f - velvetBRDF(v, l, n, r)) / fmax(f, 1e-6));
+            white += BSDF(in_dir, l, n, n, VELVET[1], 1, 1, 0).x * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
+            asymmetry = fmax(asymmetry, fabs(f - g) / fmax(f, 1e-3));
         }
-        const float table = velvetAlbedo(mu, r);
-        const Material VELVET[] = {{ZERO, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r, 0, 0, ZERO, 1},
-            {ONE, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r, 0, 0, ZERO, 1}};
         for (unsigned i = 0; i < 1u << 18; i++) {
             const SampleBSDF s = sampleBSDF(in_dir, n, VELVET[0], 1, 1, hash(i), Vector<float, 2>(0, 0));
             const SampleBSDF w = sampleBSDF(in_dir, n, VELVET[1], 1, 1, hash(i), Vector<float, 2>(0, 0));
             const SampleBSDF c = connectBSDF(in_dir, w.unit_direction, n, VELVET[1], 1, 1, w.lobe, hash(i));
-            const float f = BSDF(in_dir, w.unit_direction, n, n, VELVET[1], 1, 1, hash(i)).x;
             alone += s.throughput.x / (1 << 18), over += w.throughput.x / (1 << 18);
             alone2 += s.throughput.x * s.throughput.x / (1 << 18), over2 += w.throughput.x * w.throughput.x / (1 << 18);
-            if (w.pdf > 0) worst = fmax(worst, fmax(fabs(c.pdf / w.pdf - 1), fabs(f / (w.throughput.x * w.pdf) - 1)));
+            if (w.pdf > 0)
+                worst = fmax(worst, fmax(fabs(c.pdf / w.pdf - 1), fabs(c.throughput.x / w.throughput.x - 1)));
         }
-        const double expect = albedo / fmax(1, table), white = 1 - fmin(table, 1) + expect;
         // 4 standard errors of the sampled means
         const double se = 4 * sqrt(fmax(alone2 - alone * alone, 0) / (1 << 18)) + 0.002,
             over_se = 4 * sqrt(fmax(over2 - over * over, 0) / (1 << 18)) + 0.002;
-        printf("velvet %g at cosine %g: albedo %.4f, table %.4f, alone %.4f of %.4f, over white %.4f, worst mismatch "
-            "%.2g, asymmetry %.2g\n", r, mu, albedo, table, alone, expect, over, worst, asymmetry);
-        failed |= table < albedo * 0.999 || fabs(alone - expect) > se || fabs(over - white) > over_se || white > 1.0001
-            || worst > 1e-5 || asymmetry > 1e-3;
+        printf("velvet %g at cosine %g: alone %.4f of %.4f, over white %.4f of %.4f, worst mismatch %.2g, asymmetry "
+            "%.2g\n", r, mu, alone, albedo, over, white, worst, asymmetry);
+        failed |= fabs(alone - albedo) > se || fabs(over - white) > over_se || white > 1.0001 || worst > 1e-5
+            || asymmetry > 1e-3;
     }
     // Velvet's mean albedo over rings of view cosine and over the hemisphere, 2 * integral E(mu) * mu dmu, by midpoint
     // quadrature, against Blender's closure integrated apart
@@ -149,7 +154,9 @@ int main() {
             for (int i = 0; i < 256; i++) for (int j = 0; j < 512; j++) {
                 const float t = (i + 0.5f) / 256 * PI / 2, phi = (j + 0.5f) / 512 * 2 * PI;
                 const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
-                e += velvetBRDF(l, v, n, RING_SIGMAS[k]) * cosf(t) * sinf(t) * (PI / 2 / 256) * (2 * PI / 512);
+                const Material velvet = {ZERO, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, RING_SIGMAS[k], 0, 0, ZERO,
+                    1};
+                e += BSDF(-v, l, n, n, velvet, 1, 1, 0).x * sinf(t) * (PI / 2 / 256) * (2 * PI / 512);
             }
             hemisphere += 2 * e * mu / 64;
             const float LOW[] = {0.9f, 0.4f, 0.15f}, HIGH[] = {1, 0.6f, 0.3f};
