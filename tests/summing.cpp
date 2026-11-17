@@ -1,4 +1,4 @@
-// ReSTIR off: offers summed into color, no running weight or reservoir
+// ReSTIR off: offers summed into color, no running weight or reservoir; a negative offer kept at its sign
 #include <stdio.h>
 #include "pathtracer.cpp"
 
@@ -13,9 +13,9 @@ int main() {
         offer(&summed, candidate, weights[i]);
         offer(&resampled, candidate, weights[i]);
     }
-    const bool sums = summed.color.x == 3.5f && summed.color.y == 2.5f && summed.color.z == 4.5f
+    const bool sums = summed.color.x == 2.5f && summed.color.y == 1.5f && summed.color.z == 3.5f
         && summed.w_sum == 0 && summed.r.seed == 0;
-    const bool resamples = resampled.color.x == 3.5f && resampled.w_sum > 0 && resampled.r.seed != 0;
+    const bool resamples = resampled.color.x == 2.5f && resampled.w_sum > 0 && resampled.r.seed != 0;
     printf("summing: color (%g, %g, %g), running weight %g, reservoir seed %u; resampling: running weight %g, "
         "reservoir seed %u%s\n", summed.color.x, summed.color.y, summed.color.z, summed.w_sum, summed.r.seed,
         resampled.w_sum, resampled.r.seed, sums && resamples ? "" : "  FAILED");
