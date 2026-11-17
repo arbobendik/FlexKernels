@@ -410,6 +410,7 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 }
 
 // out_dir on in_dir's side of g_n: BSDF * n_dot_l = throughput_diffuse * PDF_diffuse + throughput_reflect * PDF_reflect
+// + throughput_sheen * PDF_sheen
 // otherwise: BSDF * n_dot_l = throughput_refract * PDF_refract
 // as throughput = BSDF_lobe * n_dot_l / PDF_lobe
 [CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {
@@ -417,7 +418,8 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     if (dot(g_n, negate(in_dir)) * dot(g_n, out_dir) > 0.0f) {
         let diffuse: SampleBSDF = connectBSDF(in_dir, out_dir, n, material, eta_i, eta_o, 0u, random_state);
         let reflection: SampleBSDF = connectBSDF(in_dir, out_dir, n, material, eta_i, eta_o, 2u, random_state);
-        return diffuse.throughput * diffuse.pdf + reflection.throughput * reflection.pdf;
+        let sheen: SampleBSDF = connectBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_SHEEN, random_state);
+        return diffuse.throughput * diffuse.pdf + reflection.throughput * reflection.pdf + sheen.throughput * sheen.pdf;
     }
     let refraction: SampleBSDF = connectBSDF(in_dir, out_dir, n, material, eta_i, eta_o, 1u, random_state);
     return refraction.throughput * refraction.pdf;
@@ -464,8 +466,9 @@ __extern_cpp public struct BSDFLobes {
     __extern_cpp public float p_refract;
     // Share of the diffuse lobe's samples sent through the surface
     __extern_cpp public float translucent_share;
-    // Sheen color / max(E, 1) and view direction, 0 without sheen
+    // Sheen color / max(E, 1), the sheen lobe's share of samples and the view direction, 0 without sheen
     __extern_cpp public float3 sheen;
+    __extern_cpp public float p_sheen;
     __extern_cpp public float3 view;
     // Anisotropic frame and G1_v * D of its VNDF, 0 when isotropic
     __extern_cpp public float3 tangent;
@@ -523,7 +526,7 @@ __extern_cpp public struct AnisotropicFrame {
         * (F_level - f0) / (1.0f - f0);
     // E = sheenAlbedo(n_dot_v, sheen_roughness)
     // Base lobes scaled by 1 - sheen * min(E, 1)
-    // Sheen lobe = sheen / max(E, 1) * sheenBRDF, chosen with the diffuse lobe by greyscale(sheen) * min(E, 1)
+    // Sheen lobe = sheen / max(E, 1) * sheenBRDF, chosen by greyscale(sheen) * min(E, 1)
     // => sheen lobe albedo = sheen * E / max(E, 1) <= sheen
     var scale: float3 = float3(1.0f);
     var sheen_component: float = 0.0f;
@@ -565,14 +568,15 @@ __extern_cpp public struct AnisotropicFrame {
     let total_component: float = reflect_component + diffuse_component + refract_component + sheen_component
         + toon_component;
     let total_component_inv: float = 1.0f / max(total_component, BIAS);
-    let p_diffuse: float = (diffuse_component + sheen_component + toon_component) * total_component_inv;
+    let p_diffuse: float = (diffuse_component + toon_component) * total_component_inv;
 #else
     let total_component: float = reflect_component + diffuse_component + refract_component + sheen_component;
     let total_component_inv: float = 1.0f / max(total_component, BIAS);
-    let p_diffuse: float = (diffuse_component + sheen_component) * total_component_inv;
+    let p_diffuse: float = diffuse_component * total_component_inv;
 #endif
     let p_reflect: float = reflect_component * total_component_inv;
     let p_refract: float = refract_component * total_component_inv;
+    let p_sheen: float = sheen_component * total_component_inv;
     // Anisotropic G1_v * D, the VNDF's numerator
     var visible: float = 0.0f;
     if (frame.alphas.x > 0.0f) {
@@ -580,10 +584,10 @@ __extern_cpp public struct AnisotropicFrame {
     }
 #ifdef FK_TOON
     return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse,
-        p_reflect, p_refract, 0.0f, sheen, view, frame.tangent, frame.alphas, visible,
-        toon_component / max(diffuse_component + sheen_component + toon_component, BIAS));
+        p_reflect, p_refract, 0.0f, sheen, p_sheen, view, frame.tangent, frame.alphas, visible,
+        toon_component / max(diffuse_component + toon_component, BIAS));
 #else
-    return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect, p_refract, 0.0f, sheen, view, frame.tangent, frame.alphas, visible);
+    return BSDFLobes(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect, p_refract, 0.0f, sheen, p_sheen, view, frame.tangent, frame.alphas, visible);
 #endif
 }
 
@@ -799,20 +803,19 @@ func toonInvert(target: float, lobe: ToonLobe) -> float {
         let through: bool = dot(n_i, l) < 0.0f;
         let color: float3 = select(material.albedo, select(material.albedo, material.translucent, through)
             / select(1.0f - share, share, through), share > 0.0f);
-        // Sheen in front: BSDF += sheen * sheenBRDF, PDF = (1 - share) * cosine_hemisphere.y / PI
-        // => throughput += sheen * PI * sheenBRDF / (1 - share)
-        if (sheenUsed() && rgb_to_greyscale(material.sheen) > 0.0f && !through) {
-#ifdef FK_VELVET
-            let f: float = material.velvet > 0.0f ? velvetBRDF(l, lobes.view, n_i, material.sheen_roughness)
-                : sheenBRDF(l, lobes.view, n_i, material.sheen_roughness);
-            return (lobes.diffuse_weight * color + lobes.sheen * PI * f / select(1.0f, 1.0f - share, share > 0.0f))
-                / lobes.p_diffuse;
-#else
-            return (lobes.diffuse_weight * color + lobes.sheen * PI * sheenBRDF(l, lobes.view, n_i, material.sheen_roughness)
-                / select(1.0f, 1.0f - share, share > 0.0f)) / lobes.p_diffuse;
-#endif
-        }
         return lobes.diffuse_weight * color / lobes.p_diffuse;
+    }
+    if (lobe == LOBE_SHEEN) {
+#ifdef FK_VELVET
+        let f: float = material.velvet > 0.0f ? velvetBRDF(l, lobes.view, n_i, material.sheen_roughness)
+            : sheenBRDF(l, lobes.view, n_i, material.sheen_roughness);
+#else
+        let f: float = sheenBRDF(l, lobes.view, n_i, material.sheen_roughness);
+#endif
+        let n_dot_l: float = max(dot(n_i, l), 0.0f);
+        // BSDF = sheen * f, PDF = p_sheen / (2 * PI), uniform over the hemisphere
+        // => throughput = sheen * f * n_dot_l * 2 * PI / p_sheen
+        return lobes.sheen * (f * n_dot_l * 2.0f * PI / lobes.p_sheen);
     }
     if (lobe == LOBE_REFRACT) {
         let m_n_i_dot_l: float = - dot(n_i, l);
@@ -862,6 +865,10 @@ func toonInvert(target: float, lobe: ToonLobe) -> float {
         let share: float = lobes.translucent_share;
         return select(0.0f, select(lobes.p_diffuse * n_i_dot_l * INV_PI, lobes.p_diffuse * abs(n_i_dot_l) * INV_PI
             * select(1.0f - share, share, n_i_dot_l < 0.0f), share > 0.0f), n_i_dot_v > 0.0f);
+    }
+    if (lobe == LOBE_SHEEN) {
+        // PDF = p_sheen / (2 * PI), uniform over the hemisphere
+        return select(0.0f, lobes.p_sheen * 0.5f * INV_PI, n_i_dot_l > 0.0f && n_i_dot_v > 0.0f);
     }
     // PDF_VNDF = G1_v * v_dot_h * D / n_dot_v
     var pdf_h: float = select(0.0f, smithG1(alpha, n_i_dot_v) * lobes.v_dot_h * trowbridgeReitz(alpha, lobes.n_dot_h) / n_i_dot_v, alpha > 0.0f && lobes.v_dot_h > 0.0f && lobes.n_dot_h > 0.0f && n_i_dot_v > 0.0f);
@@ -960,8 +967,21 @@ func toonMix(inout drawn: SampleBSDF, v: float3, n_i: float3, material: Material
         sample.refracted = through;
         return sample;
     }
+    // Sheen case: uniform over the hemisphere, cos(theta) = u_1
+    if (random_p.value < lobes.p_diffuse + lobes.p_sheen) {
+        let random_s_1: Random = pcg(random_state);
+        let random_s_2: Random = pcg(random_s_1.state);
+        sample.random_state = random_s_2.state;
+        let across: float = sqrt(max(0.0f, 1.0f - random_s_1.value * random_s_1.value));
+        let phi: float = 2.0f * PI * random_s_2.value;
+        sample.unit_direction = tangentToWorld(float3(across * cos(phi), random_s_1.value, across * sin(phi)), n_i);
+        sample.throughput = lobeThroughput(sample.unit_direction, n_i, alpha, material, lobes, LOBE_SHEEN);
+        sample.pdf = lobeDensity(random_s_1.value, 0.0f, n_i_dot_v, alpha, lobes, eta_i, eta_o, LOBE_SHEEN);
+        sample.lobe = LOBE_SHEEN;
+        return sample;
+    }
     // Refractive case
-    if (random_p.value < lobes.p_diffuse + lobes.p_refract) {
+    if (random_p.value < lobes.p_diffuse + lobes.p_sheen + lobes.p_refract) {
         // Refraction is valid
         sample.unit_direction = lobes.refracted;
         sample.pdf = lobeDensity(0.0f, dot(sample.unit_direction, ggx_n), n_i_dot_v, alpha, lobes, eta_i, eta_o, 1u);
@@ -990,7 +1010,7 @@ func toonMix(inout drawn: SampleBSDF, v: float3, n_i: float3, material: Material
     let alpha: float = material.roughness * material.roughness;
     let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
     var ggx_n: float3 = normalize(v + out_dir);
-    if (lobe == LOBE_DIFFUSE) {
+    if (lobe == LOBE_DIFFUSE || lobe == LOBE_SHEEN) {
         ggx_n = sampleHalfVector(v, n_i, alpha, frame, random_state);
     } else if (lobe == LOBE_REFRACT) {
         // Refractive half-vector (eq. 16)
@@ -1042,7 +1062,9 @@ func toonMix(inout drawn: SampleBSDF, v: float3, n_i: float3, material: Material
 // => BSDF * n_dot_l / pdf * w_power = throughput * PDF_lobe / (pdf * (1 + (PDF_lobe / pdf)^2))
 [CudaDeviceExport] public func neeBSDF(in_dir: float3, dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, refracted: bool, pdf: float, power: bool, random_state: uint) -> float3 {
     var f: float3 = float3(0.0f);
-    for (var lobe: uint = 0u; lobe < 3u; lobe++) {
+    // Diffuse, refraction, reflection, then the sheen
+    for (var i: uint = 0u; i < 4u; i++) {
+        let lobe: uint = i == 3u ? LOBE_SHEEN : i;
         // Translucent diffuse lobe: through the shading normal on the refracted side
         if (lobe == LOBE_DIFFUSE && translucencyUsed() && rgb_to_greyscale(material.translucent) > 0.0f
             ? (dot(n, dir) * dot(n, negate(in_dir)) < 0.0f) == refracted : (lobe == LOBE_REFRACT) == refracted) {
