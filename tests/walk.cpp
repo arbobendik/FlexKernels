@@ -360,6 +360,82 @@ int main() {
     const bool agree = fabs(chosen - summed) < 4 * sqrt(summed_se * summed_se + furnace_se * furnace_se);
     failed += !agree;
     printf("dispersive glass on red: resampled %.5f, summed %.5f%s\n", chosen, summed, agree ? "" : "  FAILED");
+    // Temporal and spatial reuse of its spectral samples as the passes combine them (Sec. 3): each pixel's sample
+    // against a previous one from a moved camera by temporal weights, then against its neighbour's by pairwise MIS;
+    // per channel, the combined colour and f * W after finalize against independent pixels without reuse
+    {
+        const int PIXELS = 1 << 12;
+        const auto pixel = [&](V eye, int i) {
+            const float a = 2.39996323f * i, r = 0.25f * sqrtf((i + 0.5f) / PIXELS);
+            const V dir = scaled(V(r * cosf(a), r * sinf(a), -1), 1 / sqrtf(1 + r * r));
+            const Hit hit = HookScene_traverseInstanceBVH_0(Ray{eye, dir}, true, 1e30f, true, NO_HIT, true);
+            return Domain{eye, eye + scaled(dir, hit.distance), hit};
+        };
+        const auto sample = [&](const Domain& dom, uint32_t seed, V* color) {
+            Reservoir path = {};
+            path.seed = seed;
+            Selection sel = {};
+            sel.random_state = hash(seed + 1);
+            walk_hook(dom, path, false, 1, &sel);
+            if (color) *color = sel.color;
+            return finalize(sel, 1);
+        };
+        std::vector<Domain> here(PIXELS), before(PIXELS);
+        std::vector<Reservoir> current(PIXELS), temporal(PIXELS);
+        double plain[3] = {}, plain2[3] = {}, mixed[3] = {}, mixed2[3] = {}, kept[3] = {}, kept2[3] = {};
+        for (int i = 0; i < PIXELS; i++) {
+            here[i] = pixel(camera, i), before[i] = pixel(camera + V(0.02f, 0, 0), i);
+            V alone;
+            sample(here[i], hash(7 * i + 1), &alone);
+            const double y[3] = {alone.x, alone.y, alone.z};
+            for (int k = 0; k < 3; k++) plain[k] += y[k] / PIXELS, plain2[k] += y[k] * y[k] / PIXELS;
+            current[i] = sample(here[i], hash(7 * i + 2), nullptr);
+            const Reservoir previous = sample(before[i], hash(7 * i + 3), nullptr);
+            const Shift to_current = shift_hook(here[i], previous), to_previous = shift_hook(before[i], current[i]);
+            const Vector<float, 2> w = Vector<float, 2>(1 * resamplingTarget(current[i].f)
+                / (1 * resamplingTarget(current[i].f) + 1 * resamplingTarget(to_previous.f)),
+                1 * resamplingTarget(previous.f)
+                / (1 * resamplingTarget(previous.f) + 1 * resamplingTarget(to_current.f)));
+            Selection sel = {};
+            sel.random_state = hash(7 * i + 4);
+            offerShifted(&sel, current[i], Shift{current[i].f, 1}, w.x);
+            offerShifted(&sel, previous, to_current, w.y);
+            temporal[i] = finalize(sel, 2);
+        }
+        for (int i = 0; i < PIXELS; i++) {
+            const Reservoir r = temporal[i], neighbour = temporal[(i + 1) % PIXELS];
+            const Shift to_here = shift_hook(here[i], neighbour), to_there = shift_hook(here[(i + 1) % PIXELS], r);
+            const float c_sum = r.c + neighbour.c, share = (neighbour.c + r.c) / c_sum;
+            const float p_c = resamplingTarget(r.f);
+            const float canonical = p_c > 0
+                ? share * r.c * p_c / (r.c * p_c + neighbour.c * resamplingTarget(to_there.f)) : 0;
+            Selection sel = {};
+            sel.random_state = hash(7 * i + 5);
+            offerShifted(&sel, neighbour, to_here,
+                share * neighbour.c * resamplingTarget(neighbour.f)
+                / (neighbour.c * resamplingTarget(neighbour.f) + r.c * resamplingTarget(to_here.f)));
+            offerShifted(&sel, r, Shift{r.f, 1}, canonical);
+            const Reservoir out = finalize(sel, c_sum);
+            const double c[3] = {sel.color.x, sel.color.y, sel.color.z}, f[3] = {out.f.x * out.w, out.f.y * out.w,
+                out.f.z * out.w};
+            for (int k = 0; k < 3; k++) mixed[k] += c[k] / PIXELS, mixed2[k] += c[k] * c[k] / PIXELS,
+                kept[k] += f[k] / PIXELS, kept2[k] += f[k] * f[k] / PIXELS;
+        }
+        bool reused = true;
+        double z = 0;
+        for (int k = 0; k < 3; k++) {
+            const double se = sqrt(fmax(plain2[k] - plain[k] * plain[k], 0) / PIXELS), se_mixed = sqrt(fmax(mixed2[k]
+                - mixed[k] * mixed[k], 0) / PIXELS), se_kept = sqrt(fmax(kept2[k] - kept[k] * kept[k], 0) / PIXELS);
+            reused = reused && fabs(mixed[k] - plain[k]) < 4 * hypot(se, se_mixed)
+                && fabs(kept[k] - plain[k]) < 4 * hypot(se, se_kept);
+            z = fmax(z, fmax(fabs(mixed[k] - plain[k]) / hypot(se, se_mixed),
+                fabs(kept[k] - plain[k]) / hypot(se, se_kept)));
+        }
+        failed += !reused;
+        printf("spectral reuse: colour (%.4f, %.4f, %.4f), f * W (%.4f, %.4f, %.4f) against (%.4f, %.4f, %.4f), at "
+            "most %.1f standard errors%s\n", mixed[0], mixed[1], mixed[2], kept[0], kept[1], kept[2], plain[0],
+            plain[1], plain[2], z, reused ? "" : "  FAILED");
+    }
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, fog}};
     furnace("medium of albedo 1", camera, center, 0.3f, 1, failed);
     scene[0].volume.g = 0.8f;
