@@ -52,7 +52,9 @@ Hit HookScene_traverseInstanceBVH_0(Ray ray, bool, float max_len, bool surface, 
             const V on = ray.origin + scaled(ray.unit_direction, t) - scene[i].center;
             if (!(t > near) || (own && !(t > 1e-4f * scene[i].radius))
                 || dotv(on, scene[i].axis) < scene[i].cap * scene[i].radius) continue;
-            if (t < hit.distance) hit.instance_index = i, hit.distance = t;
+            // The point's polar and azimuthal angles about the center as its uv
+            if (t < hit.distance) hit.instance_index = i, hit.distance = t,
+                hit.uv = Vector<float, 2>(acosf(fmaxf(-1, fminf(1, on.z / scene[i].radius))), atan2f(on.y, on.x));
             break;
         }
     }
@@ -114,7 +116,11 @@ Light HookScene_light_0(uint32_t) { return Light{SUN, 0, ONE, 1e8f, 0}; }
 uint32_t HookScene_triangleOffset_0(uint32_t) { return 0; }
 Matrix<float, 3, 3> HookScene_worldTriangle_0(uint32_t, uint32_t) { return Matrix<float, 3, 3>(0.0f); }
 V HookScene_calculatePointLightContrib_0(uint32_t) { return ZERO; }
-V HookScene_hitPosition_0(Hit) { return ZERO; }
+V HookScene_hitPosition_0(Hit hit) {
+    const Shape& s = scene[hit.instance_index];
+    const V on(sinf(hit.uv.x) * cosf(hit.uv.y), sinf(hit.uv.x) * sinf(hit.uv.y), cosf(hit.uv.x));
+    return s.center + scaled(on, s.radius);
+}
 // Shadows pass index-matched clear surfaces and the uncovered share of others, media by exp(-extinction * d)
 static V shadowThrough(Ray ray, float l, bool surface, Hit left = NO_HIT) {
     float share = 1;
@@ -178,6 +184,7 @@ Medium HookScene_cameraMedium_0(V direction, float distance, uint32_t* filling) 
 static int majorants_of_none = 0;
 bool HookScene_varyingUsed_0() { return true; }
 bool HookScene_hairUsed_0() { return true; }
+bool HookScene_dispersionUsed_0() { return true; }
 bool HookScene_shadowFirst_0() { return true; }
 static Medium world = {ZERO, ZERO};
 // Asked of the face being left, the one shaded last
