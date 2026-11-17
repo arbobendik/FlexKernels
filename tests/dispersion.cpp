@@ -38,5 +38,45 @@ int main() {
     printf("wavelengths: integral of w (%.5f, %.5f, %.5f), of p %.5f over %.3f to %.3f um", white[0], white[1],
         white[2], density, least, most);
     printf(", E[w / p] (%.5f, %.5f, %.5f)%s\n", mean[0], mean[1], mean[2], ok ? "" : "  FAILED");
+    // Prism of apex 60 degrees entered at its d line's minimum deviation through sampleBSDF's refraction at each λ:
+    // per channel E[w_c / p δ] / E[w_c / p], against the integral of w_c δ over the interpolated weights
+    struct Prism { float ior, dispersion, centroid[3]; };
+    const Prism PRISMS[] = {{1.5f, 0.2f, {34.804f, 39.318f, 48.285f}}, {1.5f, 0.1f, {35.980f, 38.255f, 42.398f}},
+        {1.5f, 0, {37.181f, 37.181f, 37.181f}}, {1.5168f, 1 / 64.17f, {38.450f, 38.822f, 39.466f}}};
+    const float A = 3.14159265f / 3;
+    const Vector<float, 3> n1(-cosf(A / 2), 0, sinf(A / 2)), n2(cosf(A / 2), 0, sinf(A / 2));
+    const auto refracted = [](Vector<float, 3> d, Vector<float, 3> n, Material m, float wavelength) {
+        Material refractive = m;
+        refractive.ior = wavelength > 0 ? dispersedIor(m.ior, m.dispersion, wavelength) : m.ior;
+        const Vector<float, 2> eta = vertexEta(refractive, dot_0(n, -d));
+        for (unsigned k = 0; k < 64; k++) {
+            const SampleBSDF s = sampleBSDF(d, n, m, eta.x, eta.y, hash(k));
+            if (s.lobe == 1) return s.unit_direction;
+        }
+        return Vector<float, 3>(0, 0, 0);
+    };
+    for (const Prism& prism : PRISMS) {
+        Material glass = {Vector<float, 3>(1, 1, 1), Vector<float, 3>(0, 0, 0), 0, 0, 1, prism.ior,
+            Vector<float, 3>(1, 1, 1), Vector<float, 3>(1, 1, 1), 1, Vector<float, 3>(0, 0, 0),
+            Vector<float, 3>(0, 0, 0), 0.5f, 0, 0, Vector<float, 3>(0, 0, 0)};
+        glass.dispersion = prism.dispersion;
+        const float enter = asinf(prism.ior * sinf(A / 2));
+        const Vector<float, 3> in_dir(cosf(A / 2) * cosf(enter) + sinf(A / 2) * sinf(enter), 0,
+            -sinf(A / 2) * cosf(enter) + cosf(A / 2) * sinf(enter));
+        double sum[3] = {}, weight[3] = {}, worst = 0;
+        for (int i = 0; i < 1 << 16; i++) {
+            const Vector<float, 2> drawn = sampleWavelength((i + 0.5f) / (1 << 16));
+            const Vector<float, 3> out = refracted(refracted(in_dir, n1, glass, drawn.x), n2, glass, drawn.x);
+            const double deviation = acos(fmin(1.0, dot_0(in_dir, out))) * 180 / M_PI;
+            const Vector<float, 3> w = wavelengthWeights(drawn.x);
+            const double c[3] = {w.x / drawn.y, w.y / drawn.y, w.z / drawn.y};
+            for (int k = 0; k < 3; k++) sum[k] += c[k] * deviation, weight[k] += c[k];
+        }
+        for (int k = 0; k < 3; k++) worst = fmax(worst, fabs(sum[k] / weight[k] - prism.centroid[k]));
+        ok = ok && worst < 0.01;
+        printf("prism n_d %g, dispersion %g: deviation (%.3f, %.3f, %.3f) degrees, off by %.4f%s\n", prism.ior,
+            prism.dispersion, sum[0] / weight[0], sum[1] / weight[1], sum[2] / weight[2], worst,
+            worst < 0.01 ? "" : "  FAILED");
+    }
     return !ok;
 }
