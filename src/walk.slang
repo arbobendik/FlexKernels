@@ -29,6 +29,7 @@ public static const uint PATH_LOBE_PREV = 15u;
 public static const uint PATH_LOBE = 18u;
 public static const uint PATH_NEE = 21u;
 public static const uint PATH_INSIDE = 22u;
+public static const uint PATH_SPECTRAL = 23u;
 
 // Random streams besides the per vertex ones
 public static const uint STREAM_NEE = 64u;
@@ -45,6 +46,8 @@ public static const uint STREAM_SKY = 448u;
 #else
 public static const uint STREAM_SKY = 256u;
 #endif
+// Wavelength at the first dispersive hit
+public static const uint STREAM_WAVELENGTH = 512u;
 #endif
 
 __target_intrinsic(cuda, "Reservoir")
@@ -842,6 +845,7 @@ public interface IScene {
     public float majorant(uint filling);
     public bool varyingUsed();
     public bool hairUsed();
+    public bool dispersionUsed();
     public bool shadowFirst();
     public Medium outsideMedium(Hit hit);
     public Medium cameraMedium(float3 direction, float distance, out uint filling);
@@ -980,6 +984,9 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "false")
     __target_intrinsic(cuda, "fcptHairUsed()")
     public bool hairUsed();
+    __target_intrinsic(wgsl, "(true)")
+    __target_intrinsic(cuda, "fcptDispersionUsed()")
+    public bool dispersionUsed();
     // Whether an emitter is shaded only after its shadow test passes
     __target_intrinsic(wgsl, "false")
     __target_intrinsic(cuda, "fcptShadowFirst()")
@@ -1685,6 +1692,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     // Replaying the densities of the reconnection, generating the product of Russian roulette survival probabilities
     var density: float = 1.0f;
     var is_inside: bool = false;
+    // Wavelength from the first dispersive hit on, 0 before
+    var wavelength: float = 0.0f;
 #ifdef FK_FCPT_WALK
     // Seen straight from the camera: past refractions at equal indices only, no scattering
     var viewed: bool = true;
@@ -1840,7 +1849,18 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let footprint: bool = withinFootprint(scatter, prev.rough, prev.pdf, geometry_density, threshold);
         let material: Material = surface.material;
         let n_dot_v: float = dot(surface.smooth_n, - ray.unit_direction);
-        let eta: float2 = vertexEta(material, n_dot_v);
+        // First dispersive hit: λ from the seed, which every replay draws again
+        // f_c = integral w_c(λ) f(λ) dλ ≈ w_c(λ) / p(λ) * f(λ)
+        if (scene.dispersionUsed() && wavelength == 0.0f && scatter && dispersive(material)) {
+            let drawn: float2 = sampleWavelength(pcg(stream(r.seed, STREAM_WAVELENGTH)).value);
+            wavelength = drawn.x;
+            throughput *= wavelengthWeights(drawn.x) / drawn.y;
+        }
+        // Indices at the path's wavelength past its first dispersive hit, at the material's IOR before (wavelength 0)
+        var refractive: Material = material;
+        refractive.ior = select(material.ior, dispersedIor(material.ior, material.dispersion, wavelength),
+            wavelength > 0.0f);
+        let eta: float2 = vertexEta(refractive, n_dot_v);
         var nee: bool = scatter && neeDecision(material, n_dot_v, eta.x, eta.y);
         // Light is sampled at the top layer alone
         if (layersUsed() && (passed || layer != 0u)) {
@@ -1874,6 +1894,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         // Reconnection at this vertex for paths ending here
         var here: Reservoir = chain;
         here.path = insertBits(insertBits(insertBits(insertBits(0u, b, PATH_K, 5u), RC_SURFACE, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 3u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
+        here.path = insertBits(here.path, select(0u, 1u, wavelength > 0.0f), PATH_SPECTRAL, 1u);
         here.jac = prev.pdf * geometry_density;
         withReservoirHit(here, hit);
         let arrived: bool = replay && rc == RC_SURFACE && b == k;
@@ -1911,6 +1932,10 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         if (arrived) {
             // The stored path takes over at the reconnection vertex
             if (!footprint) {
+                return fail;
+            }
+            // Its stored radiance, f / chain_throughput, holds only for the same spectral state at x_k
+            if ((wavelength > 0.0f) != (extractBits(r.path, PATH_SPECTRAL, 1u) == 1u)) {
                 return fail;
             }
             throughput *= geometry_density;
