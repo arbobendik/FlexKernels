@@ -159,6 +159,7 @@ static float sky = 1;
 static bool escapes_checked = false;
 static int escapes = 0, escape_misfits = 0;
 static V below(0, 0, 0);
+bool HookScene_worldReadsPath_0() { return false; }
 V HookScene_env_map_sample_0(V dir, uint32_t depth, uint32_t lobe) {
     if (escapes_checked) escapes += depth == 0 && lobe == 0, escape_misfits += depth != 0 || lobe != 0 && lobe != 3;
     return scaled(ONE, dotv(below, below) > 0 && !(dotv(dir, below) < 0) ? 0 : sky);
