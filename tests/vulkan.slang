@@ -38,6 +38,7 @@ struct TestScene : IScene {
     bool hairUsed() { return true; }
     bool dispersionUsed() { return true; }
     bool shadowFirst() { return true; }
+    bool worldReadsPath() { return false; }
     Medium outsideMedium(Hit hit) { return Medium(float3(0.125f), float3(0.25f), 0.0f); }
     Medium cameraMedium(float3 direction, float distance, out uint filling) {
         filling = 7u;
