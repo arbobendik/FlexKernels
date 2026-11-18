@@ -31,6 +31,7 @@ Surface HookScene_lightSurfaceAt_0(Hit hit, V point, uint32_t state, V dir, uint
 }
 static bool shadow_first = true, blocked = false;
 bool HookScene_shadowFirst_0() { return shadow_first; }
+bool HookScene_worldReadsPath_0() { return false; }
 V HookScene_shadowTransmittanceIn_0(Ray, float, V, uint32_t filling, uint32_t, uint32_t, uint32_t, bool, float, float,
     Hit, Hit) {
     hook_filling = filling;
