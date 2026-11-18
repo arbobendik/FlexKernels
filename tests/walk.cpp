@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 #include <vector>
 #include <initializer_list>
 #include "pathtracer.cpp"
@@ -159,10 +160,12 @@ static float sky = 1;
 static bool escapes_checked = false;
 static int escapes = 0, escape_misfits = 0;
 static V below(0, 0, 0);
-bool HookScene_worldReadsPath_0() { return false; }
+// A world reading the ray's kind: half as bright to rays leaving by any lobe but the diffuse one
+static bool lobe_world = false;
+bool HookScene_worldReadsPath_0() { return lobe_world; }
 V HookScene_env_map_sample_0(V dir, uint32_t depth, uint32_t lobe) {
     if (escapes_checked) escapes += depth == 0 && lobe == 0, escape_misfits += depth != 0 || lobe != 0 && lobe != 3;
-    return scaled(ONE, dotv(below, below) > 0 && !(dotv(dir, below) < 0) ? 0 : sky);
+    return scaled(ONE, (dotv(below, below) > 0 && !(dotv(dir, below) < 0) ? 0 : sky) * (lobe_world && lobe != 0 ? 0.5f : 1));
 }
 V HookScene_ambient_0() { return ONE; }
 Vector<uint32_t, 2> HookScene_environmentMapSize_0() { return Vector<uint32_t, 2>(4, 2); }
@@ -219,6 +222,15 @@ static bool resampled = false;
 static double furnace_se = 0;
 // Channel the furnace reads
 static int furnace_channel = 0;
+// The digest of main's walk (47742e73) for two diffuse spheres under a sky of 0.7
+static const uint64_t UNMARKED_DIGEST = 0x1e8cae4367ac5826ull;
+// FNV-1a over each path's colour, kept sample and stored radiance, bit for bit
+static uint64_t digest = 0;
+static void digested(float x) {
+    uint32_t bits;
+    memcpy(&bits, &x, 4);
+    digest = (digest ^ bits) * 1099511628211ull;
+}
 static double furnace(const char* name, V camera, V aim, float angle, double truth, int& failed, float absorbs = 0) {
     const int N = 1 << 17;
     double sum = 0, sum2 = 0, through = 0;
@@ -242,6 +254,8 @@ static double furnace(const char* name, V camera, V aim, float angle, double tru
         misfits += dotv(handed_direction, dir) < 1 - 1e-6f
             || fabsf(handed_distance - hit.distance) > 1e-5f * hit.distance;
         const Reservoir kept = finalize(sel, 1);
+        for (int k = 0; k < 3; k++) digested(sel.color[k]), digested(kept.f[k]), digested(sel.r.radiance[k]);
+        digested(kept.w);
         const double y = resampled ? kept.f[furnace_channel] * kept.w
             : sel.color[furnace_channel] + (seen ? sel.glow[furnace_channel] : 0);
         through += exp(-absorbs * hit.distance);
@@ -270,6 +284,30 @@ int main() {
     failed += cdf_reads > 0;
     printf("sky unsampled: %d reads of its distribution%s\n", cdf_reads, cdf_reads > 0 ? "  FAILED" : "");
     cdf = true;
+    {
+        // A world reading the ray's kind lights a glossy sphere alike through its sky samples and its escapes
+        lobe_world = true;
+        scene[0].layer[0] = Material{ONE, ZERO, 0.4f, 0, 0, 1.5f, ONE, ONE, 1, ZERO, ZERO, 0.5f, 0, 0, ZERO};
+        const double sampled = furnace("glossy sphere, world by ray kind, sky sampled", camera, center, 0.3f, NAN, failed),
+            sampled_se = furnace_se;
+        cdf = false;
+        const double escaped = furnace("  sky unsampled", camera, center, 0.3f, NAN, failed);
+        const bool alike = fabs(sampled - escaped) < 4 * hypot(sampled_se, furnace_se);
+        failed += !alike;
+        printf("world by ray kind: sampled and escaped %s%s\n", alike ? "agree" : "differ", alike ? "" : "  FAILED");
+        // A world reading no Light Path keeps main's walk bit for bit, its stored sky radiance the world times the
+        // transmittance: two diffuse spheres side by side under a sky of 0.7, sampled
+        cdf = true, lobe_world = false, sky = 0.7f, digest = 1469598103934665603ull;
+        scene[0].layer[0] = lambert(0.8f, 0);
+        scene.push_back({V(1.5f, 0, 0), 0.6f, false, {lambert(0.8f, 0)}, 1, 1, false, none});
+        furnace("two diffuse spheres, sky 0.7", camera, center, 0.3f, NAN, failed);
+        scene.pop_back();
+        const bool kept_main = digest == UNMARKED_DIGEST;
+        failed += !kept_main;
+        printf("world reading no Light Path: walk %s main's (digest %016llx)%s\n", kept_main ? "equals" : "differs from",
+            (unsigned long long)digest, kept_main ? "" : "  FAILED");
+        sky = 1, scene[0].layer[0] = lambert(1, 0);
+    }
     summing = true;
     furnace("white sphere, ReSTIR off", camera, center, 0.3f, 1, failed);
     {
