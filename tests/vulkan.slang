@@ -92,6 +92,7 @@ struct TestScene : IScene {
     bool previousScenes() { return false; }
     void storeTemporalNeighbor(int2 p, int2 q) { queue[uint(p.x)] = uint(q.y); }
     int2 loadTemporalNeighbor(int2 p) { return int2(p.y, int(queue[uint(p.x)])); }
+    bool temporalQueued() { return true; }
     Shift shiftPrevious(Domain dom, Reservoir r) { return Shift(dom.x1 * r.w, r.c); }
     Shift walkCallable(Domain dom, Reservoir r, bool replay, float scale, inout Selection sel) {
         sel.w_sum += scale;

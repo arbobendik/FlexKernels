@@ -110,6 +110,9 @@ Vector<uint32_t, 4> HookScene_temporalShift_0(Vector<int32_t, 2> p, uint32_t t) 
 void HookScene_storeTemporalShift_0(Vector<int32_t, 2> p, uint32_t t, Vector<uint32_t, 4>) {
     written[t][p.y * W + p.x] = true;
 }
+// The temporal round's shifts from its queue, else made by restir_temporal
+static bool queued_round = true;
+bool HookScene_temporalQueued_0() { return queued_round; }
 Vector<uint32_t, 4> HookScene_duplication_0(Vector<int32_t, 2>) { return Vector<uint32_t, 4>(0); }
 uint32_t HookScene_restirDecorrelation_0() { return 0; }
 static Reservoir reused[W * H];
@@ -205,7 +208,7 @@ int main() {
             restir_temporal_count_hook(Vector<uint32_t, 3>(x, y, 0), 0);
         for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
             ShiftJob job = {};
-            if (temporalJob_0(Vector<int32_t, 2>(x, y), t, &job, true))
+            if (temporalJob_0(Vector<int32_t, 2>(x, y), neighbors[y * W + x], t, &job, true))
                 count++, misfits += job.dom.x0.x != float(job.r.seed);
         }
         return count;
