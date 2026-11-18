@@ -358,22 +358,11 @@ static const float RESTIR_DUPLICATION_ALPHA = 0.1;
     return clamp(max(importancy_factor.x, max(importancy_factor.y, importancy_factor.z)), 0.0f, 1.0f);
 }
 
-// Temporal confidence cap (Sec. 5)
-[CudaDeviceExport] public func confidenceCap(duplicated: float) -> float {
-    return interpolate(RESTIR_CAP, RESTIR_CAP_MIN, pow(duplicated, RESTIR_DUPLICATION_ALPHA));
-}
 float interpolate(float a, float b, float t) {
     __target_switch {
     case wgsl: __intrinsic_asm "mix($0, $1, $2)";
     default: return a + (b - a) * t;
     }
-}
-
-// Temporal MIS weights, p_t->c = g_previous the previous sample shifted here, p_c->t = g_current
-// m_c = c * p_c / (c * p_c + c_t * p_t->c)
-// m_t = c_t * p_t / (c_t * p_t + c * p_c->t)
-[CudaDeviceExport] public func temporalWeights(c: float, p_c: float, c_t: float, p_t: float, g_previous: float, g_current: float) -> float2 {
-    return float2(c * p_c / (c * p_c + c_t * g_previous), c_t * p_t / (c_t * p_t + c * g_current));
 }
 
 
@@ -699,6 +688,8 @@ public interface IScene {
     // The temporal neighbour of p's sample, as the round's count pass stored it this frame
     public void storeTemporalNeighbor(int2 p, int2 q);
     public int2 loadTemporalNeighbor(int2 p);
+    // Whether the temporal round's shifts come from its queue, else restir_temporal makes each pixel's itself
+    public bool temporalQueued();
     // Shift of r into dom in the previous frame's scene
     public Shift shiftPrevious(Domain dom, Reservoir r);
     // The walk, run on cuda by the consumer
@@ -908,6 +899,8 @@ public struct HookScene : IScene {
     public void storeTemporalNeighbor(int2 p, int2 q);
     __target_intrinsic(cuda, "fcptLoadTemporalNeighbor($0)")
     public int2 loadTemporalNeighbor(int2 p);
+    __target_intrinsic(cuda, "fcptTemporalQueued()")
+    public bool temporalQueued();
     __target_intrinsic(cuda, "fcptShiftPrevious($0, $1)")
     public Shift shiftPrevious(Domain dom, Reservoir r);
     __target_intrinsic(cuda, "fcptWalk($0, $1, $2, $3, $4)")
@@ -2286,12 +2279,8 @@ __extern_cpp public struct ShiftJob {
 #ifdef FK_FCPT_WALK
 // Temporal round job t of p: previous sample into its current domain (t = 0), current into its previous (t = 1);
 // none in an unchanged view, where both keep their domains, or off the image
-public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJob, target: bool) -> bool {
-    if (t > 1u || any(p >= int2(scene.renderSize())) || scene.sceneUnchanged()) {
-        return false;
-    }
-    let q: int2 = scene.loadTemporalNeighbor(p);
-    if (q.x < 0) {
+public func temporalJob<S: IScene>(scene: S, p: int2, q: int2, t: uint, inout job: ShiftJob, target: bool) -> bool {
+    if (t > 1u || any(p >= int2(scene.renderSize())) || scene.sceneUnchanged() || q.x < 0) {
         return false;
     }
     if (t == 0u) {
@@ -2308,6 +2297,14 @@ public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJ
     var own: Domain = {};
     return job.r.w > 0.0f && (scene.previousScenes()
         || !(scene.storedDomainInitial(p, job.r.seed, own) && sameDomain(job.dom, own)));
+}
+// Shift t of p's temporal round with its neighbour q, zero where it has no job: job 1 into the previous frame's scene
+func temporalShiftAt<S: IScene>(scene: S, p: int2, q: int2, t: uint) -> Shift {
+    var job: ShiftJob = emptyShiftJob();
+    if (!temporalJob(scene, p, q, t, job, true)) {
+        return Shift(float3(0.0f), 0.0f);
+    }
+    return t == 1u ? scene.shiftPrevious(job.dom, job.r) : shift(scene, job.dom, job.r);
 }
 #else
 // Temporal round job t of p: previous sample into the current domain (t = 0), current into the previous (t = 1)
@@ -2369,7 +2366,7 @@ public func temporalBins<S: IScene>(scene: S, p: int2) -> uint[3] {
         var job: ShiftJob = {};
 #endif
 #ifdef FK_FCPT_WALK
-        if (temporalJob(scene, p, t, job, false)) {
+        if (temporalJob(scene, p, scene.loadTemporalNeighbor(p), t, job, false)) {
 #else
         if (temporalJob(scene, p, t, job)) {
 #endif
@@ -2579,8 +2576,9 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
     }
     var r: Reservoir = scene.loadReservoirInitial(p);
 #ifdef FK_FCPT_WALK
-    // Neighbour of r's sample: its own pixel in an unchanged view, else the count pass's
-    let q: int2 = scene.sceneUnchanged() ? sampleNeighbor(scene, p, r.seed) : scene.loadTemporalNeighbor(p);
+    // Neighbour of r's sample: its own pixel in an unchanged view, the count pass's on a queued round, else found here
+    let queued: bool = scene.temporalQueued();
+    let q: int2 = scene.sceneUnchanged() || !queued ? sampleNeighbor(scene, p, r.seed) : scene.loadTemporalNeighbor(p);
 #else
     let q: int2 = temporalNeighbor(scene, p, dom);
 #endif
@@ -2588,15 +2586,30 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
         let temporal: Reservoir = scene.loadReservoirPrevious(q);
         // Optionally lower the confidence cap where the previous frame duplicated samples (Sec. 5), this biases the estimate
         let duplicated: float = select(0.0f, asfloat(scene.duplication(q).x), scene.restirDecorrelation() == 1u);
-        let c_t: float = min(temporal.c, confidenceCap(duplicated));
+        // Temporal confidence cap (Sec. 5)
+        let c_t: float = min(temporal.c,
+            interpolate(RESTIR_CAP, RESTIR_CAP_MIN, pow(duplicated, RESTIR_DUPLICATION_ALPHA)));
 #ifdef FK_FCPT_WALK
-        // Both samples keep their domains in an unchanged view; else the shifts the round ran, zero where none ran
+        // Both samples keep their domains in an unchanged view; else the shifts the round ran, zero where none ran,
+        // from its queue's slots or made here
         let unchanged: bool = scene.sceneUnchanged();
-        let to_current: float4 = unchanged ? float4(temporal.f, 1.0f) : asfloat(scene.temporalShift(p, 0u));
+        var to_current: float4 = float4(temporal.f, 1.0f);
+        if (!unchanged && queued) {
+            to_current = asfloat(scene.temporalShift(p, 0u));
+        } else if (!unchanged) {
+            let shifted: Shift = temporalShiftAt(scene, p, q, 0u);
+            to_current = float4(shifted.f, shifted.jac);
+        }
         var own: Domain = {};
         let previous_identity: bool = unchanged || (!scene.previousScenes() && r.w > 0.0f
             && scene.storedDomainInitial(p, r.seed, own) && sameDomain(scene.previousDomain(q, r.seed), own));
-        let to_previous: float4 = previous_identity ? float4(r.f, 1.0f) : asfloat(scene.temporalShift(p, 1u));
+        var to_previous: float4 = float4(r.f, 1.0f);
+        if (!previous_identity && queued) {
+            to_previous = asfloat(scene.temporalShift(p, 1u));
+        } else if (!previous_identity) {
+            let shifted: Shift = temporalShiftAt(scene, p, q, 1u);
+            to_previous = float4(shifted.f, shifted.jac);
+        }
 #else
         let to_current: float4 = asfloat(scene.temporalShift(p, 0u));
         var to_previous: float4 = float4(r.f, 1.0f);
@@ -2612,7 +2625,11 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
         var sel: Selection = {};
 #endif
         sel.random_state = stream(stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y), STREAM_SELECT + 1u);
-        let weights: float2 = temporalWeights(r.c, p_c, c_t, p_t, rgb_to_greyscale(to_previous.xyz), rgb_to_greyscale(to_current.xyz));
+        // Temporal MIS weights, p_t->c = g_previous the previous sample shifted here, p_c->t = g_current
+        // m_c = c * p_c / (c * p_c + c_t * p_t->c)
+        // m_t = c_t * p_t / (c_t * p_t + c * p_c->t)
+        let weights: float2 = float2(r.c * p_c / (r.c * p_c + c_t * rgb_to_greyscale(to_previous.xyz)),
+            c_t * p_t / (c_t * p_t + r.c * rgb_to_greyscale(to_current.xyz)));
         offerShifted(sel, r, Shift(r.f, 1.0f), weights.x);
         offerShifted(sel, temporal, Shift(to_current.xyz, to_current.w), weights.y);
         r = finalize(sel, r.c + c_t);
@@ -2650,18 +2667,10 @@ public func restir_temporal_shift<S: IScene>(scene: S, workgroup_id: uint3, loca
     if (job != UINT_MAX) {
         let p: int2 = int2(uint2(job, job >> 14u) & uint2(16383u));
 #ifdef FK_FCPT_WALK
-        var shift_job: ShiftJob = emptyShiftJob();
+        // No shift where the target is missing; job 1 shifts into the previous frame's scene
+        let shifted: Shift = temporalShiftAt(scene, p, scene.loadTemporalNeighbor(p), job >> 28u);
 #else
         var shift_job: ShiftJob = {};
-#endif
-#ifdef FK_FCPT_WALK
-        // No shift where the target is missing; job 1 shifts into the previous frame's scene
-        var shifted: Shift = Shift(float3(0.0f), 0.0f);
-        if (temporalJob(scene, p, job >> 28u, shift_job, true)) {
-            shifted = job >> 28u == 1u ? scene.shiftPrevious(shift_job.dom, shift_job.r)
-                : shift(scene, shift_job.dom, shift_job.r);
-        }
-#else
         temporalJob(scene, p, job >> 28u, shift_job);
         let shifted: Shift = shift(scene, shift_job.dom, shift_job.r);
 #endif
