@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <algorithm>
 #include <vector>
 #include "pathtracer.cpp"
@@ -101,14 +102,15 @@ Matrix<float, 3, 3> HookScene_viewMatrix_0() { return Matrix<float, 3, 3>(1, 0, 
 Matrix<float, 3, 3> HookScene_prevViewMatrix_0() { return HookScene_viewMatrix_0(); }
 Vector<float, 3> HookScene_cameraPosition_0() { return Vector<float, 3>(0, 0, 0); }
 Vector<float, 3> HookScene_prevCameraPosition_0() { return Vector<float, 3>(0, 0, 0); }
-// Slots written this frame, and reads of slots not written
+// Slots written this frame, their shifts, and reads of slots not written
 static bool written[2][W * H];
+static Vector<uint32_t, 4> slots[2][W * H];
 static int stale_reads = 0;
 Vector<uint32_t, 4> HookScene_temporalShift_0(Vector<int32_t, 2> p, uint32_t t) {
-    return slot_reads++, stale_reads += !written[t][p.y * W + p.x], Vector<uint32_t, 4>(0);
+    return slot_reads++, stale_reads += !written[t][p.y * W + p.x], slots[t][p.y * W + p.x];
 }
-void HookScene_storeTemporalShift_0(Vector<int32_t, 2> p, uint32_t t, Vector<uint32_t, 4>) {
-    written[t][p.y * W + p.x] = true;
+void HookScene_storeTemporalShift_0(Vector<int32_t, 2> p, uint32_t t, Vector<uint32_t, 4> shifted) {
+    written[t][p.y * W + p.x] = true, slots[t][p.y * W + p.x] = shifted;
 }
 // The temporal round's shifts from its queue, else made by restir_temporal
 static bool queued_round = true;
@@ -337,6 +339,21 @@ int main() {
     printf("changed view: %d own domains of %d asked by the count pass, %d by the prepass, %d for %d jobs, %d by "
         "restir_temporal reading %d stored neighbours%s\n", count_asks, own, prepass_asks, shift_asks, shift_jobs,
         domain_asks + previous_asks, neighbor_loads, lookups ? "" : "  FAILED");
+    // Unqueued, restir_temporal makes each pixel's two shifts itself: the queued round's output bit for bit, reading no
+    // stored neighbour or shift slot
+    moved = 1;
+    drain(restir_temporal_count_hook, restir_temporal_prepass_hook, restir_temporal_shift_hook);
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) restir_temporal_hook(Vector<uint32_t, 3>(x, y, 0));
+    std::vector<Reservoir> from_queue(reused, reused + W * H);
+    queued_round = false, slot_reads = neighbor_loads = 0;
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) restir_temporal_hook(Vector<uint32_t, 3>(x, y, 0));
+    queued_round = true, moved = 0;
+    int differ = 0;
+    for (int i = 0; i < W * H; i++) differ += memcmp(&from_queue[i], &reused[i], sizeof(Reservoir)) != 0;
+    const bool inline_round = differ == 0 && slot_reads == 0 && neighbor_loads == 0;
+    failed += !inline_round;
+    printf("unqueued temporal round: %d of %d pixels differ from the queued round's, %d slots and %d neighbours "
+        "read%s\n", differ, W * H, slot_reads, neighbor_loads, inline_round ? "" : "  FAILED");
     // Initial pass: a domain per path by its seed, missed paths to the consumer keeping c = 1, the winner's hit stored,
     // and ReSTIR off summing every path
     const auto initial_pass = [&]() {
