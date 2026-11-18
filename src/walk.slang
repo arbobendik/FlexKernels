@@ -738,6 +738,7 @@ public interface IScene {
     public bool hairUsed();
     public bool dispersionUsed();
     public bool shadowFirst();
+    public bool worldReadsPath();
     public Medium outsideMedium(Hit hit);
     public Medium cameraMedium(float3 direction, float distance, out uint filling);
     public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, inout float g, uint depth, uint lobe, bool camera);
@@ -882,6 +883,10 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "false")
     __target_intrinsic(cuda, "fcptShadowFirst()")
     public bool shadowFirst();
+    // Whether the world's program reads the ray's depth or kind (Light Path), so that a sky sample asks it per lobe
+    __target_intrinsic(wgsl, "false")
+    __target_intrinsic(cuda, "fcptWorldReadsPath()")
+    public bool worldReadsPath();
     // Medium a ray enters leaving the volume of hit's face, none by default
     __target_intrinsic(wgsl, "Medium()")
     __target_intrinsic(cuda, "fcptOutsideMedium($0)")
@@ -1346,7 +1351,9 @@ func searchCDF<S: IScene>(scene: S, start: uint2, step: uint2, count: uint, u: f
 #ifdef FK_FCPT_WALK
     // Medium on the side of dir
     let front: bool = dot(context.side, dir) > 0.0f;
-    return scene.env_map_sample(dir, 0u, LOBE_NONE) * scene.shadowTransmittanceIn(ray, POW32,
+    // The transmittance alone where the world reads Light Path, its world then taken per lobe by skyColor
+    let world: float3 = scene.worldReadsPath() ? float3(1.0f) : scene.env_map_sample(dir, 0u, LOBE_NONE);
+    return world * scene.shadowTransmittanceIn(ray, POW32,
         select(context.extinction_behind, context.extinction_front, front),
         select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe,
         context.surface && !context.fiber, context.length, context.width, noHit(), noHit());
@@ -1377,7 +1384,14 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     let dir: float3 = float3(sin(angles.y) * cos(angles.x), cos(angles.y), sin(angles.y) * sin(angles.x));
 #endif
     let pdf: float = environmentPdf(scene, dir);
+#ifdef FK_FCPT_WALK
+    // Where the world reads Light Path, the world as each lobe's ray sees it, the ray toward the sky being the path's
+    // next; taken before the shadow ray, so nothing of the surface stays live across its trace
+    let f: float3 = scene.worldReadsPath() ? skyColor(scene, ray.unit_direction, dir, surface, eta, is_inside, pdf,
+        lobe_state, context.depth + 1u) : skyBSDF(ray.unit_direction, dir, surface, eta, is_inside, pdf, lobe_state);
+#else
     let f: float3 = skyBSDF(ray.unit_direction, dir, surface, eta, is_inside, pdf, lobe_state);
+#endif
     // Only trace toward directions that contribute
     if (!(pdf > 0.0f) || all(f == float3(0.0f))) {
         return SkySample(dir, float3(0.0f), float3(0.0f), random_3.state);
@@ -1387,6 +1401,7 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
         , context, random_3.state
 #endif
         );
+    // radiance is the transmittance where the world reads Light Path
     return SkySample(dir, radiance, f * radiance, random_3.state);
 }
 
@@ -1405,6 +1420,26 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     }
     return f;
 }
+
+#ifdef FK_FCPT_WALK
+// skyBSDF's terms times the world toward dir as the ray leaving by each lobe at depth sees it; not inlined, so
+// the world's code per lobe stays out of the sky sample
+[noinline] func skyColor<S: IScene>(scene: S, in_dir: float3, dir: float3, surface: Surface, eta: float2,
+    is_inside: bool, pdf: float, random_state: uint, depth: uint) -> float3 {
+    var throughputs: float3[5];
+    var pdfs: float[5];
+    BSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y,
+        wrongSide(is_inside, false, dir, surface.geometry_n), random_state, ~0u, throughputs, pdfs);
+    var color: float3 = float3(0.0f);
+    for (var i: uint = 0u; i < 5u; i++) {
+        if (pdfs[i] > 0.0f) {
+            color += throughputs[i] * pdfs[i] / (pdfs[i] + pdf) * scene.env_map_sample(dir, depth,
+                i == 3u ? LOBE_SHEEN_VELVET : i == 4u ? LOBE_TOON : i);
+        }
+    }
+    return color;
+}
+#endif
 
 // w = PDF_lobe / (PDF_lobe + PDF_env), 1 for delta lobes and without environment sampling
 func escapeWeight<S: IScene>(scene: S, pdf: float, dir: float3) -> float {
@@ -1878,7 +1913,15 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 if (!nee) {
                     return fail;
                 }
-                return Shift(throughput * skyBSDF(ray.unit_direction, r.dir, surface, eta, is_inside, environmentPdf(scene, r.dir), surface.random_state) * r.radiance / r.jac, density / r.jac);
+                let pdf: float = environmentPdf(scene, r.dir);
+#ifdef FK_FCPT_WALK
+                let f: float3 = scene.worldReadsPath() ? skyColor(scene, ray.unit_direction, r.dir, surface, eta,
+                    is_inside, pdf, surface.random_state, b + 1u) : skyBSDF(ray.unit_direction, r.dir, surface, eta,
+                    is_inside, pdf, surface.random_state);
+#else
+                let f: float3 = skyBSDF(ray.unit_direction, r.dir, surface, eta, is_inside, pdf, surface.random_state);
+#endif
+                return Shift(throughput * f * r.radiance / r.jac, density / r.jac);
             }
             if (nee != (extractBits(r.path, PATH_NEE, 1u) == 1u)) {
                 return fail;
