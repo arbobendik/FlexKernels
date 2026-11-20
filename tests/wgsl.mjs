@@ -25,6 +25,11 @@ struct Material {
     dispersion: f32
 };
 `;
+// No blue-noise tensor bound
+const NOISE = /* wgsl */ `
+fn fkBlueNoise(x: u32, y: u32, t: u32) -> u32 { return 0xFFFFFFFFu; }
+fn fkBlueNoiseSize() -> u32 { return 512u; }
+`;
 const LIGHT_TREE = /* wgsl */ `
 struct LightBounds { low: vec3<f32>, high: vec3<f32>, w: vec3<f32>, phi: f32, cos_theta_o: f32 }
 fn parity_cosSubClamped(sin_a: f32, cos_a: f32, sin_b: f32, cos_b: f32) -> f32 {
@@ -440,7 +445,8 @@ if (FLEXLIGHT) {
     .replace("instance_index: u32", "absorption: vec3<f32>")
     .replace("instance_material[instance_index].albedo", "absorption");
 }
-const module = device.createShaderModule({ code: (FLEXLIGHT ? LIGHT_TREE : MATERIAL + LOBES) + source + KERNEL });
+const module = device.createShaderModule({ code: (FLEXLIGHT ? LIGHT_TREE : MATERIAL + LOBES + NOISE) + source
+    + KERNEL });
 const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "parity" } });
 const bindGroup = device.createBindGroup({
   layout: pipeline.getBindGroupLayout(0),
