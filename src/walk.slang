@@ -1391,18 +1391,26 @@ func hairLight<S: IScene>(scene: S, surface: Surface, in_dir: float3, light: Tre
 #endif
 
 // radiance = L / PDF_light
-// neeBSDF = BSDF * n_dot_l / PDF_light * w_power
-// => neeBSDF * radiance * PDF_light = BSDF * n_dot_l * L / PDF_light * w_power
+// Per lobe: w_power = PDF_light^2 / (PDF_light^2 + PDF_lobe^2)
+// => throughput * PDF_lobe / PDF_light * w_power = throughput * PDF_lobe / (PDF_light * (1 + (PDF_lobe / PDF_light)^2))
 // Delta lights or no competing BSDF sample: w_power = 1
 func lightBSDF(in_dir: float3, light: TreeSample, smooth_n: float3, geometry_n: float3, material: Material, eta_i: float, eta_o: float, competing: bool, random_state: uint) -> float3 {
     let refracted: bool = dot(geometry_n, - in_dir) * dot(geometry_n, light.dir) <= 0.0f;
+    var throughputs: float3[5];
+    var pdfs: float[5];
+    let f: float3 = BSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, random_state, throughputs,
+        pdfs);
     if (!competing || light.density == 0.0f) {
-        var throughputs: float3[5];
-        var pdfs: float[5];
-        return BSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, random_state, throughputs, pdfs)
-            * light.radiance;
+        return f * light.radiance;
     }
-    return neeBSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, light.density, true, random_state) * light.radiance * light.density;
+    var weighted: float3 = float3(0.0f);
+    for (var i: uint = 0u; i < 5u; i++) {
+        if (pdfs[i] > 0.0f) {
+            let ratio: float = pdfs[i] / light.density;
+            weighted += throughputs[i] * pdfs[i] / (light.density * (1.0f + ratio * ratio));
+        }
+    }
+    return weighted * light.radiance * light.density;
 }
 
 // Power heuristic of BSDF sampling at the vertex the ray left against light sampling of the point met
@@ -1517,10 +1525,28 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     return SkySample(dir, radiance, f * radiance, random_3.state);
 }
 
-// neeBSDF by the balance heuristic against the BSDF sampled escape
-[CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
+// Per lobe against the BSDF sampled escape of PDF pdf: w_balance = pdf / (pdf + PDF_lobe)
+// => throughput * PDF_lobe / pdf * w_balance = throughput * PDF_lobe / (PDF_lobe + pdf)
+// Each lobe reached toward dir by its term in terms, their sum returned
+func skyLobes(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float,
+    random_state: uint, out terms: float3[5], out pdfs: float[5]) -> float3 {
     let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
-    return neeBSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y, refracted, pdf, false, random_state);
+    BSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y, refracted, random_state, terms, pdfs);
+    var f: float3 = float3(0.0f);
+    for (var i: uint = 0u; i < 5u; i++) {
+        if (pdfs[i] > 0.0f) {
+            terms[i] = terms[i] * pdfs[i] / (pdfs[i] + pdf);
+            f += terms[i];
+        }
+    }
+    return f;
+}
+
+// skyLobes' sum
+[CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
+    var terms: float3[5];
+    var pdfs: float[5];
+    return skyLobes(in_dir, dir, surface, eta, is_inside, pdf, random_state, terms, pdfs);
 }
 
 // w = PDF_lobe / (PDF_lobe + PDF_env), 1 for delta lobes and without environment sampling

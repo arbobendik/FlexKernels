@@ -115,10 +115,20 @@ __device__ Result evaluate(const Case& c) {
     r.beer_lambert = beerLambert(c.in[18] + c.in[19], albedo);
     r.point_light = pointLightRadiance(albedo, c.in[18], 1.0f + c.in[16]);
     const bool refracted = (dot3(in_dir, vec(c.in + 9)) <= 0) != (dot3(out_dir, vec(c.in + 9)) > 0);
-    r.nee_balance = neeBSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, 0.5f + c.in[17], false,
-        c.random_state);
-    r.nee_power = neeBSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, 0.5f + c.in[17], true,
-        c.random_state);
+    BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, c.random_state, &throughputs, &pdfs);
+    const float pdf = 0.5f + c.in[17];
+    float balance[3] = {}, power[3] = {};
+    for (int i = 0; i < 5; i++) {
+        if (!(pdfs[i] > 0)) continue;
+        const float ratio = pdfs[i] / pdf;
+        const float t[] = {throughputs[i].x * pdfs[i], throughputs[i].y * pdfs[i], throughputs[i].z * pdfs[i]};
+        for (int k = 0; k < 3; k++) {
+            balance[k] += t[k] / (pdfs[i] + pdf);
+            power[k] += t[k] / (pdf * (1 + ratio * ratio));
+        }
+    }
+    r.nee_balance = vec(balance);
+    r.nee_power = vec(power);
     r.straight_through = straightThrough(in_dir, n, material);
     float low_first[3], high_first[3], low_second[3], high_second[3];
     float light_point[3], facing[3], normal_scaled[3], toward[3];

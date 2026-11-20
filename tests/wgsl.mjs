@@ -102,6 +102,25 @@ fn parity_face(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, g_n: vec3<f3
     return BSDF(in_dir, out_dir, n, material, eta_i, eta_o, dot(g_n, - in_dir) * dot(g_n, out_dir) <= 0.0,
         random_state, &throughputs, &pdfs);
 }
+// BSDF's lobes by the sky's balance or the light's power heuristic against a sample of PDF pdf
+fn parity_nee(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: Material, eta_i: f32, eta_o: f32,
+    refracted: bool, pdf: f32, power: bool, random_state: u32) -> vec3<f32> {
+    var throughputs: array<vec3<f32>, 5>;
+    var pdfs: array<f32, 5>;
+    BSDF(in_dir, out_dir, n, material, eta_i, eta_o, refracted, random_state, &throughputs, &pdfs);
+    var f = vec3<f32>(0.0);
+    for (var i = 0u; i < 5u; i++) {
+        if (pdfs[i] > 0.0) {
+            let ratio = pdfs[i] / pdf;
+            if (power) {
+                f += throughputs[i] * pdfs[i] / (pdf * (1.0 + ratio * ratio));
+            } else {
+                f += throughputs[i] * pdfs[i] / (pdfs[i] + pdf);
+            }
+        }
+    }
+    return f;
+}
 `;
 const THROUGHPUT = FLEXLIGHT ? "lobeThroughput" : "parity_throughput";
 const DENSITY = FLEXLIGHT ? "lobeDensity" : "parity_density";
@@ -238,8 +257,10 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     parity_put(&r, 116u, power);` : `
-    parity_put(&r, 113u, neeBSDF(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, false, random_state));
-    parity_put(&r, 116u, neeBSDF(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, true, random_state));`}
+    parity_put(&r, 113u, parity_nee(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, false,
+        random_state));
+    parity_put(&r, 116u, parity_nee(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, true,
+        random_state));`}
     ${FLEXLIGHT ? `let straight = bsdfLobes(in_dir, - in_dir, n_i, n_i, material, 1.0, 1.0, anisotropicFrame(material, n_i));
     let through = lobeThroughput(in_dir, n_i, alpha, material, straight, 1u) * straight.p_refract;
     parity_put(&r, 119u, select(vec3<f32>(0.0), through, straight.p_refract > 0.0));` : `
