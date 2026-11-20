@@ -14,7 +14,7 @@ FLEXLIGHT ?= ../FlexLight
 WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
 all: build/cuda/pathtracer.cuh build/cuda-restir/noise.cuh build/cuda-restir/noise.cpp build/wgsl-restir/noise.wgsl \
-	build/cuda-restir/noise-start.spv \
+	build/cuda-restir/noise-start.spv build/cuda-restir/noise-sweep.spv \
 	build/wgsl/pathtracer.wgsl build/glsl/pathtracer.glsl build/cuda/pathtracer.slang-module build/cuda/noise.slang-module \
 	build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl \
 	build/cuda-restir/pathtracer.slang-module
@@ -70,7 +70,7 @@ build/cuda-restir/noise.cuh build/cuda-restir/noise.cpp build/wgsl-restir/noise.
 	mkdir -p $(@D)
 	$(SLANGC) $(SLANGFLAGS) $< -target $(NOISE_TARGET) -o $@
 	case $@ in *.cuh) sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#include "slang-cuda-prelude.h"|' $@;; esac
-build/cuda-restir/noise-start.spv: src/noise.slang $(SLANGC)
+build/cuda-restir/noise-start.spv build/cuda-restir/noise-sweep.spv: src/noise.slang $(SLANGC)
 	mkdir -p $(@D)
 	$(SLANGC) $(SLANGFLAGS) $< -target spirv -stage compute \
 		-entry $(if $(findstring start,$@),noiseStart,noiseSweep) -o $@
