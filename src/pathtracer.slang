@@ -553,8 +553,8 @@ __extern_cpp public struct AnisotropicFrame {
 // Half vector from the VNDF, an anisotropic material's in its frame
 [CudaDeviceExport] public func sampleHalfVector(v: float3, n_i: float3, alpha: float, frame: AnisotropicFrame, inout random_state: uint) -> float3 {
     // Generate random values for sampling
-    let random_h_1: Random = pcg(random_state);
-    let random_h_2: Random = pcg(random_h_1.state);
+    let random_h_1: Random = draw(random_state, NOISE_HALF_1);
+    let random_h_2: Random = draw(random_state, NOISE_HALF_2);
     random_state = random_h_2.state;
     if (frame.alphas.x > 0.0f) {
         // Stretch Ve to alpha = 1, sample the isotropic VNDF, unstretch
@@ -884,8 +884,8 @@ __extern_cpp public struct ViewTerms {
 [CudaDeviceExport] public func diffuseSample(u: float, n_i: float3, n_i_dot_v: float, alpha: float, material: Material,
     lobes: HalfTerms, eta_i: float, eta_o: float, random_state: uint) -> SampleBSDF {
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
-    let random_d_1: Random = pcg(random_state);
-    let random_d_2: Random = pcg(random_d_1.state);
+    let random_d_1: Random = draw(random_state, NOISE_DIR_1);
+    let random_d_2: Random = draw(random_state, NOISE_DIR_2);
     sample.random_state = random_d_2.state;
     // Sample cosine weighted hemisphere
     let cosine_hemisphere: float3 = sampleCosWeightedHemisphere(random_d_1.value, random_d_2.value);
@@ -949,8 +949,8 @@ __extern_cpp public struct ViewTerms {
 [CudaDeviceExport] public func sheenVelvetSample(n_i: float3, n_i_dot_v: float, alpha: float, material: Material,
     lobes: HalfTerms, eta_i: float, eta_o: float, random_state: uint) -> SampleBSDF {
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
-    let random_s_1: Random = pcg(random_state);
-    let random_s_2: Random = pcg(random_s_1.state);
+    let random_s_1: Random = draw(random_state, NOISE_DIR_1);
+    let random_s_2: Random = draw(random_state, NOISE_DIR_2);
     sample.random_state = random_s_2.state;
     // Sample uniform hemisphere
     let across: float = sqrt(max(0.0f, 1.0f - random_s_1.value * random_s_1.value));
@@ -991,8 +991,8 @@ __extern_cpp public struct ViewTerms {
 [CudaDeviceExport] public func toonSample(n_i: float3, n_i_dot_v: float, alpha: float, material: Material,
     lobes: HalfTerms, eta_i: float, eta_o: float, random_state: uint) -> SampleBSDF {
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
-    let random_t_1: Random = pcg(random_state);
-    let random_t_2: Random = pcg(random_t_1.state);
+    let random_t_1: Random = draw(random_state, NOISE_DIR_1);
+    let random_t_2: Random = draw(random_state, NOISE_DIR_2);
     sample.random_state = random_t_2.state;
     // Sample toon profile
     // target = u_1 * K / (2 * PI), t = G^-1(target), H^-1 glossy, closed below a
@@ -1151,7 +1151,7 @@ __extern_cpp public struct ViewTerms {
     let ggx_n: float3 = sampleHalfVector(v, n_i, alpha, frame, random_state);
     let lobes: HalfTerms = precomputeHalf(in_dir, ggx_n, material, eta_i, eta_o, terms, view_terms);
 
-    let random_p: Random = pcg(random_state);
+    let random_p: Random = draw(random_state, NOISE_LOBE);
     random_state = random_p.state;
     // Sheen case
     if (random_p.value < lobes.p_sheen_velvet) {
