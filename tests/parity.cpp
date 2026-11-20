@@ -30,7 +30,8 @@ struct Result {
     unsigned hash, stream, pcg_state; float pcg_value, greyscale, smith_g1, trowbridge_reitz, fresnel;
     unsigned h_state; Vec h, cosine_hemisphere, tangent_to_world, world_to_tangent, vndf, safe_divide;
     unsigned normal_state; float normal_value; unsigned sphere_state; Vec sphere; unsigned hemisphere_state; Vec hemisphere;
-    float g1; Vec normal_map; BSDFLobes lobes; Vec lobe_throughput[3]; float lobe_density[3]; SampleBSDF sample;
+    float g1; Vec normal_map;
+    BSDFLobes lobes; float n_dot_h; Vec lobe_throughput[3]; float lobe_density[3]; SampleBSDF sample;
     Vec connected[3]; float connected_pdf[3]; Vec bsdf; unsigned nee; Reservoir r; Selection sel; unsigned path;
     Vec beer_lambert, point_light, nee_balance, nee_power, straight_through;
     float importance_first, importance_second; unsigned child;
@@ -75,19 +76,22 @@ __device__ Result evaluate(const Case& c) {
         1};
     const float h[] = {minus_in[0] + c.in[3], minus_in[1] + c.in[4], minus_in[2] + c.in[5]}, scale = rnorm(h);
     const float ggx_n[] = {h[0] * scale, h[1] * scale, h[2] * scale};
-    r.lobes = bsdfLobes(in_dir, vec(minus_in), vec(n_i), vec(ggx_n), material, c.in[18], c.in[19], anisotropicFrame(material, vec(n_i)));
+    const Vec v = vec(minus_in);
+    const AnisotropicFrame frame = anisotropicFrame(material, vec(n_i));
+    r.lobes = bsdfLobes(in_dir, v, vec(n_i), vec(ggx_n), material, c.in[18], c.in[19], frame);
+    r.n_dot_h = dot3(vec(n_i), vec(ggx_n));
     const float p_lobe[] = {r.lobes.p_diffuse, r.lobes.p_refract, r.lobes.p_reflect};
     for (unsigned lobe = 0; lobe < 3; lobe++) {
         const bool side = lobe == 1 ? dot3(vec(n_i), out_dir) < 0 : dot3(vec(n_i), out_dir) > 0;
         const Vec throughput = lobe == 0 ? diffuseBSDF(out_dir, vec(n_i), alpha, material, r.lobes)
-            : lobe == 1 ? refractBSDF(out_dir, vec(n_i), alpha, material, r.lobes)
-            : reflectBSDF(out_dir, vec(n_i), alpha, material, r.lobes);
+            : lobe == 1 ? refractBSDF(out_dir, vec(n_i), alpha, frame, material, r.lobes)
+            : reflectBSDF(out_dir, vec(n_i), alpha, frame, r.lobes);
         r.lobe_throughput[lobe] = p_lobe[lobe] > 1e-6f && side ? throughput : vec(zero);
         const float n_i_dot_l = dot3(vec(n_i), out_dir), l_dot_h = dot3(out_dir, vec(ggx_n));
         const float n_i_dot_v = fabsf(n_dot_v);
+        const float pdf_h = vndfPDF(v, vec(ggx_n), vec(n_i), n_i_dot_v, alpha, frame, r.lobes.v_dot_h);
         r.lobe_density[lobe] = lobe == 0 ? diffusePDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, r.lobes, c.in[18], c.in[19])
-            : lobe == 1 ? refractPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, r.lobes, c.in[18], c.in[19])
-            : reflectPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, r.lobes, c.in[18], c.in[19]);
+            : lobe == 1 ? refractPDF(l_dot_h, pdf_h, r.lobes, c.in[18], c.in[19]) : reflectPDF(pdf_h, r.lobes);
     }
     r.sample = sampleBSDF(in_dir, n, material, c.in[18], c.in[19], c.random_state, Vec2{});
     for (unsigned lobe = 0; lobe < 3; lobe++) {
@@ -239,7 +243,7 @@ int main() {
         printf(" %u", r.hemisphere_state); print(r.hemisphere);
         const BSDFLobes& l = r.lobes;
         printf(" %.9g", r.g1); print(r.normal_map);
-        printf(" %.9g %.9g", l.v_dot_h, l.n_dot_h); print(l.refracted); print(l.F);
+        printf(" %.9g %.9g", l.v_dot_h, r.n_dot_h); print(l.refracted); print(l.F);
         printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g", l.F_greyscale, l.reflect_weight, l.diffuse_weight.x,
             l.refract_weight.x, l.p_diffuse, l.p_reflect, l.p_refract);
         for (unsigned lobe = 0; lobe < 3; lobe++) { print(r.lobe_throughput[lobe]); printf(" %.9g", r.lobe_density[lobe]); }
