@@ -2080,11 +2080,10 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                         ggx_n = refractedHalf(in_dir, dir, surface.smooth_n, eta.x, eta.y);
                     }
                     if (lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_TOON) {
-                        ggx_n = sampledHalf(in_dir, surface.smooth_n, material, surface.random_state, frame);
+                        ggx_n = sampledHalf(negate(in_dir), n_i, alpha, frame, surface.random_state);
                     }
-                    var lobe_terms: BSDFLobes = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta.x, eta.y,
+                    let lobe_terms: BSDFLobes = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta.x, eta.y,
                         frame, sheen_profile);
-                    lobe_terms.translucent_share = translucentShare(material);
                     // The VNDF's density of the half vector, the refraction's and the reflection's
                     let pdf_h: float = vndfPDF(negate(in_dir), ggx_n, n_i, abs(n_dot_v), alpha, frame,
                         lobe_terms.v_dot_h);
@@ -2092,16 +2091,16 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     var lobe_throughput: float3 = float3(0.0f);
                     switch (lobe_index) {
                     case LOBE_DIFFUSE:
-                        pdf = diffusePDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
-                        lobe_throughput = diffuseBSDF(dir, n_i, alpha, material, lobe_terms);
+                        pdf = diffusePDF(n_i_dot_l, abs(n_dot_v), material, lobe_terms);
+                        lobe_throughput = diffuseBSDF(dir, n_i, material, lobe_terms);
                         break;
                     case LOBE_REFRACT:
                         pdf = refractPDF(dot(dir, ggx_n), pdf_h, lobe_terms, eta.x, eta.y);
                         lobe_throughput = refractBSDF(dir, n_i, alpha, frame, material, lobe_terms);
                         break;
                     case LOBE_SHEEN_VELVET:
-                        pdf = sheenVelvetPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
-                        lobe_throughput = sheenVelvetBSDF(dir, n_i, alpha, material, lobe_terms);
+                        pdf = sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), lobe_terms);
+                        lobe_throughput = sheenVelvetBSDF(dir, negate(in_dir), n_i, material, lobe_terms);
                         break;
 #ifdef FK_TOON
                     case LOBE_TOON: {
