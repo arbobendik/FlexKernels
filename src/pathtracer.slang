@@ -284,6 +284,37 @@ public static const float WAVELENGTH_CDF[81] = {
 };
 static const float WAVELENGTH_LEAST = 0.38f;
 static const float WAVELENGTH_STEP = 0.005f;
+// S(λ) at the nodes of WAVELENGTH_WEIGHTS, linear between them: 0 <= S_c <= 1, S_r + S_g + S_b = 1,
+// integral w_c(λ) S_k(λ) dλ = 1 for c = k, else 0, minimizing sum_i |S(λ_i+1) - S(λ_i)|^2
+public static const float SPECTRAL_PRIMARIES[243] = {
+    0.028202f, 0.000001f, 0.971797f, 0.0282f, 0.0f, 0.9718f, 0.028193f, 0.0f, 0.971807f,
+    0.028175f, 0.0f, 0.971825f, 0.028133f, 0.0f, 0.971867f, 0.028042f, 0.0f, 0.971958f,
+    0.027864f, 0.0f, 0.972136f, 0.02753f, 0.0f, 0.97247f, 0.026928f, 0.0f, 0.973072f,
+    0.025925f, 0.0f, 0.974075f, 0.024446f, 0.0f, 0.975554f, 0.022589f, 0.0f, 0.977411f,
+    0.020686f, 0.0f, 0.979314f, 0.019396f, 0.0f, 0.980604f, 0.019726f, 0.0f, 0.980274f,
+    0.023057f, 0.0f, 0.976943f, 0.028299f, 0.00549f, 0.966211f, 0.022768f, 0.045605f, 0.931627f,
+    0.011818f, 0.113528f, 0.874654f, 0.001924f, 0.200379f, 0.797697f, 0.0f, 0.296925f, 0.703075f,
+    0.0f, 0.40065f, 0.59935f, 0.0f, 0.507423f, 0.492577f, 0.0f, 0.612892f, 0.387108f,
+    0.0f, 0.713114f, 0.286886f, 0.0f, 0.804214f, 0.195786f, 0.0f, 0.882209f, 0.117791f,
+    0.0f, 0.943131f, 0.056869f, 0.0f, 0.983365f, 0.016635f, 0.0f, 1.0f, 0.0f,
+    0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 0.998556f, 0.001444f, 0.0f, 0.978926f, 0.021074f, 0.030285f, 0.929235f, 0.04048f,
+    0.104472f, 0.846153f, 0.049375f, 0.21104f, 0.738975f, 0.049985f, 0.3382f, 0.617193f, 0.044607f,
+    0.474207f, 0.490193f, 0.0356f, 0.608477f, 0.366411f, 0.025112f, 0.731855f, 0.253173f, 0.014972f,
+    0.836879f, 0.156428f, 0.006693f, 0.918024f, 0.080531f, 0.001445f, 0.971943f, 0.028057f, 0.0f,
+    0.9988f, 0.0012f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+    1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+    1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+    1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+    1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+    1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.999999f, 0.0f, 0.000001f,
+    0.999999f, 0.0f, 0.000001f, 0.999999f, 0.0f, 0.000001f, 0.999998f, 0.000001f, 0.000001f,
+    0.999998f, 0.000001f, 0.000001f, 0.999997f, 0.000001f, 0.000002f, 0.999995f, 0.000002f, 0.000003f,
+    0.999993f, 0.000002f, 0.000005f, 0.999989f, 0.000004f, 0.000007f, 0.999984f, 0.000006f, 0.00001f,
+    0.999979f, 0.000008f, 0.000013f, 0.999974f, 0.00001f, 0.000016f, 0.999973f, 0.000012f, 0.000015f,
+    0.999967f, 0.000015f, 0.000018f, 0.999969f, 0.000015f, 0.000016f, 0.999962f, 0.000017f, 0.000021f
+};
 
 #ifdef FK_HAIR
 // HAIR_WIDTHS and HAIR_TILTS scale the R lobe's width w and the cuticle tilt alpha per lobe
@@ -1267,6 +1298,48 @@ __extern_cpp public struct Random {
     let mass: float = WAVELENGTH_CDF[low + 1u] - WAVELENGTH_CDF[low];
     return float2(WAVELENGTH_LEAST + WAVELENGTH_STEP * (float(low) + (u - WAVELENGTH_CDF[low]) / mass),
         mass / WAVELENGTH_STEP);
+}
+
+// integral w_c(λ) r(λ) dλ = rgb_c, 0 <= r(λ) <= max(rgb) for rgb >= 0
+// r(λ) = dot(rgb, S_i + (S_i+1 - S_i) * (x - i)), x = (λ - 0.38) / 0.005
+[CudaDeviceExport] public func upsample(rgb: float3, wavelength: float) -> float {
+    let x: float = clamp((wavelength - WAVELENGTH_LEAST) / WAVELENGTH_STEP, 0.0f, 80.0f);
+    let i: uint = min(uint(x), 79u);
+    let k: uint = 3u * i;
+    let a: float3 = float3(SPECTRAL_PRIMARIES[k], SPECTRAL_PRIMARIES[k + 1u], SPECTRAL_PRIMARIES[k + 2u]);
+    let b: float3 = float3(SPECTRAL_PRIMARIES[k + 3u], SPECTRAL_PRIMARIES[k + 4u], SPECTRAL_PRIMARIES[k + 5u]);
+    return dot(rgb, a + (b - a) * (x - float(i)));
+}
+
+// The material at λ: each colour its reflectance at λ, emission its radiance at λ, in all three channels
+[CudaDeviceExport] public func atWavelength(material: Material, wavelength: float) -> Material {
+    var at: Material = material;
+    at.albedo = float3(upsample(material.albedo, wavelength));
+    at.emissive = float3(upsample(material.emissive, wavelength));
+    at.absorption = float3(upsample(material.absorption, wavelength));
+    at.specular_tint = float3(upsample(material.specular_tint, wavelength));
+    at.translucent = float3(upsample(material.translucent, wavelength));
+    at.sheen = float3(upsample(material.sheen, wavelength));
+    return at;
+}
+
+// The material's colours at the path's wavelength past its first dispersive hit, its own before (wavelength 0)
+[CudaDeviceExport] public func pathMaterial(material: Material, wavelength: float) -> Material {
+    return wavelength > 0.0f ? atWavelength(material, wavelength) : material;
+}
+
+// Indices at the path's wavelength past its first dispersive hit, at the material's IOR before (wavelength 0)
+[CudaDeviceExport] public func wavelengthEta(material: Material, n_dot_v: float, wavelength: float) -> float2 {
+    var refractive: Material = material;
+    refractive.ior = select(material.ior, dispersedIor(material.ior, material.dispersion, wavelength),
+        wavelength > 0.0f);
+    return vertexEta(refractive, n_dot_v);
+}
+
+// Colour at accumulation: f_c = w_c(λ) / p(λ) * upsample(f, λ), f a spectral path's throughput times the radiance
+// it meets; RGB paths (wavelength 0) unchanged
+[CudaDeviceExport] public func pathColor(f: float3, weight: float3, wavelength: float) -> float3 {
+    return select(f, weight * upsample(f, wavelength), wavelength > 0.0f);
 }
 
 // Decide between next event estimation and emission on the next hit, as the path tracer does
