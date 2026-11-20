@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include "pathtracer.cpp"
-#include "lobes.h"
+#include "terms.h"
 
 int main() {
     const float COSINES[] = {1, 0.5f, 0.2f};

@@ -4,6 +4,7 @@
 #include <math.h>
 #include <initializer_list>
 #include "pathtracer.cpp"
+#include "terms.h"
 
 int main() {
     const float D = 0.5875618f, F = 0.4861327f, C = 0.6562725f, IORS[] = {1.33f, 1.5168f, 2.42f};
