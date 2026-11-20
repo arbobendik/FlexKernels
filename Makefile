@@ -5,7 +5,7 @@ SLANGC ?= $(SLANG_PATH)/bin/slangc
 SLANGFLAGS = -line-directive-mode none -g2 -warnings-as-errors 30081
 ACTIONLINT_VERSION ?= 1.7.7
 ACTIONLINT ?= .deps/actionlint
-SOURCE = src/pathtracer.slang src/walk.slang
+SOURCE = src/pathtracer.slang src/walk.slang src/noise.slang
 NVCC ?= nvcc
 FLEX_CUDA_PT ?= ../flex-cuda-pt
 # Golden sources
@@ -13,8 +13,9 @@ REFERENCE ?= $(FLEX_CUDA_PT)/src/shaders
 FLEXLIGHT ?= ../FlexLight
 WGSL_REFERENCE ?= $(FLEXLIGHT)/src/flexlight/webgpu/shaders/pathtracer-compute.wgsl
 
-all: build/cuda/pathtracer.cuh \
-	build/wgsl/pathtracer.wgsl build/glsl/pathtracer.glsl build/cuda/pathtracer.slang-module \
+all: build/cuda/pathtracer.cuh build/cuda-restir/noise.cuh build/cuda-restir/noise.cpp build/wgsl-restir/noise.wgsl \
+	build/cuda-restir/noise-start.spv \
+	build/wgsl/pathtracer.wgsl build/glsl/pathtracer.glsl build/cuda/pathtracer.slang-module build/cuda/noise.slang-module \
 	build/cuda-restir/pathtracer.cuh build/wgsl-restir/pathtracer.wgsl \
 	build/cuda-restir/pathtracer.slang-module
 
@@ -57,8 +58,30 @@ build/glsl/pathtracer.glsl: src/glsl.slang $(SOURCE) $(SLANGC)
 	$(SLANGC) $(SLANGFLAGS) $< -entry main -stage fragment -target glsl -o $@
 	sed -i -e '/^#version/d' -e '/^layout(row_major)/d' -e '/^layout(location = 0)$$/,/^}$$/d' $@
 
+# The blue-noise tensor's generation, its own compute shaders: noise.cuh and noise.cpp beside the CUDA kernels, the
+# CPU's for building it ahead, noise.wgsl beside the WGSL ones, and SPIR-V of each pass, the tensor at set 0 binding 0,
+# size, sweep and colour push constants at 0, 4 and 8
+build/cuda-restir/noise.cuh: NOISE_TARGET = cuda
+build/cuda-restir/noise.cpp: NOISE_TARGET = cpp
+build/wgsl-restir/noise.wgsl: NOISE_TARGET = wgsl
+build/cuda-restir/noise.cuh build/cuda-restir/noise.cpp build/wgsl-restir/noise.wgsl: src/noise.slang $(SLANGC)
+	mkdir -p $(@D)
+	$(SLANGC) $(SLANGFLAGS) $< -target $(NOISE_TARGET) -o $@
+	case $@ in *.cuh) sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#include "slang-cuda-prelude.h"|' $@;; esac
+build/cuda-restir/noise-start.spv: src/noise.slang $(SLANGC)
+	mkdir -p $(@D)
+	$(SLANGC) $(SLANGFLAGS) $< -target spirv -stage compute \
+		-entry $(if $(findstring start,$@),noiseStart,noiseSweep) -o $@
+
+# The modules leave the blue-noise tensor's SPIR-V read to the module importing them, FK_NOISE_LINKED
+build/cuda/noise.slang-module build/cuda-restir/noise.slang-module build/restir-passes/noise.slang-module: \
+		src/noise.slang $(SLANGC)
+	mkdir -p $(@D)
+	$(SLANGC) $< -warnings-as-errors 30081 -o $@
+
 build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module \
-		build/restir-passes/pathtracer.slang-module: $(SOURCE) $(SLANGC)
+		build/restir-passes/pathtracer.slang-module: $(SOURCE) $(SLANGC) build/cuda/noise.slang-module \
+		build/cuda-restir/noise.slang-module build/restir-passes/noise.slang-module
 	mkdir -p $(@D)
 	$(SLANGC) $< -warnings-as-errors 30081 $(MODULEFLAGS) -o $@
 
@@ -102,6 +125,9 @@ build/passes-cpu: tests/passes.cpp build/cpp-passes/pathtracer.cpp
 build/summing-cpu: tests/summing.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
+build/noise-cpu: tests/noise.cpp build/cuda-restir/noise.cpp
+	$(CXX) -std=c++20 -O2 -Ibuild/cuda-restir $< -o $@
+
 build/walk-cpu: tests/walk.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
@@ -144,7 +170,7 @@ lint: $(ACTIONLINT)
 
 test: test-cpu test-wgsl test-vulkan
 
-test-cpu: build/parity-cpu build/parity-untoon-cpu build/albedo-cpu build/coverage-cpu build/cones-cpu \
+test-cpu: build/parity-cpu build/parity-untoon-cpu build/albedo-cpu build/coverage-cpu build/noise-cpu build/cones-cpu \
 		build/layers-cpu build/pathray-cpu build/media-cpu build/shadowmedia-cpu \
 		build/flight-cpu build/scatternee-cpu build/walk-cpu \
 		build/summing-cpu build/passes-cpu build/dispersion-cpu
@@ -152,6 +178,7 @@ test-cpu: build/parity-cpu build/parity-untoon-cpu build/albedo-cpu build/covera
 	build/parity-untoon-cpu < tests/golden-cuda.txt | cmp - build/cpu.txt
 	build/albedo-cpu
 	build/coverage-cpu
+	build/noise-cpu
 	build/cones-cpu
 	build/layers-cpu
 	build/pathray-cpu
