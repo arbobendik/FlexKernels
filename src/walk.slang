@@ -34,19 +34,12 @@ public static const uint PATH_SPECTRAL = 23u;
 public static const uint PATH_STRATIFIED = 24u;
 public static const uint PATH_STRATUM = 25u;
 
-// Random streams besides the per vertex ones
-public static const uint STREAM_NEE = 64u;
+// Random streams besides the noise addresses of the vertices
 public static const uint STREAM_SELECT = 193u;
 // Tracking through a varying medium
 public static const uint STREAM_MEDIUM = 320u;
 // Tracking from the camera
 public static const uint STREAM_CAMERA = 384u;
-// Sky samples
-#ifdef FK_FCPT_WALK
-public static const uint STREAM_SKY = 448u;
-#else
-public static const uint STREAM_SKY = 256u;
-#endif
 // Wavelength at the first dispersive hit
 public static const uint STREAM_WAVELENGTH = 512u;
 #endif
@@ -265,8 +258,8 @@ func scatterSampled(replay: bool, b: uint, stop: uint, varying: bool) -> bool {
 // z = 1 - 2 * u uniform in [-1, 1], phi = 2 * PI * v
 // => uniform on the sphere, PDF = 1 / (4 * PI)
 func isotropic(random_state: uint) -> float3 {
-    let u: Random = pcg(random_state);
-    let v: Random = pcg(u.state);
+    let u: Random = draw(random_state, NOISE_PHASE_1);
+    let v: Random = draw(random_state, NOISE_PHASE_2);
     let z: float = 1.0f - 2.0f * u.value;
     let r: float = sqrt(max(1.0f - z * z, 0.0f));
     let angle: float = 2.0f * PI * v.value;
@@ -289,8 +282,8 @@ func samplePhase(g: float, dir: float3, random_state: uint, out pdf: float) -> f
         pdf = 0.25f * INV_PI;
         return isotropic(random_state);
     }
-    let u: Random = pcg(random_state);
-    let v: Random = pcg(u.state);
+    let u: Random = draw(random_state, NOISE_PHASE_1);
+    let v: Random = draw(random_state, NOISE_PHASE_2);
     // CDF(mu) = 2 * PI * integral_-1^mu p(t) dt
     //         = (1 - g^2) / (2 * g) * (1 / sqrt(1 + g^2 - 2 * g * mu) - 1 / (1 + g))
     //
@@ -1157,9 +1150,9 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
     , context: ShadowContext
 #endif
     ) -> TreeSample {
-    let random_pick: Random = pcg(init_random_state);
-    let random_side: Random = pcg(random_pick.state);
-    let random_along: Random = pcg(random_side.state);
+    let random_pick: Random = draw(init_random_state, NOISE_LIGHT_PICK);
+    let random_side: Random = draw(init_random_state, NOISE_LIGHT_U);
+    let random_along: Random = draw(init_random_state, NOISE_LIGHT_V);
     var sample: TreeSample = TreeSample(float3(0.0f), float3(0.0f), 0.0f, random_along.state);
     let normal: float3 = select(smooth_n, float3(0.0f), sided);
     var lift_n: float3 = smooth_n;
@@ -1412,10 +1405,10 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
 #endif
     ) -> SkySample {
     let size: uint2 = scene.environmentCdfSize() - uint2(1u, 0u);
-    let random_0: Random = pcg(init_random_state);
-    let random_1: Random = pcg(random_0.state);
-    let random_2: Random = pcg(random_1.state);
-    let random_3: Random = pcg(random_2.state);
+    let random_0: Random = draw(init_random_state, NOISE_SKY_ROW);
+    let random_1: Random = draw(init_random_state, NOISE_SKY_COLUMN);
+    let random_2: Random = draw(init_random_state, NOISE_SKY_U);
+    let random_3: Random = draw(init_random_state, NOISE_SKY_V);
     let row: uint = searchCDF(scene, uint2(size.x, 0u), uint2(0u, 1u), size.y, random_0.value);
     let column: uint = searchCDF(scene, uint2(0u, row), uint2(1u, 0u), size.x, random_1.value);
     let angles: float2 = (float2(float(column), float(row)) + float2(random_2.value, random_3.value)) / float2(size) * float2(2.0f * PI, PI);
@@ -1588,7 +1581,7 @@ uint extractBits(uint e, uint offset, uint count) {
         let sampled: bool = scatterSampled(replay, b, stop, varying);
         var light: TreeSample = TreeSample(float3(0.0f), float3(0.0f), 0.0f, 0u);
         if (sampled) {
-            light = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, stream(r.seed, b + STREAM_NEE)
+            light = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, noiseAddress(r.seed, b)
 #ifdef FK_FCPT_WALK
                 , ShadowContext(extinction_in, extinction_in, uint2(filling), ray.unit_direction, b,
                     arrivalLobe(b, prev.lobe), false, along, width,
@@ -1627,7 +1620,7 @@ uint extractBits(uint e, uint offset, uint count) {
             density *= survival_probability;
         }
         var phase_pdf: float = 0.0f;
-        ray.unit_direction = samplePhase(g_in, ray.unit_direction, stream(r.seed, b), phase_pdf);
+        ray.unit_direction = samplePhase(g_in, ray.unit_direction, noiseAddress(r.seed, b), phase_pdf);
         // Emission met next is weighed against the light sampled here
         nee_vertex = NEEVertex(false, phase_pdf, ray.origin, float3(0.0f), ray.origin);
         prev = scatteredVertex(is_inside);
@@ -1800,9 +1793,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         var geometry_density: float = 0.0f;
         if (!point_light_lighting) {
             if (coneUsed() || layersUsed()) {
-                surface = scene.surfaceAtPath(hit, ray.origin, stream(r.seed, b), width, layer, b, arrivalLobe(b, prev.lobe), ray.unit_direction);
+                surface = scene.surfaceAtPath(hit, ray.origin, noiseAddress(r.seed, b), width, layer, b, arrivalLobe(b, prev.lobe), ray.unit_direction);
             } else {
-                surface = scene.surfaceAt(hit, ray.origin, stream(r.seed, b));
+                surface = scene.surfaceAt(hit, ray.origin, noiseAddress(r.seed, b));
             }
             if (layersUsed()) {
                 surface = emitting(surface, !passed);
@@ -1914,11 +1907,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
 #endif
         if (samples_light) {
 #ifdef FK_FCPT_WALK
-            light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, sided, stream(r.seed, b + STREAM_NEE)
+            light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, sided, noiseAddress(r.seed, b)
                 , context
                 );
 #else
-            light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), stream(r.seed, b + STREAM_NEE)
+            light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), noiseAddress(r.seed, b)
                 );
 #endif
             // BSDF only for samples bringing light
@@ -1972,7 +1965,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 }
 #endif
                 // Forced reconnection to the environment direction, drawn independently of the vertex (unit Jacobian)
-                let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state
+                let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, noiseAddress(r.seed, b), surface.random_state
 #ifdef FK_FCPT_WALK
                     , context
 #endif
@@ -2031,7 +2024,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             // No sky sample at hair
             if (nee && AT_HAIR(false, environmentMapped(scene)) && b < scene.maxBounces()) {
-                let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, stream(r.seed, b + STREAM_SKY), surface.random_state
+                let sky: SkySample = sampleSky(scene, ray, surface, eta, is_inside, noiseAddress(r.seed, b), surface.random_state
 #ifdef FK_FCPT_WALK
                     , context
 #endif

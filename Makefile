@@ -194,10 +194,11 @@ test-cpu: build/parity-cpu build/parity-untoon-cpu build/albedo-cpu build/covera
 	node tests/compare.mjs tests/golden-cuda.txt build/cpu.txt
 	node tests/compare.mjs tests/golden-wgsl.txt build/cpu.txt 58
 
-test-wgsl: build/wgsl/pathtracer.wgsl build/wgsl-restir/pathtracer.wgsl
-	node tests/parse-wgsl.mjs $^
+test-wgsl: build/wgsl/pathtracer.wgsl build/wgsl-restir/pathtracer.wgsl build/parity-cpu
+	node tests/parse-wgsl.mjs build/wgsl/pathtracer.wgsl build/wgsl-restir/pathtracer.wgsl
 	node tests/wgsl.mjs $< < tests/golden-wgsl.txt > build/wgsl.txt
-	node tests/compare.mjs tests/golden-wgsl.txt build/wgsl.txt
+	build/parity-cpu < tests/golden-wgsl.txt > build/cpu-wgsl.txt
+	node tests/compare.mjs build/cpu-wgsl.txt build/wgsl.txt 58
 
 test-cuda: build/parity-cuda
 	$< < tests/golden-cuda.txt > build/cuda.txt

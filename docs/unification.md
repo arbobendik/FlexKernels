@@ -200,7 +200,7 @@ refraction under total internal reflection.
 | Run | Where | Result |
 |---|---|---|
 | `make test-cpu` | Slang C++ target vs CUDA goldens / vs FlexLight goldens, CI | 288 / 288, bit-identical / worst 0.013 of the tolerance |
-| `make test-wgsl` | Generated WGSL vs FlexLight goldens, Dawn on lavapipe (CI) | 288 / 288, bit-identical |
+| `make test-wgsl` | Generated WGSL vs the CPU build from column 58, Dawn on lavapipe (CI) | 288 / 288, worst 0.037 of the tolerance |
 | `make test-wgsl` | The same on the local Intel Mesa | 1 of 288 cases off: a component of `sampleBSDF`'s direction at 1.46 of the tolerance, as FlexLight's own shader on that device |
 | `tests/wgsl.mjs` | Generated WGSL vs FlexLight's own shader `754e9a0` on the same device: lavapipe, Intel Mesa, NVIDIA 615.78 | every column of all 288 cases bit-identical on each, the random draws included |
 | `make test-cuda` | Generated CUDA on the local RTX 5090 vs CUDA goldens / vs FlexLight goldens | 288 / 288, worst 0.099 / 0.016 of the tolerance |
