@@ -1,8 +1,24 @@
-// sampleBSDF's lobes toward a given out_dir for the tests, by their BSDF and PDF functions
+// The BSDF functions as a single call takes them, their material and view values precomputed for that call
+#ifdef __CUDACC__
+#define TERMS __device__ static
+using TermsV = float3;
+using TermsV2 = float2;
+using TermsM = BSDFMaterial;
+#else
+#define TERMS static
 using TermsV = Vector<float, 3>;
+using TermsV2 = Vector<float, 2>;
+using TermsM = Material;
+#endif
+TERMS SampleBSDF sampleBSDF(TermsV in_dir, TermsV n, TermsM m, float eta_i, float eta_o, unsigned random_init,
+    TermsV2 screen_space) {
+    const MaterialTerms terms = precomputeMaterial(m, eta_i, eta_o);
+    return sampleBSDF(in_dir, n, m, eta_i, eta_o, random_init, screen_space, terms,
+        precomputeView(in_dir, n, m, terms));
+}
 // sampleBSDF's lobe toward a given out_dir by its half vector terms and its BSDF and PDF functions, as the walk's
 // replay takes it: diffuse 0, refract 1, reflect 2, sheen 4, toon 6, directions it can't sample carrying nothing
-static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m, float eta_i, float eta_o,
+TERMS SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, TermsM m, float eta_i, float eta_o,
     unsigned lobe, unsigned random_init) {
     const MaterialTerms terms = precomputeMaterial(m, eta_i, eta_o);
     const ViewTerms view_terms = precomputeView(in_dir, n, m, terms);
@@ -40,4 +56,15 @@ static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m
     }
     if (!(pdf > 0)) return SampleBSDF{};
     return SampleBSDF{out_dir, throughput, random_init, lobe == 1, lobe, pdf};
+}
+TERMS TermsV BSDF(TermsV in_dir, TermsV out_dir, TermsV n, TermsV g_n, TermsM m, float eta_i, float eta_o,
+    unsigned random_state) {
+    const MaterialTerms terms = precomputeMaterial(m, eta_i, eta_o);
+    return BSDF(in_dir, out_dir, n, g_n, m, eta_i, eta_o, random_state, terms, precomputeView(in_dir, n, m, terms));
+}
+TERMS TermsV neeBSDF(TermsV in_dir, TermsV dir, TermsV n, TermsM m, float eta_i, float eta_o, bool refracted,
+    float pdf, bool power, unsigned random_state) {
+    const MaterialTerms terms = precomputeMaterial(m, eta_i, eta_o);
+    return neeBSDF(in_dir, dir, n, m, eta_i, eta_o, refracted, pdf, power, random_state, terms,
+        precomputeView(in_dir, n, m, terms));
 }

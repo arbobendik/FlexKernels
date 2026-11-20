@@ -3,6 +3,7 @@
 #ifdef __CUDACC__
 #include "renderer.h"
 #include "pathtracer.cuh"
+#include "terms.h"
 typedef float3 Vec;
 typedef float2 Vec2;
 typedef BSDFMaterial Mat;
@@ -12,7 +13,7 @@ __device__ Vec2 vec2(const float* a) { return make_float2(a[0], a[1]); }
 __device__ float rnorm(const float* a) { return rnorm3df(a[0], a[1], a[2]); }
 #else
 #include "pathtracer.cpp"
-#include "lobes.h"
+#include "terms.h"
 #define __device__
 #define __global__
 typedef Vector<float, 3> Vec;

@@ -3,6 +3,7 @@
 #include <vector>
 #include <initializer_list>
 #include "pathtracer.cpp"
+#include "terms.h"
 
 using V = Vector<float, 3>;
 static const V ZERO(0, 0, 0), ONE(1, 1, 1);

@@ -1395,15 +1395,20 @@ func hairLight<S: IScene>(scene: S, surface: Surface, in_dir: float3, light: Tre
 // => neeBSDF * radiance * PDF_light = BSDF * n_dot_l * L / PDF_light * w_power
 // Delta lights or no competing BSDF sample: w_power = 1
 func lightBSDF(in_dir: float3, light: TreeSample, smooth_n: float3, geometry_n: float3, material: Material, eta_i: float, eta_o: float, competing: bool, random_state: uint) -> float3 {
+    // Translucent materials transmit past the face too
+    if ((!competing || light.density == 0.0f) && isTranslucent(material)) {
+        return translucentBSDF(in_dir, light.dir, smooth_n, geometry_n, material, eta_i, eta_o, random_state) * light.radiance;
+    }
+    // The material's and the view's values once for the light sample
+    let terms: MaterialTerms = precomputeMaterial(material, eta_i, eta_o);
+    let view_terms: ViewTerms = precomputeView(in_dir, smooth_n, material, terms);
     if (!competing || light.density == 0.0f) {
-        // Translucent materials transmit past the face too
-        if (isTranslucent(material)) {
-            return translucentBSDF(in_dir, light.dir, smooth_n, geometry_n, material, eta_i, eta_o, random_state) * light.radiance;
-        }
-        return BSDF(in_dir, light.dir, smooth_n, geometry_n, material, eta_i, eta_o, random_state) * light.radiance;
+        return BSDF(in_dir, light.dir, smooth_n, geometry_n, material, eta_i, eta_o, random_state, terms, view_terms)
+            * light.radiance;
     }
     let refracted: bool = dot(geometry_n, - in_dir) * dot(geometry_n, light.dir) <= 0.0f;
-    return neeBSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, light.density, true, random_state) * light.radiance * light.density;
+    return neeBSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, light.density, true, random_state,
+        terms, view_terms) * light.radiance * light.density;
 }
 
 // Power heuristic of BSDF sampling at the vertex the ray left against light sampling of the point met
@@ -1521,7 +1526,11 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
 // neeBSDF by the balance heuristic against the BSDF sampled escape
 [CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, eta: float2, is_inside: bool, pdf: float, random_state: uint) -> float3 {
     let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
-    return neeBSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y, refracted, pdf, false, random_state);
+    // The material's and the view's values once for the sky sample
+    let terms: MaterialTerms = precomputeMaterial(surface.material, eta.x, eta.y);
+    let view_terms: ViewTerms = precomputeView(in_dir, surface.smooth_n, surface.material, terms);
+    return neeBSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y, refracted, pdf, false, random_state,
+        terms, view_terms);
 }
 
 // w = PDF_lobe / (PDF_lobe + PDF_env), 1 for delta lobes and without environment sampling
@@ -2051,6 +2060,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
         }
         if (scatter) {
+            // The material's and the view's values once for the sample leaving this vertex
+            var terms: MaterialTerms = {};
+            var view_terms: ViewTerms = {};
+            if (AT_HAIR(false, true)) {
+                terms = precomputeMaterial(material, eta.x, eta.y);
+                view_terms = precomputeView(ray.unit_direction, surface.smooth_n, material, terms);
+            }
             // Replaying, x_k-1 connects to the reconnection vertex and x_k leaves along the stored direction with the stored lobes
             let connect: bool = replay && b == stop;
             var lobe_index: uint = select(extractBits(r.path, PATH_LOBE_PREV, 3u), extractBits(r.path, PATH_LOBE, 3u), arrived);
@@ -2077,7 +2093,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 }
             } else if (!arrived) {
                 var bsdf_sampled: SampleBSDF = AT_HAIR(scene.sampleHair(surface.hair, material.albedo, material.specular_tint, ray.unit_direction, surface.random_state),
-                    sampleBSDF(ray.unit_direction, surface.smooth_n, material, eta.x, eta.y, surface.random_state, float2(0.0f)));
+                    sampleBSDF(ray.unit_direction, surface.smooth_n, material, eta.x, eta.y, surface.random_state, float2(0.0f),
+                        terms, view_terms));
 #ifdef FK_FCPT_WALK
                 if (hair && !(bsdf_sampled.pdf > 0.0f)) {
                     // Hair's row past a pole: no direction
@@ -2090,7 +2107,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 // Rays sampled to the wrong side of the face are sampled again or mirrored, as the path tracer's
                 wrong_side = AT_HAIR(false, wrongSide(is_inside, bsdf_sampled.refracted, bsdf_sampled.unit_direction, surface.geometry_n));
                 if (wrong_side && material.transmission > 0.0f) {
-                    let geometry_bsdf_sampled: SampleBSDF = sampleBSDF(bsdf_sampled.unit_direction, surface.geometry_n, material, eta.x, eta.y, bsdf_sampled.random_state, float2(0.0f));
+                    let geometry_bsdf_sampled: SampleBSDF = sampleBSDF(bsdf_sampled.unit_direction, surface.geometry_n, material, eta.x, eta.y, bsdf_sampled.random_state, float2(0.0f),
+                        terms, precomputeView(bsdf_sampled.unit_direction, surface.geometry_n, material, terms));
                     bsdf_sampled.unit_direction = geometry_bsdf_sampled.unit_direction;
                     bsdf_sampled.refracted = geometry_bsdf_sampled.refracted;
                     bsdf_sampled.throughput = geometry_bsdf_sampled.throughput;
@@ -2117,8 +2135,6 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     let n_i: float3 = surface.smooth_n * sign(n_dot_v);
                     let n_i_dot_l: float = dot(n_i, dir);
                     let alpha: float = material.roughness * material.roughness;
-                    let terms: MaterialTerms = precomputeMaterial(material, eta.x, eta.y);
-                    let view_terms: ViewTerms = precomputeView(in_dir, surface.smooth_n, material, terms);
                     var ggx_n: float3 = reflectedHalf(in_dir, dir);
                     if (lobe_index == LOBE_REFRACT) {
                         ggx_n = refractedHalf(in_dir, dir, surface.smooth_n, eta.x, eta.y);
