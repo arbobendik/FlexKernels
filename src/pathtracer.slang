@@ -336,7 +336,6 @@ public float inverseSqrt(float x) {
     default: return 1.0f / sqrt(x);
     }
 }
-[ForceInline] public float select(float f, float t, bool cond) { return select(cond, t, f); }
 [ForceInline] public float3 select(float3 f, float3 t, bool cond) { return select(cond, t, f); }
 [ForceInline] public float3 select(float3 f, float3 t, bool3 cond) { return select(cond, t, f); }
 [ForceInline] public bool sheenUsed() {
