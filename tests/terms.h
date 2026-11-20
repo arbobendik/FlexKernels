@@ -21,7 +21,7 @@ TERMS SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, TermsM m, f
     TermsV h = reflectedHalf(in_dir, out_dir);
     if (lobe == 1) h = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
     if (lobe == 0 || lobe == 6) h = sampledHalf(v, n_i, alpha, frame, random_init);
-    const BSDFLobes w = bsdfLobes(in_dir, v, n_i, h, m, eta_i, eta_o, frame);
+    const Weights w = lobeWeights(in_dir, v, n_i, h, frame, m, eta_i, eta_o);
     float pdf;
     TermsV throughput;
     if (lobe == 0) {

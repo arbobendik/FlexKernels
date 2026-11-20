@@ -428,9 +428,9 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     let v: float3 = negate(in_dir);
     let n_dot_v: float = dot(n, v);
     let n_i: float3 = n * sign(n_dot_v);
-    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
     let n_i_dot_l: float = dot(n_i, out_dir);
     let alpha: float = material.roughness * material.roughness;
+    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
     let translucent: bool = translucencyUsed() && rgb_to_greyscale(material.translucent) > 0.0f;
     let through: bool = dot(n, out_dir) * n_dot_v < 0.0f;
 #ifdef FK_TOON
@@ -442,10 +442,10 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
         throughputs[i] = float3(0.0f);
         pdfs[i] = 0.0f;
     }
-    // The lobe's half vector and its terms, taken again only where they differ from the last lobe's
+    // The lobe's half vector and its weights, taken again only where they differ from the last lobe's
     var half_of: uint = UINT_MAX;
     var ggx_n: float3 = float3(0.0f);
-    var lobe_terms: BSDFLobes = {};
+    var w: Weights = {};
     for (var i: uint = 0u; i < lobes; i++) {
         let lobe: uint = i == 3u ? LOBE_SHEEN_VELVET : i == 4u ? LOBE_TOON : i;
         if ((lobe == LOBE_DIFFUSE && translucent ? through : lobe == LOBE_REFRACT) != refracted) {
@@ -461,35 +461,35 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
             } else {
                 ggx_n = reflectedHalf(in_dir, out_dir);
             }
-            lobe_terms = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta_i, eta_o, frame);
+            w = lobeWeights(in_dir, v, n_i, ggx_n, frame, material, eta_i, eta_o);
             half_of = lobe_half;
         }
         // The VNDF's density of the half vector for the refraction and the reflection alone
         switch (lobe) {
         case LOBE_DIFFUSE:
-            pdfs[0] = diffusePDF(n_i_dot_l, abs(n_dot_v), material, lobe_terms);
-            throughputs[0] = diffuseBSDF(out_dir, n_i, material, lobe_terms);
+            pdfs[0] = diffusePDF(n_i_dot_l, abs(n_dot_v), material, w);
+            throughputs[0] = diffuseBSDF(out_dir, n_i, material, w);
             break;
         case LOBE_REFRACT:
-            pdfs[1] = refractPDF(dot(out_dir, ggx_n), vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame,
-                lobe_terms.v_dot_h), lobe_terms, eta_i, eta_o);
-            throughputs[1] = refractBSDF(out_dir, n_i, alpha, frame, material, lobe_terms);
+            pdfs[1] = refractPDF(dot(out_dir, ggx_n), vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, w.v_dot_h), w,
+                eta_i, eta_o);
+            throughputs[1] = refractBSDF(out_dir, n_i, alpha, frame, material, w);
             break;
         case LOBE_SHEEN_VELVET:
-            pdfs[3] = sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), lobe_terms);
-            throughputs[3] = sheenVelvetBSDF(out_dir, v, n_i, material, lobe_terms);
+            pdfs[3] = sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), w);
+            throughputs[3] = sheenVelvetBSDF(out_dir, v, n_i, material, w);
             break;
 #ifdef FK_TOON
         case LOBE_TOON: {
             let shape: ToonShape = toonShape(v, n_i, material);
-            pdfs[4] = toonPDF(n_i_dot_l, dot(out_dir, shape.axis), shape, lobe_terms);
-            throughputs[4] = toonBSDF(out_dir, n_i, shape, lobe_terms);
+            pdfs[4] = toonPDF(n_i_dot_l, dot(out_dir, shape.axis), shape, w);
+            throughputs[4] = toonBSDF(out_dir, n_i, shape, w);
             break;
         }
 #endif
         default:
-            pdfs[2] = reflectPDF(vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, lobe_terms.v_dot_h), lobe_terms);
-            throughputs[2] = reflectBSDF(out_dir, n_i, alpha, frame, lobe_terms);
+            pdfs[2] = reflectPDF(vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, w.v_dot_h), w);
+            throughputs[2] = reflectBSDF(out_dir, n_i, alpha, frame, w);
             break;
         }
     }
@@ -513,8 +513,8 @@ __extern_cpp public struct SampleBSDF {
     __extern_cpp public float pdf;
 }
 
-// Half vector terms of sampleBSDF, shared with the lobes' evaluation toward a given out_dir
-__extern_cpp public struct BSDFLobes {
+// sampleBSDF's choice among the lobes for one half vector: F, the weights and their shares, and what the leaves reuse
+__extern_cpp public struct Weights {
     __extern_cpp public float v_dot_h;
     __extern_cpp public float3 refracted;
     __extern_cpp public float3 F;
@@ -524,13 +524,9 @@ __extern_cpp public struct BSDFLobes {
     __extern_cpp public float p_diffuse;
     __extern_cpp public float p_reflect;
     __extern_cpp public float p_refract;
-    // Sheen lobe weight and probability, 0 without sheen
-    __extern_cpp public float3 sheen;
     __extern_cpp public float p_sheen_velvet;
-#ifdef FK_TOON
-    // Toon lobe's probability
-    __extern_cpp public float p_toon = 0.0f;
-#endif
+    __extern_cpp public float p_toon;
+    __extern_cpp public float3 sheen;
 }
 
 // Tangent and roughness along tangent and bitangent, 0 when isotropic
@@ -608,7 +604,9 @@ __extern_cpp public struct ToonShape {
 }
 #endif
 
-[CudaDeviceExport] public func bsdfLobes(in_dir: float3, v: float3, n_i: float3, ggx_n: float3, material: Material, eta_i: float, eta_o: float, frame: AnisotropicFrame) -> BSDFLobes {
+// The weights and shares of the lobes for one half vector ggx_n at a vertex
+[CudaDeviceExport] public func lobeWeights(in_dir: float3, v: float3, n_i: float3, ggx_n: float3,
+    frame: AnisotropicFrame, material: Material, eta_i: float, eta_o: float) -> Weights {
     // Calculate shared half vector dot products
     let v_dot_h: float = dot(ggx_n, v);
     // Try refraction through the properly oriented half vector
@@ -716,13 +714,8 @@ __extern_cpp public struct ToonShape {
     let p_diffuse: float = diffuse_component * base_component_inv;
     let p_reflect: float = reflect_component * base_component_inv;
     let p_refract: float = refract_component * base_component_inv;
-#ifdef FK_TOON
-    return BSDFLobes(v_dot_h, refracted, F, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect,
-        p_refract, sheen, p_sheen_velvet, toon_component * base_component_inv);
-#else
-    return BSDFLobes(v_dot_h, refracted, F, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect,
-        p_refract, sheen, p_sheen_velvet);
-#endif
+    return Weights(v_dot_h, refracted, F, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect,
+        p_refract, p_sheen_velvet, toon_component * base_component_inv, sheen);
 }
 
 // translucent_share = greyscale(translucent) / (greyscale(albedo) + greyscale(translucent))
@@ -768,7 +761,7 @@ __extern_cpp public struct ToonShape {
 }
 
 // Each lobe by three functions under each other: XBSDF, its throughput toward l, XSample, sampleBSDF's case drawing
-// it, and XPDF, its solid angle PDF, 0 for delta lobes; all three on the half vector terms of one half vector
+// it, and XPDF, its solid angle PDF, 0 for delta lobes; all three on the weights of one half vector
 
 // PDF_VNDF of the half vector h, the refraction's and the reflection's
 [CudaDeviceExport] public func vndfPDF(v: float3, h: float3, n_i: float3, n_i_dot_v: float, alpha: float,
@@ -788,7 +781,7 @@ __extern_cpp public struct ToonShape {
     return pdf_h;
 }
 
-[CudaDeviceExport] public func diffuseBSDF(l: float3, n_i: float3, material: Material, w: BSDFLobes) -> float3 {
+[CudaDeviceExport] public func diffuseBSDF(l: float3, n_i: float3, material: Material, w: Weights) -> float3 {
     // BSDF = diffuse_weight * albedo / PI
     // => BSDF * n_dot_l = diffuse_weight * albedo * n_dot_l / PI
 
@@ -809,7 +802,7 @@ __extern_cpp public struct ToonShape {
 }
 
 // Diffuse case of sampleBSDF, u its draw over the base lobes
-[CudaDeviceExport] public func diffuseSample(u: float, n_i: float3, n_i_dot_v: float, material: Material, w: BSDFLobes,
+[CudaDeviceExport] public func diffuseSample(u: float, n_i: float3, n_i_dot_v: float, material: Material, w: Weights,
     random_state: uint) -> SampleBSDF {
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     let random_d_1: Random = pcg(random_state);
@@ -828,7 +821,7 @@ __extern_cpp public struct ToonShape {
     return sample;
 }
 
-[CudaDeviceExport] public func diffusePDF(n_i_dot_l: float, n_i_dot_v: float, material: Material, w: BSDFLobes)
+[CudaDeviceExport] public func diffusePDF(n_i_dot_l: float, n_i_dot_v: float, material: Material, w: Weights)
     -> float {
     // PDF_COSINE_HEMISPHERE = cosine_hemisphere.y / PI
     // => PDF = cosine_hemisphere.y / PI
@@ -838,7 +831,7 @@ __extern_cpp public struct ToonShape {
         * select(1.0f - share, share, n_i_dot_l < 0.0f), share > 0.0f), n_i_dot_v > 0.0f);
 }
 
-[CudaDeviceExport] public func sheenVelvetBSDF(l: float3, v: float3, n_i: float3, material: Material, w: BSDFLobes)
+[CudaDeviceExport] public func sheenVelvetBSDF(l: float3, v: float3, n_i: float3, material: Material, w: Weights)
     -> float3 {
     // BSDF = sheen * D * V
     // => BSDF * n_dot_l = sheen * D * V * n_dot_l
@@ -875,7 +868,7 @@ __extern_cpp public struct ToonShape {
 
 // Sheen case of sampleBSDF
 [CudaDeviceExport] public func sheenVelvetSample(v: float3, n_i: float3, n_i_dot_v: float, material: Material,
-    w: BSDFLobes, random_state: uint) -> SampleBSDF {
+    w: Weights, random_state: uint) -> SampleBSDF {
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     let random_s_1: Random = pcg(random_state);
     let random_s_2: Random = pcg(random_s_1.state);
@@ -890,14 +883,14 @@ __extern_cpp public struct ToonShape {
     return sample;
 }
 
-[CudaDeviceExport] public func sheenVelvetPDF(n_i_dot_l: float, n_i_dot_v: float, w: BSDFLobes) -> float {
+[CudaDeviceExport] public func sheenVelvetPDF(n_i_dot_l: float, n_i_dot_v: float, w: Weights) -> float {
     // PDF_UNIFORM_HEMISPHERE = 1 / (2 * PI)
     // => PDF = p_sheen_velvet / (2 * PI)
     return select(0.0f, w.p_sheen_velvet * 0.5f * INV_PI, n_i_dot_l > 0.0f && n_i_dot_v > 0.0f);
 }
 
 #ifdef FK_TOON
-[CudaDeviceExport] public func toonBSDF(l: float3, n_i: float3, shape: ToonShape, w: BSDFLobes) -> float3 {
+[CudaDeviceExport] public func toonBSDF(l: float3, n_i: float3, shape: ToonShape, w: Weights) -> float3 {
     // BSDF = toon * P(theta_v) * P(theta_l) / K
     // => BSDF * n_dot_l = toon * P(theta_v) * P(theta_l) * n_dot_l / K
 
@@ -914,8 +907,7 @@ __extern_cpp public struct ToonShape {
 }
 
 // Toon case of sampleBSDF
-[CudaDeviceExport] public func toonSample(n_i: float3, shape: ToonShape, w: BSDFLobes, random_state: uint)
-    -> SampleBSDF {
+[CudaDeviceExport] public func toonSample(n_i: float3, shape: ToonShape, w: Weights, random_state: uint) -> SampleBSDF {
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     let random_t_1: Random = pcg(random_state);
     let random_t_2: Random = pcg(random_t_1.state);
@@ -951,7 +943,7 @@ __extern_cpp public struct ToonShape {
     return sample;
 }
 
-[CudaDeviceExport] public func toonPDF(n_i_dot_l: float, l_dot_h: float, shape: ToonShape, w: BSDFLobes) -> float {
+[CudaDeviceExport] public func toonPDF(n_i_dot_l: float, l_dot_h: float, shape: ToonShape, w: Weights) -> float {
     // PDF_TOON = P(theta_l) * n_dot_l / K
     // toon_norm holds K, W glossy
     // => PDF = p_toon * P(theta_l) * n_dot_l / K
@@ -964,7 +956,7 @@ __extern_cpp public struct ToonShape {
 #endif
 
 [CudaDeviceExport] public func refractBSDF(l: float3, n_i: float3, alpha: float, frame: AnisotropicFrame,
-    material: Material, w: BSDFLobes) -> float3 {
+    material: Material, w: Weights) -> float3 {
     let m_n_i_dot_l: float = - dot(n_i, l);
     // Microfacet term
     var G1_l: float = smithG1(alpha, max(m_n_i_dot_l, 0.0f));
@@ -986,7 +978,7 @@ __extern_cpp public struct ToonShape {
 
 // Refractive case of sampleBSDF, through its half vector ggx_n
 [CudaDeviceExport] public func refractSample(ggx_n: float3, n_i: float3, alpha: float, frame: AnisotropicFrame,
-    material: Material, w: BSDFLobes, pdf_h: float, eta_i: float, eta_o: float, random_state: uint) -> SampleBSDF {
+    material: Material, w: Weights, pdf_h: float, eta_i: float, eta_o: float, random_state: uint) -> SampleBSDF {
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     // Refraction is valid
     sample.unit_direction = w.refracted;
@@ -998,7 +990,8 @@ __extern_cpp public struct ToonShape {
     return sample;
 }
 
-[CudaDeviceExport] public func refractPDF(l_dot_h: float, pdf_h: float, w: BSDFLobes, eta_i: float, eta_o: float)
+// pdf_h holds PDF_VNDF
+[CudaDeviceExport] public func refractPDF(l_dot_h: float, pdf_h: float, w: Weights, eta_i: float, eta_o: float)
     -> float {
     // JACOBIAN = eta_o^2 * |l_dot_h| / (eta_i * v_dot_h + eta_o * l_dot_h)^2
 
@@ -1013,7 +1006,7 @@ __extern_cpp public struct ToonShape {
         eta_i != eta_o && l_dot_h < 0.0f);
 }
 
-[CudaDeviceExport] public func reflectBSDF(l: float3, n_i: float3, alpha: float, frame: AnisotropicFrame, w: BSDFLobes)
+[CudaDeviceExport] public func reflectBSDF(l: float3, n_i: float3, alpha: float, frame: AnisotropicFrame, w: Weights)
     -> float3 {
     let n_i_dot_l: float = dot(n_i, l);
     // Torrance-Sparrow
@@ -1036,7 +1029,7 @@ __extern_cpp public struct ToonShape {
 
 // Reflective case of sampleBSDF, off its half vector ggx_n
 [CudaDeviceExport] public func reflectSample(in_dir: float3, ggx_n: float3, n_i: float3, alpha: float,
-    frame: AnisotropicFrame, w: BSDFLobes, pdf_h: float, random_state: uint) -> SampleBSDF {
+    frame: AnisotropicFrame, w: Weights, pdf_h: float, random_state: uint) -> SampleBSDF {
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     sample.unit_direction = normalize(reflect(in_dir, ggx_n));
     sample.random_state = random_state;
@@ -1046,7 +1039,8 @@ __extern_cpp public struct ToonShape {
     return sample;
 }
 
-[CudaDeviceExport] public func reflectPDF(pdf_h: float, w: BSDFLobes) -> float {
+// pdf_h holds PDF_VNDF
+[CudaDeviceExport] public func reflectPDF(pdf_h: float, w: Weights) -> float {
     // PDF_VNDF = G1_v * v_dot_h * D / n_dot_v
     // JACOBIAN = 1 / (4 * v_dot_h)
     // PDF_REFLECT = PDF_VNDF * JACOBIAN
@@ -1071,37 +1065,38 @@ __extern_cpp public struct ToonShape {
     // Sample using GGX importance sampling for potential refractive or reflective case
     let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
     let ggx_n: float3 = sampleHalfVector(v, n_i, alpha, frame, random_state);
-    let lobes: BSDFLobes = bsdfLobes(in_dir, v, n_i, ggx_n, material, eta_i, eta_o, frame);
+    // The lobes' weights of ggx_n
+    let w: Weights = lobeWeights(in_dir, v, n_i, ggx_n, frame, material, eta_i, eta_o);
 
     let random_p: Random = pcg(random_state);
     random_state = random_p.state;
     // Sheen case
-    if (random_p.value < lobes.p_sheen_velvet) {
-        return sheenVelvetSample(v, n_i, n_i_dot_v, material, lobes, random_state);
+    if (random_p.value < w.p_sheen_velvet) {
+        return sheenVelvetSample(v, n_i, n_i_dot_v, material, w, random_state);
     }
     // The base lobes over the rest
-    let u: float = random_p.value - lobes.p_sheen_velvet;
+    let u: float = random_p.value - w.p_sheen_velvet;
     // Diffuse case
-    if (u < lobes.p_diffuse) {
-        return diffuseSample(u, n_i, n_i_dot_v, material, lobes, random_state);
+    if (u < w.p_diffuse) {
+        return diffuseSample(u, n_i, n_i_dot_v, material, w, random_state);
     }
 #ifdef FK_TOON
     // Toon case
-    if (u < lobes.p_diffuse + lobes.p_toon) {
-        return toonSample(n_i, toonShape(v, n_i, material), lobes, random_state);
+    if (u < w.p_diffuse + w.p_toon) {
+        return toonSample(n_i, toonShape(v, n_i, material), w, random_state);
     }
-    let toon_share: float = lobes.p_toon;
+    let toon_share: float = w.p_toon;
 #else
     let toon_share: float = 0.0f;
 #endif
     // The VNDF's density of ggx_n, the refraction's and the reflection's
-    let pdf_h: float = vndfPDF(v, ggx_n, n_i, n_i_dot_v, alpha, frame, lobes.v_dot_h);
+    let pdf_h: float = vndfPDF(v, ggx_n, n_i, n_i_dot_v, alpha, frame, w.v_dot_h);
     // Refractive case
-    if (u - toon_share < lobes.p_diffuse + lobes.p_refract) {
-        return refractSample(ggx_n, n_i, alpha, frame, material, lobes, pdf_h, eta_i, eta_o, random_state);
+    if (u - toon_share < w.p_diffuse + w.p_refract) {
+        return refractSample(ggx_n, n_i, alpha, frame, material, w, pdf_h, eta_i, eta_o, random_state);
     }
     // Otherwise assume reflective case.
-    return reflectSample(in_dir, ggx_n, n_i, alpha, frame, lobes, pdf_h, random_state);
+    return reflectSample(in_dir, ggx_n, n_i, alpha, frame, w, pdf_h, random_state);
 }
 
 // sampleBSDF's half vector, drawn from random_state as sampleBSDF draws it: the diffuse and toon lobes'
