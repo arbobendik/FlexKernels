@@ -554,8 +554,7 @@ __extern_cpp public struct MaterialTerms {
     __extern_cpp public float toon_norm;
 #endif
 }
-[ForceInline] [CudaDeviceExport] public func precomputeMaterial(material: Material, eta_i: float, eta_o: float)
-    -> MaterialTerms {
+[CudaDeviceExport] public func precomputeMaterial(material: Material, eta_i: float, eta_o: float) -> MaterialTerms {
     // r = sqrt(specular_level) * |eta_i - eta_o| / (eta_i + eta_o)
     // F0 = r^2
     // F0 = ((eta_level - 1) / (eta_level + 1))^2
@@ -622,8 +621,8 @@ __extern_cpp public struct ViewTerms {
     __extern_cpp public float3 toon_axis;
 #endif
 }
-[ForceInline] [CudaDeviceExport] public func precomputeView(in_dir: float3, n: float3, material: Material,
-    terms: MaterialTerms) -> ViewTerms {
+[CudaDeviceExport] public func precomputeView(in_dir: float3, n: float3, material: Material, terms: MaterialTerms)
+    -> ViewTerms {
     let v: float3 = negate(in_dir);
     let n_i: float3 = n * sign(dot(n, v));
     let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
