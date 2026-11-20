@@ -35,8 +35,9 @@ static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m
         BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, sampledHalf(in_dir, n, m, random_init, frame), m,
             eta_i, eta_o, frame, sheen_profile);
         h.translucent_share = translucentShare(m);
-        pdf = toonPDF(n_i_dot_l, dot_0(out_dir, h.toon_axis), n_i_dot_v, alpha, h, eta_i, eta_o);
-        throughput = toonBSDF(out_dir, n_i, alpha, m, h);
+        const ToonProfile profile = toonProfile(negate_0(in_dir), n_i, m);
+        pdf = toonPDF(out_dir, n_i, profile, h);
+        throughput = toonBSDF(out_dir, n_i, profile, h);
 #endif
     } else {
         BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, reflectedHalf(in_dir, out_dir), m, eta_i, eta_o, frame,
