@@ -507,21 +507,20 @@ __extern_cpp public struct Random {
         let lobe_half: uint = lobe == LOBE_TOON ? LOBE_DIFFUSE : lobe == LOBE_SHEEN_VELVET ? LOBE_REFLECT : lobe;
         if (lobe_half != half_of) {
             if (lobe_half == LOBE_DIFFUSE) {
-                ggx_n = sampledHalf(in_dir, n, material, random_state, frame);
+                ggx_n = sampledHalf(v, n_i, alpha, frame, random_state);
             } else if (lobe_half == LOBE_REFRACT) {
                 ggx_n = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
             } else {
                 ggx_n = reflectedHalf(in_dir, out_dir);
             }
             lobe_terms = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta_i, eta_o, frame, sheen_profile);
-            lobe_terms.translucent_share = translucentShare(material);
             half_of = lobe_half;
         }
         // The VNDF's density of the half vector for the refraction and the reflection alone
         switch (lobe) {
         case LOBE_DIFFUSE:
-            pdfs[0] = diffusePDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
-            throughputs[0] = diffuseBSDF(out_dir, n_i, alpha, material, lobe_terms);
+            pdfs[0] = diffusePDF(n_i_dot_l, abs(n_dot_v), material, lobe_terms);
+            throughputs[0] = diffuseBSDF(out_dir, n_i, material, lobe_terms);
             break;
         case LOBE_REFRACT:
             pdfs[1] = refractPDF(dot(out_dir, ggx_n), vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame,
@@ -529,8 +528,8 @@ __extern_cpp public struct Random {
             throughputs[1] = refractBSDF(out_dir, n_i, alpha, frame, material, lobe_terms);
             break;
         case LOBE_SHEEN_VELVET:
-            pdfs[3] = sheenVelvetPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
-            throughputs[3] = sheenVelvetBSDF(out_dir, n_i, alpha, material, lobe_terms);
+            pdfs[3] = sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), lobe_terms);
+            throughputs[3] = sheenVelvetBSDF(out_dir, v, n_i, material, lobe_terms);
             break;
 #ifdef FK_TOON
         case LOBE_TOON: {
@@ -561,19 +560,15 @@ __extern_cpp public struct BSDFLobes {
     __extern_cpp public float v_dot_h;
     __extern_cpp public float3 refracted;
     __extern_cpp public float3 F;
-    __extern_cpp public float F_greyscale;
     __extern_cpp public float reflect_weight;
     __extern_cpp public float3 diffuse_weight;
     __extern_cpp public float3 refract_weight;
     __extern_cpp public float p_diffuse;
     __extern_cpp public float p_reflect;
     __extern_cpp public float p_refract;
-    // Share of the diffuse lobe's samples sent through the surface
-    __extern_cpp public float translucent_share;
-    // Sheen lobe weight, probability and v, 0 without sheen
+    // Sheen lobe weight and probability, 0 without sheen
     __extern_cpp public float3 sheen;
     __extern_cpp public float p_sheen_velvet;
-    __extern_cpp public float3 view;
 #ifdef FK_TOON
     // Toon lobe's probability
     __extern_cpp public float p_toon = 0.0f;
@@ -668,13 +663,11 @@ __extern_cpp public struct BSDFLobes {
     var scale: float3 = float3(1.0f);
     var sheen_component: float = 0.0f;
     var sheen: float3 = float3(0.0f);
-    var view: float3 = float3(0.0f);
     if (sheen_profile.on) {
         let albedo: float = sheen_profile.albedo;
         scale = 1.0f - material.sheen * min(albedo, 1.0f);
         sheen_component = rgb_to_greyscale(material.sheen) * min(albedo, 1.0f);
         sheen = material.sheen / max(albedo, 1.0f);
-        view = v;
     }
     var toon_component: float = 0.0f;
     var toon: float3 = float3(0.0f);
@@ -732,11 +725,11 @@ __extern_cpp public struct BSDFLobes {
     let p_reflect: float = reflect_component * base_component_inv;
     let p_refract: float = refract_component * base_component_inv;
 #ifdef FK_TOON
-    return BSDFLobes(v_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse,
-        p_reflect, p_refract, 0.0f, sheen, p_sheen_velvet, view, toon_component * base_component_inv, toon);
+    return BSDFLobes(v_dot_h, refracted, F, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect,
+        p_refract, sheen, p_sheen_velvet, toon_component * base_component_inv, toon);
 #else
-    return BSDFLobes(v_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse,
-        p_reflect, p_refract, 0.0f, sheen, p_sheen_velvet, view);
+    return BSDFLobes(v_dot_h, refracted, F, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect,
+        p_refract, sheen, p_sheen_velvet);
 #endif
 }
 
@@ -801,8 +794,7 @@ __extern_cpp public struct BSDFLobes {
     return pdf_h;
 }
 
-[CudaDeviceExport] public func diffuseBSDF(l: float3, n_i: float3, alpha: float, material: Material,
-    lobes: BSDFLobes) -> float3 {
+[CudaDeviceExport] public func diffuseBSDF(l: float3, n_i: float3, material: Material, w: BSDFLobes) -> float3 {
     // BSDF = diffuse_weight * albedo / PI
     // => BSDF * n_dot_l = diffuse_weight * albedo * n_dot_l / PI
 
@@ -815,16 +807,16 @@ __extern_cpp public struct BSDFLobes {
     //
     // Translucent: BSDF = diffuse_weight * translucent / PI behind, PDF = share * |cosine_hemisphere.y| / PI
     // => throughput = diffuse_weight * translucent / share behind, diffuse_weight * albedo / (1 - share) in front
-    let share: float = lobes.translucent_share;
+    let share: float = translucentShare(material);
     let through: bool = dot(n_i, l) < 0.0f;
     let color: float3 = select(material.albedo, select(material.albedo, material.translucent, through)
         / select(1.0f - share, share, through), share > 0.0f);
-    return lobes.diffuse_weight * color / lobes.p_diffuse;
+    return w.diffuse_weight * color / w.p_diffuse;
 }
 
 // Diffuse case of sampleBSDF, u its draw over the base lobes
-[CudaDeviceExport] public func diffuseSample(u: float, n_i: float3, n_i_dot_v: float, alpha: float, material: Material,
-    lobes: BSDFLobes, eta_i: float, eta_o: float, random_state: uint) -> SampleBSDF {
+[CudaDeviceExport] public func diffuseSample(u: float, n_i: float3, n_i_dot_v: float, material: Material, w: BSDFLobes,
+    random_state: uint) -> SampleBSDF {
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     let random_d_1: Random = pcg(random_state);
     let random_d_2: Random = pcg(random_d_1.state);
@@ -832,23 +824,23 @@ __extern_cpp public struct BSDFLobes {
     // Sample cosine weighted hemisphere
     let cosine_hemisphere: float3 = sampleCosWeightedHemisphere(random_d_1.value, random_d_2.value);
     // Behind the surface with probability translucent_share: cosine sample mirrored across the tangent plane
-    let through: bool = u < lobes.p_diffuse * lobes.translucent_share;
+    let through: bool = u < w.p_diffuse * translucentShare(material);
     let toward: float = select(cosine_hemisphere.y, - cosine_hemisphere.y, through);
     sample.unit_direction = tangentToWorld(float3(cosine_hemisphere.x, toward, cosine_hemisphere.z), n_i);
     sample.refracted = through;
     sample.lobe = LOBE_DIFFUSE;
-    sample.throughput = diffuseBSDF(sample.unit_direction, n_i, alpha, material, lobes);
-    sample.pdf = diffusePDF(toward, 0.0f, n_i_dot_v, alpha, lobes, eta_i, eta_o);
+    sample.throughput = diffuseBSDF(sample.unit_direction, n_i, material, w);
+    sample.pdf = diffusePDF(toward, n_i_dot_v, material, w);
     return sample;
 }
 
-[CudaDeviceExport] public func diffusePDF(n_i_dot_l: float, l_dot_h: float, n_i_dot_v: float, alpha: float,
-    lobes: BSDFLobes, eta_i: float, eta_o: float) -> float {
+[CudaDeviceExport] public func diffusePDF(n_i_dot_l: float, n_i_dot_v: float, material: Material, w: BSDFLobes)
+    -> float {
     // PDF_COSINE_HEMISPHERE = cosine_hemisphere.y / PI
     // => PDF = cosine_hemisphere.y / PI
     // Translucent: PDF = share * |cosine_hemisphere.y| / PI behind, (1 - share) * cosine_hemisphere.y / PI in front
-    let share: float = lobes.translucent_share;
-    return select(0.0f, select(lobes.p_diffuse * n_i_dot_l * INV_PI, lobes.p_diffuse * abs(n_i_dot_l) * INV_PI
+    let share: float = translucentShare(material);
+    return select(0.0f, select(w.p_diffuse * n_i_dot_l * INV_PI, w.p_diffuse * abs(n_i_dot_l) * INV_PI
         * select(1.0f - share, share, n_i_dot_l < 0.0f), share > 0.0f), n_i_dot_v > 0.0f);
 }
 
@@ -882,8 +874,8 @@ __extern_cpp public struct BSDFLobes {
     return profile;
 }
 
-[CudaDeviceExport] public func sheenVelvetBSDF(l: float3, n_i: float3, alpha: float, material: Material,
-    lobes: BSDFLobes) -> float3 {
+[CudaDeviceExport] public func sheenVelvetBSDF(l: float3, v: float3, n_i: float3, material: Material, w: BSDFLobes)
+    -> float3 {
     // BSDF = sheen * D * V
     // => BSDF * n_dot_l = sheen * D * V * n_dot_l
 
@@ -900,10 +892,10 @@ __extern_cpp public struct BSDFLobes {
     // D = exp(-n_dot_h^2 / (sin2 * s^2)) / (PI * s^2 * sin2^2), V = G / (4 * n_dot_l * n_dot_v)
     // G = min(1, 2 * n_dot_h * n_dot_v / v_dot_h, 2 * n_dot_h * n_dot_l / v_dot_h)
     // => throughput = sheen * f * n_dot_l * 2 * PI / p_sheen_velvet, f holding D * V
-    let h: float3 = normalize(l + lobes.view);
+    let h: float3 = normalize(l + v);
     let n_dot_h: float = dot(n_i, h);
     let n_dot_l: float = max(dot(n_i, l), 0.0f);
-    let n_dot_v: float = max(dot(n_i, lobes.view), 0.0f);
+    let n_dot_v: float = max(dot(n_i, v), 0.0f);
     let inv_r: float = 1.0f / max(material.sheen_roughness, SHEEN_LEAST);
     var f: float = (2.0f + inv_r) * pow(max(1.0f - n_dot_h * n_dot_h, 0.0f), 0.5f * inv_r) * 0.5f * INV_PI
         / max(4.0f * (n_dot_l + n_dot_v - n_dot_l * n_dot_v), BIAS);
@@ -911,15 +903,15 @@ __extern_cpp public struct BSDFLobes {
         let s2: float = max(material.sheen_roughness, 0.01f) * max(material.sheen_roughness, 0.01f);
         let sin2: float = max(1.0f - n_dot_h * n_dot_h, BIAS);
         f = exp(- n_dot_h * n_dot_h / (sin2 * s2)) / (PI * s2 * sin2 * sin2)
-            * min(1.0f, 2.0f * n_dot_h * min(n_dot_l, n_dot_v) / max(abs(dot(h, lobes.view)), BIAS))
+            * min(1.0f, 2.0f * n_dot_h * min(n_dot_l, n_dot_v) / max(abs(dot(h, v)), BIAS))
             / max(4.0f * n_dot_l * n_dot_v, BIAS);
     }
-    return lobes.sheen * (f * n_dot_l * 2.0f * PI / lobes.p_sheen_velvet);
+    return w.sheen * (f * n_dot_l * 2.0f * PI / w.p_sheen_velvet);
 }
 
 // Sheen case of sampleBSDF
-[CudaDeviceExport] public func sheenVelvetSample(n_i: float3, n_i_dot_v: float, alpha: float, material: Material,
-    lobes: BSDFLobes, eta_i: float, eta_o: float, random_state: uint) -> SampleBSDF {
+[CudaDeviceExport] public func sheenVelvetSample(v: float3, n_i: float3, n_i_dot_v: float, material: Material,
+    w: BSDFLobes, random_state: uint) -> SampleBSDF {
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     let random_s_1: Random = pcg(random_state);
     let random_s_2: Random = pcg(random_s_1.state);
@@ -929,16 +921,15 @@ __extern_cpp public struct BSDFLobes {
     let phi: float = 2.0f * PI * random_s_2.value;
     sample.unit_direction = tangentToWorld(float3(across * cos(phi), random_s_1.value, across * sin(phi)), n_i);
     sample.lobe = LOBE_SHEEN_VELVET;
-    sample.throughput = sheenVelvetBSDF(sample.unit_direction, n_i, alpha, material, lobes);
-    sample.pdf = sheenVelvetPDF(random_s_1.value, 0.0f, n_i_dot_v, alpha, lobes, eta_i, eta_o);
+    sample.throughput = sheenVelvetBSDF(sample.unit_direction, v, n_i, material, w);
+    sample.pdf = sheenVelvetPDF(random_s_1.value, n_i_dot_v, w);
     return sample;
 }
 
-[CudaDeviceExport] public func sheenVelvetPDF(n_i_dot_l: float, l_dot_h: float, n_i_dot_v: float, alpha: float,
-    lobes: BSDFLobes, eta_i: float, eta_o: float) -> float {
+[CudaDeviceExport] public func sheenVelvetPDF(n_i_dot_l: float, n_i_dot_v: float, w: BSDFLobes) -> float {
     // PDF_UNIFORM_HEMISPHERE = 1 / (2 * PI)
     // => PDF = p_sheen_velvet / (2 * PI)
-    return select(0.0f, lobes.p_sheen_velvet * 0.5f * INV_PI, n_i_dot_l > 0.0f && n_i_dot_v > 0.0f);
+    return select(0.0f, w.p_sheen_velvet * 0.5f * INV_PI, n_i_dot_l > 0.0f && n_i_dot_v > 0.0f);
 }
 
 #ifdef FK_TOON
@@ -1105,20 +1096,19 @@ __extern_cpp public struct BSDFLobes {
     let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
     let sheen_profile: SheenProfile = sheenProfile(v, n_i, material);
     let ggx_n: float3 = sampleHalfVector(v, n_i, alpha, frame, random_state);
-    var lobes: BSDFLobes = bsdfLobes(in_dir, v, n_i, ggx_n, material, eta_i, eta_o, frame, sheen_profile);
-    lobes.translucent_share = translucentShare(material);
+    let lobes: BSDFLobes = bsdfLobes(in_dir, v, n_i, ggx_n, material, eta_i, eta_o, frame, sheen_profile);
 
     let random_p: Random = pcg(random_state);
     random_state = random_p.state;
     // Sheen case
     if (random_p.value < lobes.p_sheen_velvet) {
-        return sheenVelvetSample(n_i, n_i_dot_v, alpha, material, lobes, eta_i, eta_o, random_state);
+        return sheenVelvetSample(v, n_i, n_i_dot_v, material, lobes, random_state);
     }
     // The base lobes over the rest
     let u: float = random_p.value - lobes.p_sheen_velvet;
     // Diffuse case
     if (u < lobes.p_diffuse) {
-        return diffuseSample(u, n_i, n_i_dot_v, alpha, material, lobes, eta_i, eta_o, random_state);
+        return diffuseSample(u, n_i, n_i_dot_v, material, lobes, random_state);
     }
 #ifdef FK_TOON
     // Toon case
@@ -1140,12 +1130,11 @@ __extern_cpp public struct BSDFLobes {
 }
 
 // sampleBSDF's half vector, drawn from random_state as sampleBSDF draws it: the diffuse and toon lobes'
-[CudaDeviceExport] public func sampledHalf(in_dir: float3, n: float3, material: Material, random_state: uint,
-    frame: AnisotropicFrame) -> float3 {
+[CudaDeviceExport] public func sampledHalf(v: float3, n_i: float3, alpha: float, frame: AnisotropicFrame,
+    random_state: uint) -> float3 {
     var state: uint = random_state;
-    let v: float3 = negate(in_dir);
     // Diffuse half-vector of sampleBSDF
-    return sampleHalfVector(v, n * sign(dot(n, v)), material.roughness * material.roughness, frame, state);
+    return sampleHalfVector(v, n_i, alpha, frame, state);
 }
 
 // The reflection's and the sheen's half vector of out_dir
