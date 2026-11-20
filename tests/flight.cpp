@@ -6,14 +6,16 @@
 int main() {
     using V = Vector<float, 3>;
     const V scatter(0.3f, 0.5f, 0.7f), extinction(0.8f, 0.9f, 1.4f);
-    const float sigma = (scatter.x + scatter.y + scatter.z) / 3, d = 1.7f;
+    const float d = 1.7f;
     const int N = 1 << 22;
     double pass[3] = {0, 0, 0}, pass2[3] = {0, 0, 0}, first[3] = {0, 0, 0}, first2[3] = {0, 0, 0};
     double z1 = 0, z2 = 0, z4 = 0;
     for (int i = 0; i < N; i++) {
         // Free flight: E[unscattered] = exp(-e * d), E[first scattered] = s * (1 - exp(-e * d)) / e
-        const float u = pcg(hash(2 * i + 1)).value, t = - logf(1.0f - u) / sigma;
-        const V w = flightWeight_0(scatter, extinction, sigma, t < d ? t : d, t < d);
+        const float u = 3 * pcg(hash(2 * i + 1)).value;
+        const int k = u < 1 ? 0 : u < 2 ? 1 : 2;
+        const float t = - logf(1.0f - (u - k)) / (k == 0 ? scatter.x : k == 1 ? scatter.y : scatter.z);
+        const V w = flightWeight_0(scatter, extinction, t < d ? t : d, t < d);
         const double c[3] = {w.x, w.y, w.z};
         for (int k = 0; k < 3; k++) {
             const double p = t < d ? 0 : c[k], f = t < d ? c[k] : 0;
