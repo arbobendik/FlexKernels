@@ -599,23 +599,26 @@ __extern_cpp public struct MaterialTerms {
 #endif
 }
 
-// The values of one half vector ggx_n at a vertex, the lobes' weights and shares
-[CudaDeviceExport] public func precomputeHalf(in_dir: float3, v: float3, n_i: float3, ggx_n: float3, material: Material,
-    eta_i: float, eta_o: float, frame: AnisotropicFrame, terms: MaterialTerms) -> HalfTerms {
-    // Calculate shared half vector dot products
-    let v_dot_h: float = dot(ggx_n, v);
-    let n_dot_h: float = dot(n_i, ggx_n);
-    // Try refraction through the properly oriented half vector
-    let eta: float = eta_i / eta_o;
-    let refracted: float3 = normalize(refract(in_dir, ggx_n, eta));
-    // F_dielectric = specular_tint * F0 + (1 - specular_tint * F0) * (F(eta_level) - F0) / (1 - F0)
-    // F_dielectric = 1 past total internal reflection: eta_i^2 * (1 - v_dot_h^2) >= eta_o^2
-    let f0: float = terms.f0;
-    let eta_level: float = terms.eta_level;
-    let F_level: float = fresnel(abs(v_dot_h), eta_i > eta_o ? eta_level : 1.0f, eta_i > eta_o ? 1.0f : eta_level);
-    let total: bool = eta_i * eta_i * (1.0f - v_dot_h * v_dot_h) >= eta_o * eta_o;
-    let F_dielectric: float3 = total ? float3(1.0f) : material.specular_tint * f0 + (1.0f - material.specular_tint * f0)
-        * (F_level - f0) / (1.0f - f0);
+// The view's values at a vertex, the same for every half vector: frame, sheen, toon and the metal's rebounce
+__extern_cpp public struct ViewTerms {
+    __extern_cpp public float3 v;
+    __extern_cpp public float3 n_i;
+    __extern_cpp public AnisotropicFrame frame;
+    __extern_cpp public float3 scale;
+    __extern_cpp public float sheen_component;
+    __extern_cpp public float3 sheen;
+    __extern_cpp public float3 view;
+    __extern_cpp public float3 rebounce;
+#ifdef FK_TOON
+    __extern_cpp public float toon_view;
+    __extern_cpp public float3 toon_axis;
+#endif
+}
+[ForceInline] [CudaDeviceExport] public func precomputeView(in_dir: float3, n: float3, material: Material,
+    terms: MaterialTerms) -> ViewTerms {
+    let v: float3 = negate(in_dir);
+    let n_i: float3 = n * sign(dot(n, v));
+    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
     // albedo = exp(bilinear SHEEN_ALBEDO), bilinear VELVET_ALBEDO for velvet
     // BSDF = sheen * f
     // sheen = material.sheen / max(albedo, 1)
@@ -665,7 +668,6 @@ __extern_cpp public struct MaterialTerms {
             : max(1.0f - (theta_v - terms.toon_a) / max(terms.toon_s, BIAS), 0.0f);
         toon_axis = terms.toon_glossy ? normalize(2.0f * dot(n_i, v) * n_i - v) : n_i;
     }
-    let toon_component: float = terms.toon_component;
 #endif
     // On-surface rebounces of the metallic lobe, summed as a series: a ray single scattering loses meets
     // the microsurface again and leaves with Ebar, else bounces on, each meeting weighted by F = albedo
@@ -687,6 +689,41 @@ __extern_cpp public struct MaterialTerms {
         * (0.314529f - mu * 0.348307f)
         + smoother * smoother * smoother * smoother * 0.272297f, 1.0f);
     let rebounce: float3 = min(1.0f / (1.0f - material.albedo * lost), float3(1.0f / max(return_up, BIAS)));
+#ifdef FK_TOON
+    return ViewTerms(v, n_i, frame, scale, sheen_component, sheen, view, rebounce, toon_view, toon_axis);
+#else
+    return ViewTerms(v, n_i, frame, scale, sheen_component, sheen, view, rebounce);
+#endif
+}
+
+// The values of one half vector ggx_n at a vertex, the lobes' weights and shares
+[CudaDeviceExport] public func precomputeHalf(in_dir: float3, ggx_n: float3, material: Material, eta_i: float,
+    eta_o: float, terms: MaterialTerms, view_terms: ViewTerms) -> HalfTerms {
+    let v: float3 = view_terms.v;
+    let n_i: float3 = view_terms.n_i;
+    let frame: AnisotropicFrame = view_terms.frame;
+    // Calculate shared half vector dot products
+    let v_dot_h: float = dot(ggx_n, v);
+    let n_dot_h: float = dot(n_i, ggx_n);
+    // Try refraction through the properly oriented half vector
+    let eta: float = eta_i / eta_o;
+    let refracted: float3 = normalize(refract(in_dir, ggx_n, eta));
+    // F_dielectric = specular_tint * F0 + (1 - specular_tint * F0) * (F(eta_level) - F0) / (1 - F0)
+    // F_dielectric = 1 past total internal reflection: eta_i^2 * (1 - v_dot_h^2) >= eta_o^2
+    let f0: float = terms.f0;
+    let eta_level: float = terms.eta_level;
+    let F_level: float = fresnel(abs(v_dot_h), eta_i > eta_o ? eta_level : 1.0f, eta_i > eta_o ? 1.0f : eta_level);
+    let total: bool = eta_i * eta_i * (1.0f - v_dot_h * v_dot_h) >= eta_o * eta_o;
+    let F_dielectric: float3 = total ? float3(1.0f) : material.specular_tint * f0 + (1.0f - material.specular_tint * f0)
+        * (F_level - f0) / (1.0f - f0);
+    let scale: float3 = view_terms.scale;
+    let sheen_component: float = view_terms.sheen_component;
+    let sheen: float3 = view_terms.sheen;
+    let view: float3 = view_terms.view;
+#ifdef FK_TOON
+    let toon_component: float = terms.toon_component;
+#endif
+    let rebounce: float3 = view_terms.rebounce;
     var F: float3 = mix(F_dielectric, material.albedo * rebounce, material.metallic) * scale;
     let F_greyscale: float = rgb_to_greyscale(F);
     // BSDF weights (these are artistic choices to balance the lobes)
@@ -720,7 +757,7 @@ __extern_cpp public struct MaterialTerms {
     return HalfTerms(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight,
         p_diffuse, p_reflect, p_refract, terms.translucent_share, sheen, p_sheen_velvet, view, frame.tangent,
         frame.alphas, visible, toon_component * base_component_inv, terms.toon, terms.toon_a, terms.toon_s,
-        terms.toon_b, terms.toon_glossy, terms.toon_norm, toon_view, toon_axis);
+        terms.toon_b, terms.toon_glossy, terms.toon_norm, view_terms.toon_view, view_terms.toon_axis);
 #else
     return HalfTerms(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect, p_refract, terms.translucent_share, sheen, p_sheen_velvet, view, frame.tangent, frame.alphas, visible);
 #endif
@@ -944,11 +981,12 @@ __extern_cpp public struct MaterialTerms {
     let n_i_dot_v: float = abs(n_dot_v);
     // Material constants
     let alpha: float = material.roughness * material.roughness;
+    let terms: MaterialTerms = precomputeMaterial(material, eta_i, eta_o);
+    let view_terms: ViewTerms = precomputeView(in_dir, n, material, terms);
     // Sample using GGX importance sampling for potential refractive or reflective case
-    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
+    let frame: AnisotropicFrame = view_terms.frame;
     let ggx_n: float3 = sampleHalfVector(v, n_i, alpha, frame, random_state);
-    let lobes: HalfTerms = precomputeHalf(in_dir, v, n_i, ggx_n, material, eta_i, eta_o, frame,
-        precomputeMaterial(material, eta_i, eta_o));
+    let lobes: HalfTerms = precomputeHalf(in_dir, ggx_n, material, eta_i, eta_o, terms, view_terms);
 
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     let random_p: Random = pcg(random_state);
@@ -1052,7 +1090,9 @@ __extern_cpp public struct MaterialTerms {
     let n_dot_v: float = dot(n, v);
     let n_i: float3 = n * sign(n_dot_v);
     let alpha: float = material.roughness * material.roughness;
-    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
+    let terms: MaterialTerms = precomputeMaterial(material, eta_i, eta_o);
+    let view_terms: ViewTerms = precomputeView(in_dir, n, material, terms);
+    let frame: AnisotropicFrame = view_terms.frame;
     var ggx_n: float3 = normalize(v + out_dir);
     var l_dot_h: float = dot(out_dir, ggx_n);
     if (lobe == LOBE_DIFFUSE) {
@@ -1077,12 +1117,11 @@ __extern_cpp public struct MaterialTerms {
     if (lobe == LOBE_TOON) {
         // Toon half-vector of sampleBSDF
         ggx_n = sampleHalfVector(v, n_i, alpha, frame, random_state);
-        // The toon's alpha from l to R = 2 * n_dot_v * n - v (glossy), n (diffuse) in place of l_dot_h
-        l_dot_h = dot(out_dir, select(n_i, normalize(2.0f * dot(n_i, v) * n_i - v), material.toon.x < 0.0f));
+        // The toon's alpha from l to R in place of l_dot_h
+        l_dot_h = dot(out_dir, view_terms.toon_axis);
     }
 #endif
-    let lobes: HalfTerms = precomputeHalf(in_dir, v, n_i, ggx_n, material, eta_i, eta_o, frame,
-        precomputeMaterial(material, eta_i, eta_o));
+    let lobes: HalfTerms = precomputeHalf(in_dir, ggx_n, material, eta_i, eta_o, terms, view_terms);
     let pdf: float = lobeDensity(dot(n_i, out_dir), l_dot_h, abs(n_dot_v), alpha, lobes, eta_i, eta_o, lobe);
     // Directions the lobe can't sample carry no throughput
     if (!(pdf > 0.0f)) {
