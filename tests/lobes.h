@@ -4,6 +4,7 @@ using TermsV = Vector<float, 3>;
 // replay takes it: diffuse 0, refract 1, reflect 2, sheen 4, toon 6, directions it can't sample carrying nothing
 static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m, float eta_i, float eta_o,
     unsigned lobe, unsigned random_init) {
+    const MaterialTerms terms = precomputeMaterial(m, eta_i, eta_o);
     const float n_dot_v = dot_0(n, negate_0(in_dir)), alpha = m.roughness * m.roughness;
     const TermsV n_i = n * TermsV(sign_0(n_dot_v));
     const AnisotropicFrame frame = anisotropicFrame(m, n_i);
@@ -11,34 +12,31 @@ static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m
     float pdf, l_dot_h = 0;
     TermsV throughput;
     if (lobe == 0) {
-        BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, sampledHalf(in_dir, n, m, random_init, frame), m,
-            eta_i, eta_o, frame);
-        h.translucent_share = translucentShare(m);
+        const HalfTerms h = precomputeHalf(in_dir, negate_0(in_dir), n_i,
+            sampledHalf(in_dir, n, m, random_init, frame), m, eta_i, eta_o, frame, terms);
         pdf = diffusePDF(n_i_dot_l, 0, n_i_dot_v, alpha, h, eta_i, eta_o);
         throughput = diffuseBSDF(out_dir, n_i, alpha, m, h);
     } else if (lobe == 1) {
         const TermsV h_t = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
         l_dot_h = dot_0(out_dir, h_t);
-        BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, h_t, m, eta_i, eta_o, frame);
-        h.translucent_share = translucentShare(m);
+        const HalfTerms h = precomputeHalf(in_dir, negate_0(in_dir), n_i, h_t, m, eta_i, eta_o, frame, terms);
         pdf = refractPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, h, eta_i, eta_o);
         throughput = refractBSDF(out_dir, n_i, alpha, m, h);
     } else if (lobe == 4) {
-        BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, reflectedHalf(in_dir, out_dir), m, eta_i, eta_o, frame);
-        h.translucent_share = translucentShare(m);
+        const HalfTerms h = precomputeHalf(in_dir, negate_0(in_dir), n_i, reflectedHalf(in_dir, out_dir), m, eta_i,
+            eta_o, frame, terms);
         pdf = sheenVelvetPDF(n_i_dot_l, 0, n_i_dot_v, alpha, h, eta_i, eta_o);
         throughput = sheenVelvetBSDF(out_dir, n_i, alpha, m, h);
 #ifndef FK_UNTOON
     } else if (lobe == 6) {
-        BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, sampledHalf(in_dir, n, m, random_init, frame), m,
-            eta_i, eta_o, frame);
-        h.translucent_share = translucentShare(m);
+        const HalfTerms h = precomputeHalf(in_dir, negate_0(in_dir), n_i,
+            sampledHalf(in_dir, n, m, random_init, frame), m, eta_i, eta_o, frame, terms);
         pdf = toonPDF(n_i_dot_l, dot_0(out_dir, h.toon_axis), n_i_dot_v, alpha, h, eta_i, eta_o);
         throughput = toonBSDF(out_dir, n_i, alpha, m, h);
 #endif
     } else {
-        BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, reflectedHalf(in_dir, out_dir), m, eta_i, eta_o, frame);
-        h.translucent_share = translucentShare(m);
+        const HalfTerms h = precomputeHalf(in_dir, negate_0(in_dir), n_i, reflectedHalf(in_dir, out_dir), m, eta_i,
+            eta_o, frame, terms);
         pdf = reflectPDF(n_i_dot_l, 0, n_i_dot_v, alpha, h, eta_i, eta_o);
         throughput = reflectBSDF(out_dir, n_i, alpha, m, h);
     }

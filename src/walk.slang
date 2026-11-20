@@ -2117,6 +2117,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     let n_i: float3 = surface.smooth_n * sign(n_dot_v);
                     let n_i_dot_l: float = dot(n_i, dir);
                     let alpha: float = material.roughness * material.roughness;
+                    let terms: MaterialTerms = precomputeMaterial(material, eta.x, eta.y);
                     let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
                     var ggx_n: float3 = reflectedHalf(in_dir, dir);
                     if (lobe_index == LOBE_REFRACT) {
@@ -2125,9 +2126,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     if (lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_TOON) {
                         ggx_n = sampledHalf(in_dir, surface.smooth_n, material, surface.random_state, frame);
                     }
-                    var lobe_terms: BSDFLobes = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta.x, eta.y,
-                        frame);
-                    lobe_terms.translucent_share = translucentShare(material);
+                    let lobe_terms: HalfTerms = precomputeHalf(in_dir, negate(in_dir), n_i, ggx_n, material, eta.x,
+                        eta.y, frame, terms);
                     var pdf: float = 0.0f;
                     var lobe_throughput: float3 = float3(0.0f);
                     switch (lobe_index) {
