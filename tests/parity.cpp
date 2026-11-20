@@ -3,6 +3,7 @@
 #ifdef __CUDACC__
 #include "renderer.h"
 #include "pathtracer.cuh"
+#include "terms.h"
 typedef float3 Vec;
 typedef float2 Vec2;
 typedef BSDFMaterial Mat;
@@ -12,7 +13,7 @@ __device__ Vec2 vec2(const float* a) { return make_float2(a[0], a[1]); }
 __device__ float rnorm(const float* a) { return rnorm3df(a[0], a[1], a[2]); }
 #else
 #include "pathtracer.cpp"
-#include "lobes.h"
+#include "terms.h"
 #define __device__
 #define __global__
 typedef Vector<float, 3> Vec;
@@ -101,10 +102,7 @@ __device__ Result evaluate(const Case& c) {
         r.connected[lobe] = vec(weighted);
         r.connected_pdf[lobe] = s.pdf;
     }
-    FixedArray<Vec, 5> throughputs;
-    FixedArray<float, 5> pdfs;
-    r.bsdf = BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19],
-        dot_0(vec(c.in + 9), -in_dir) * dot_0(vec(c.in + 9), out_dir) <= 0, c.random_state, &throughputs, &pdfs);
+    r.bsdf = faceBSDF(in_dir, out_dir, n, vec(c.in + 9), material, c.in[18], c.in[19], c.random_state);
     r.nee = neeDecision(material, dot_0(n, -in_dir), c.in[18], c.in[19]);
     Reservoir a = {}, b = {};
     const float turned[] = {c.in[13], c.in[14], c.in[12]};
@@ -120,6 +118,8 @@ __device__ Result evaluate(const Case& c) {
     r.beer_lambert = beerLambert(c.in[18] + c.in[19], albedo);
     r.point_light = pointLightRadiance(albedo, c.in[18], 1.0f + c.in[16]);
     const bool refracted = (dot3(in_dir, vec(c.in + 9)) <= 0) != (dot3(out_dir, vec(c.in + 9)) > 0);
+    FixedArray<Vec, 5> throughputs;
+    FixedArray<float, 5> pdfs;
     BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, c.random_state, &throughputs, &pdfs);
     const float pdf = 0.5f + c.in[17];
     float balance[3] = {}, power[3] = {};
