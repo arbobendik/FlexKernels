@@ -1,5 +1,9 @@
 import pathtracer;
 
+// The test's tensor binding: none, white, at the tests' default side
+export public uint fkBlueNoise(uint x, uint y, uint t) { return NOISE_UNBOUND; }
+export public uint fkBlueNoiseSize() { return 512u; }
+
 RWStructuredBuffer<Reservoir> reservoirs;
 #ifdef FK_RESTIR
 RWStructuredBuffer<uint> queue;

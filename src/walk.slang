@@ -36,14 +36,12 @@ public static const uint PATH_STRATUM = 25u;
 
 // Random streams besides the per vertex ones
 public static const uint STREAM_NEE = 64u;
-public static const uint STREAM_RR = 128u;
 public static const uint STREAM_SELECT = 193u;
-public static const uint STREAM_COVERAGE = 256u;
-// Free flight
+// Tracking through a varying medium
 public static const uint STREAM_MEDIUM = 320u;
 // Tracking from the camera
 public static const uint STREAM_CAMERA = 384u;
-// Sky samples, apart from STREAM_COVERAGE where coverage is drawn
+// Sky samples
 #ifdef FK_FCPT_WALK
 public static const uint STREAM_SKY = 448u;
 #else
@@ -100,7 +98,7 @@ __extern_cpp public struct Selection {
     __extern_cpp public float w_sum;
     __extern_cpp public float3 color;
     __extern_cpp public uint random_state;
-#ifdef FK_FCPT_WALK
+#ifdef FK_RESTIR
     // Emission of varying media along the path, added unresampled
     __extern_cpp public float3 glow = float3(0.0f);
     // Contributions summed, not resampled
@@ -355,13 +353,14 @@ func shadowContext(surface: Surface, turned: bool, extinction: float3, filling: 
 }
 #endif
 
-// T(d) = exp(-extinction * d), free flight sampled by sigma
-// Unscattered: T(d) / P(t > d) = exp(-extinction * d) / exp(-sigma * d) = exp((sigma - extinction) * d)
-// Scattered at d: scatter * T(d) / PDF(d) = scatter * exp(-extinction * d) / (sigma * exp(-sigma * d))
-// => scatter * passed / sigma
-func flightWeight(scatter: float3, extinction: float3, sigma: float, distance: float, scatters: bool) -> float3 {
-    let passed: float3 = exp((float3(sigma) - extinction) * distance);
-    return select(passed, scatter * passed / sigma, scatters);
+// T(d) = exp(-extinction * d), free flight by channel c of probability 1 / 3, PDF_c(t) = scatter_c * exp(-scatter_c * t)
+// PDF(t) = sum_c scatter_c * exp(-scatter_c * t) / 3, P(t > d) = sum_c exp(-scatter_c * d) / 3
+// Unscattered: T(d) / P(t > d) = 3 * exp(-extinction * d) / sum_c exp(-scatter_c * d)
+// Scattered at d: scatter * T(d) / PDF(d) = 3 * scatter * exp(-extinction * d) / sum_c scatter_c * exp(-scatter_c * d)
+func flightWeight(scatter: float3, extinction: float3, distance: float, scatters: bool) -> float3 {
+    let survived: float3 = exp(- scatter * distance);
+    let passed: float3 = 3.0f * exp(- extinction * distance);
+    return select(passed / (survived.x + survived.y + survived.z), scatter * passed / dot(scatter, survived), scatters);
 }
 // z = 1 - 2 * u uniform in [-1, 1], phi = 2 * PI * v
 // => uniform on the sphere, PDF = 1 / (4 * PI)
@@ -972,10 +971,14 @@ public struct HookScene : IScene {
     public Shift walkCallable(Domain dom, Reservoir r, bool replay, float scale, inout Selection sel);
     __target_intrinsic(cuda, "fcptPixelOf($0, $1)")
     public float2 pixelOf(float3 position, bool previous);
+    __target_intrinsic(wgsl, "(true)")
     __target_intrinsic(cuda, "fcptRestirUsed()")
     public bool restirUsed();
+    // On wgsl no path misses, a pixel's every path its domain's, and restir_spatial stores the colour
+    __target_intrinsic(wgsl, "vec3<f32>(0.0f)")
     __target_intrinsic(cuda, "fcptMissed($0, $1, $2)")
     public float3 missed(int2 p, Domain dom, float scale);
+    __target_intrinsic(wgsl, "_ = $1")
     __target_intrinsic(cuda, "fcptAddColor($0, $1)")
     public void addColor(int2 p, float4 color);
     __target_intrinsic(wgsl, "atomicAdd(&shift_queue.counts[$0], $1)")
@@ -1052,8 +1055,6 @@ public struct HookScene : IScene {
 #endif
 
 #ifdef FK_RESTIR
-[ForceInline] uint select(uint f, uint t, bool cond) { return select(cond, t, f); }
-
 // Shadow test toward a light sample, short of its end
 func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_offset: float, light_dir: float3
 #ifdef FK_FCPT_WALK
@@ -1479,28 +1480,32 @@ uint extractBits(uint e, uint offset, uint count) {
     spectral_weight: float3,
     out ended: Shift) -> bool {
     ended = Shift(float3(0.0f), 0.0f);
-    // Free flight by the mean scattering coefficient, or tracking under a varying medium's majorant
+    // Free flight by a channel's scattering coefficient, drawn uniformly, or tracking under a varying medium's majorant
     let varying: bool = scene.varyingUsed() && filling != UINT_MAX;
-    // sigma: majorant of a varying medium, else mean scattering
-    let sigma: float = varying ? scene.majorant(filling) : (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f;
-    if (replay && b == stop && rc == RC_SURFACE && sigma > 0.0f) {
+    // Collisions: under a varying medium's majorant, else of any channel's scattering
+    let collides: bool = varying ? scene.majorant(filling) > 0.0f : any(scatter_in > 0.0f);
+    if (replay && b == stop && rc == RC_SURFACE && collides) {
         return true;
     }
-    prev.rough = prev.rough && !(sigma > 0.0f);
+    prev.rough = prev.rough && !collides;
     var tracking: uint = stream(r.seed, select(b + STREAM_MEDIUM, STREAM_CAMERA, b == UINT_MAX));
     // Tracking weight and emission up to the next collision
     weight = float3(1.0f);
     glowed = float3(0.0f);
     while (hit.instance_index != UINT_MAX) {
-        // PDF(t) = sigma * exp(-sigma * t)
-        // CDF(t) = 1 - exp(-sigma * t) = u
-        // => t = -ln(1 - u) / sigma
-        var along: float = - log(1.0f - pcg(stream(r.seed, select(b + STREAM_MEDIUM, STREAM_CAMERA,
-            b == UINT_MAX))).value) / sigma;
+        // Nothing to scatter at: no flight
+        var along: float = hit.distance;
         if (varying) {
             along = scene.trackMedium(filling, ray.origin, ray.unit_direction, hit.distance, tracking, weight, glowed,
                 scatter_in, extinction_in, g_in, select(b, 0u, b == UINT_MAX),
                 select(prev.lobe, LOBE_NONE, b == UINT_MAX), b == UINT_MAX);
+        } else if (collides) {
+            // c = floor(3 u), PDF_c(t) = scatter_c * exp(-scatter_c * t)
+            // CDF_c(t) = 1 - exp(-scatter_c * t) = 3 u - c
+            // => t = -ln(1 - (3 u - c)) / scatter_c
+            let u: float = 3.0f * draw(noiseAddress(r.seed, b), NOISE_FLIGHT).value;
+            let c: uint = min(uint(u), 2u);
+            along = - log(1.0f - (u - float(c))) / scatter_in[c];
         }
         if (!(along < hit.distance)) {
             break;
@@ -1511,7 +1516,7 @@ uint extractBits(uint e, uint offset, uint count) {
         glowed = float3(0.0f);
         b++;
         ray.origin += along * ray.unit_direction;
-        throughput *= select(flightWeight(scatter_in, extinction_in, sigma, along, true),
+        throughput *= select(flightWeight(scatter_in, extinction_in, along, true),
             select(weight, float3(upsample(weight, wavelength)), wavelength > 0.0f), varying);
         tracking = stream(r.seed, b + STREAM_MEDIUM);
         weight = float3(1.0f);
@@ -1557,7 +1562,7 @@ uint extractBits(uint e, uint offset, uint count) {
             }
             offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
             let survival_probability: float = survivalProbability(abs(throughput), density);
-            if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
+            if (b >= scene.maxBounces() || (survival_probability < 1.0f && survival_probability < draw(noiseAddress(r.seed, b), NOISE_RR).value)) {
                 return true;
             }
             density *= survival_probability;
@@ -1572,6 +1577,28 @@ uint extractBits(uint e, uint offset, uint count) {
         hit = scene.traverseInstanceBVH(ray, true, POW32, false, noHit(), false);
     }
     return false;
+}
+
+// The ray carried to hit through its medium, and its cone widened
+[ForceInline] func toHit<S: IScene>(scene: S, hit: Hit, replay: bool, filling: uint, scatter_in: float3,
+    extinction_in: float3, weight: float3, glowed: float3, spread: float, density: float, spectral_weight: float3,
+    wavelength: float, inout ray: Ray, inout throughput: float3, inout width: float, inout sel: Selection) {
+    // Project ray origin to hit point
+    ray.origin += hit.distance * ray.unit_direction;
+    if (mediaUsed()) {
+        // Medium transmittance to the hit, and a varying medium's emission
+        if (scene.varyingUsed() && filling != UINT_MAX) {
+            if (!replay) {
+                addGlow(sel, pathColor(throughput * glowed, spectral_weight, wavelength) / density);
+            }
+            throughput *= weight;
+        } else {
+            throughput *= flightWeight(scatter_in, extinction_in, hit.distance, false);
+        }
+    }
+    if (coneUsed()) {
+        width += spread * hit.distance;
+    }
 }
 
 // An escape along ray, which ends the walk: its environment weighed against the sky's light sampling, returned
@@ -1708,22 +1735,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             return escape(scene, r, replay, stop, rc, end, end_type, scale, strata, chain, chain_throughput, b, ray,
                 throughput, density, prev, nee_vertex, sky_pdf, spectral_weight, wavelength, sel);
         }
-        // Project ray origin to hit point
-        ray.origin += hit.distance * ray.unit_direction;
-        if (mediaUsed()) {
-            // Medium transmittance to the hit, and a varying medium's emission
-            if (scene.varyingUsed() && filling != UINT_MAX) {
-                if (!replay) {
-                    addGlow(sel, pathColor(throughput * glowed, spectral_weight, wavelength) / density);
-                }
-                throughput *= weight;
-            } else {
-                throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
-            }
-        }
-        if (coneUsed()) {
-            width += spread * hit.distance;
-        }
+        toHit(scene, hit, replay, filling, scatter_in, extinction_in, weight, glowed, spread, density, spectral_weight,
+            wavelength, ray, throughput, width, sel);
 #ifdef FK_FCPT_WALK
         camera_b = b;
 #endif
@@ -1756,7 +1769,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 surface = emitting(surface, !passed);
             }
             if (coverageUsed()) {
-                surface = uncovered(surface, pcg(stream(r.seed, b + STREAM_COVERAGE)).value);
+                surface = uncovered(surface, draw(noiseAddress(r.seed, b), NOISE_COVERAGE).value);
             }
             front_n = surface.smooth_n;
             if (mediaUsed()) {
@@ -2237,7 +2250,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (point_light_lighting || scatter) {
                 survival_probability = survivalProbability(abs(throughput), density);
             }
-            if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
+            if (b >= scene.maxBounces() || (survival_probability < 1.0f && survival_probability < draw(noiseAddress(r.seed, b), NOISE_RR).value)) {
                 break;
             }
             density *= survival_probability;
@@ -2289,22 +2302,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             return escape(scene, r, replay, stop, rc, end, end_type, scale, strata, chain, chain_throughput, b, ray,
                 throughput, density, prev, nee_vertex, sky_pdf, spectral_weight, wavelength, sel);
         }
-        // Project ray origin to hit point
-        ray.origin += hit.distance * ray.unit_direction;
-        if (mediaUsed()) {
-            // Medium transmittance to the hit, and a varying medium's emission
-            if (scene.varyingUsed() && filling != UINT_MAX) {
-                if (!replay) {
-                    addGlow(sel, pathColor(throughput * glowed, spectral_weight, wavelength) / density);
-                }
-                throughput *= weight;
-            } else {
-                throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
-            }
-        }
-        if (coneUsed()) {
-            width += spread * hit.distance;
-        }
+        toHit(scene, hit, replay, filling, scatter_in, extinction_in, weight, glowed, spread, density, spectral_weight,
+            wavelength, ray, throughput, width, sel);
     }
     return fail;
 }
@@ -2644,7 +2643,14 @@ public func queuedShift<S: IScene>(scene: S, workgroup_id: uint3, local_invocati
 #endif
 
 #ifdef FK_RESTIR_PASSES
-#ifdef FK_FCPT_WALK
+// The domain of the path of seed at p, on wgsl the pixel's own, dom as given
+func seedDomain<S: IScene>(scene: S, p: int2, seed: uint, inout dom: Domain) -> bool {
+    __target_switch {
+    case wgsl: return true;
+    default: return scene.storedDomainInitial(p, seed, dom);
+    }
+}
+
 // Initial candidates of p, each path from the domain of its own seed
 public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     let p: int2 = int2(global_invocation_id.xy);
@@ -2662,18 +2668,19 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     initial.sums = !scene.restirUsed();
     // Seed of a selection of nothing, the first path's
     initial.r.seed = stream(pixel_seed, 0u);
-    var hit: Hit = noHit();
+    // The pixel's own hit where the selection holds no path
+    var hit: Hit = dom.hit;
     let scale: float = 1.0f / float(scene.samples());
     // The colour of the paths that miss, summed here and added with the rest once
     var seen: float3 = float3(0.0f);
     for (var i: uint = 0u; i < scene.samples(); i++) {
         var r: Reservoir = emptyReservoir();
-        r.seed = stream(pixel_seed, i);
         let k: uint = scene.frame() * scene.samples() + i;
+        r.seed = noiseOrigin(global_invocation_id.xy, k);
         r.path = insertBits(insertBits(0u, 1u, PATH_STRATIFIED, 1u), (offset + k * 2654435769u) >> 25u,
             PATH_STRATUM, 7u);
-        var path: Domain = {};
-        if (!scene.storedDomainInitial(p, r.seed, path)) {
+        var path: Domain = dom;
+        if (!seedDomain(scene, p, r.seed, path)) {
             seen += scene.missed(p, path, scale);
             continue;
         }
@@ -2688,31 +2695,6 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     scene.addColor(p, float4(select(seen, seen + initial.color, initial.sums), 1.0f));
     scene.storeReservoirInitial(p, finalize(initial, 1.0f), hit);
 }
-#else
-public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
-    let p: int2 = int2(global_invocation_id.xy);
-    var dom: Domain = {};
-    if (!scene.currentDomain(p, dom)) {
-        scene.storeReservoirInitial(p, Reservoir(), dom.hit);
-        return;
-    }
-    let pixel_seed: uint = stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y);
-    // Wavelength strata of the pixel's samples over all frames: k * 2^32 / golden ratio from a fixed offset per pixel
-    let offset: uint = stream(global_invocation_id.x + scene.renderSize().x * global_invocation_id.y,
-        STREAM_WAVELENGTH);
-    var initial: Selection = {};
-    initial.random_state = stream(pixel_seed, STREAM_SELECT);
-    for (var i: uint = 0u; i < scene.samples(); i++) {
-        var r: Reservoir = {};
-        r.seed = stream(pixel_seed, i);
-        let k: uint = scene.frame() * scene.samples() + i;
-        r.path = insertBits(insertBits(0u, 1u, PATH_STRATIFIED, 1u), (offset + k * 2654435769u) >> 25u,
-            PATH_STRATUM, 7u);
-        walk(scene, dom, r, false, 1.0f / float(scene.samples()), initial);
-    }
-    scene.storeReservoirInitial(p, finalize(initial, 1.0f), dom.hit);
-}
-#endif
 
 // Temporal reuse with the shifts of the temporal round
 public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {

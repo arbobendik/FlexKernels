@@ -2,6 +2,9 @@
 #include <vector>
 #ifdef __CUDACC__
 #include "renderer.h"
+// No blue-noise tensor bound
+__device__ unsigned fkBlueNoise(unsigned, unsigned, unsigned) { return 0xFFFFFFFFu; }
+__device__ unsigned fkBlueNoiseSize() { return 512u; }
 #include "pathtracer.cuh"
 #include "terms.h"
 typedef float3 Vec;

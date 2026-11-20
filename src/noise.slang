@@ -4,6 +4,8 @@
 module noise;
 
 public static const uint UINT_MAX = 4294967295u;
+[ForceInline] public float select(float f, float t, bool cond) { return select(cond, t, f); }
+[ForceInline] public uint select(uint f, uint t, bool cond) { return select(cond, t, f); }
 
 // Blue noise: a fixed S x S x NOISE_LAYERS tensor of texels of two 16-bit ranks, toroidal in all three dimensions,
 // texel (x, y) of layer t at (t * S + y) * S + x, its ranks as channel 0 | channel 1 << 16
@@ -11,6 +13,39 @@ public static const uint UINT_MAX = 4294967295u;
 public static const uint NOISE_LAYERS = 32u;
 // The consumer's texel where no tensor is bound
 public static const uint NOISE_UNBOUND = 0xFFFFFFFFu;
+
+// Random variables of a vertex, each its own texel offset, a pair's second member channel 1 of its first's texel
+public static const uint NOISE_SECOND = 0x80000000u;
+public static const uint NOISE_HALF_1 = 0u;
+public static const uint NOISE_HALF_2 = NOISE_HALF_1 | NOISE_SECOND;
+public static const uint NOISE_COAT_1 = 1u;
+public static const uint NOISE_COAT_2 = NOISE_COAT_1 | NOISE_SECOND;
+public static const uint NOISE_LOBE = 2u;
+public static const uint NOISE_DIR_1 = 3u;
+public static const uint NOISE_DIR_2 = NOISE_DIR_1 | NOISE_SECOND;
+public static const uint NOISE_LIGHT_PICK = 4u;
+public static const uint NOISE_LIGHT_U = 5u;
+public static const uint NOISE_LIGHT_V = NOISE_LIGHT_U | NOISE_SECOND;
+public static const uint NOISE_SKY_ROW = 6u;
+public static const uint NOISE_SKY_COLUMN = NOISE_SKY_ROW | NOISE_SECOND;
+public static const uint NOISE_SKY_U = 7u;
+public static const uint NOISE_SKY_V = NOISE_SKY_U | NOISE_SECOND;
+public static const uint NOISE_RR = 8u;
+public static const uint NOISE_COVERAGE = 9u;
+public static const uint NOISE_FLIGHT = 10u;
+public static const uint NOISE_PHASE_1 = 11u;
+public static const uint NOISE_PHASE_2 = NOISE_PHASE_1 | NOISE_SECOND;
+public static const uint NOISE_HAIR_1 = 12u;
+public static const uint NOISE_HAIR_2 = NOISE_HAIR_1 | NOISE_SECOND;
+public static const uint NOISE_HAIR_LOBE = 13u;
+// Random variables of a path, read at bounce 0 past the vertex's
+public static const uint NOISE_CAMERA_X = 14u;
+public static const uint NOISE_CAMERA_Y = NOISE_CAMERA_X | NOISE_SECOND;
+public static const uint NOISE_LENS_X = 15u;
+public static const uint NOISE_LENS_Y = NOISE_LENS_X | NOISE_SECOND;
+public static const uint NOISE_SELECT = 16u;
+// Texels per vertex, the stride of noiseAddress's steps
+public static const uint NOISE_VARIABLES = 17u;
 
 __extern_cpp public struct Random {
     __extern_cpp public uint state;
@@ -47,7 +82,7 @@ __extern_cpp public struct Random {
     // Channels 0 and 1 of (x, y), then of the texel across
     var ranks: uint[4];
     for (var i: uint = 0u; i < 4u; i++) {
-        var l: uint = i < 2u ? x : (x + size / 2u) & (size - 1u);
+        var l: uint = select((x + size / 2u) & (size - 1u), x, i < 2u);
         var r: uint = y;
         for (var k: uint = 0u; k < 4u; k++) {
             let next: uint = l ^ (hash(r ^ t << 16u ^ k << 28u ^ (i & 1u) << 31u) & (size - 1u));
@@ -60,7 +95,7 @@ __extern_cpp public struct Random {
     let unbound: bool = ranks[0] == 0xFFFFu && ranks[1] == 0xFFFFu;
     let across_unbound: bool = ranks[2] == 0xFFFFu && ranks[3] == 0xFFFFu;
     let trade: bool = (unbound && ranks[3] != 0xFFFFu) || (across_unbound && ranks[1] != 0xFFFFu);
-    return ranks[0] | (trade ? ranks[3] : ranks[1]) << 16u;
+    return ranks[0] | select(ranks[1], ranks[3], trade) << 16u;
 }
 
 // The start's pass, one thread per texel
@@ -104,8 +139,8 @@ func noiseRoot(q: uint) -> uint {
     var root: uint = 0u;
     for (var bit: uint = 1u << 28u; bit != 0u; bit >>= 2u) {
         let step: bool = rest >= root + bit;
-        rest -= step ? root + bit : 0u;
-        root = (root >> 1u) + (step ? bit : 0u);
+        rest -= select(0u, root + bit, step);
+        root = (root >> 1u) + select(0u, bit, step);
     }
     return root;
 }
@@ -179,4 +214,90 @@ void noiseSweep(uint3 id: SV_DispatchThreadID, uniform RWStructuredBuffer<uint> 
     if (id.x < (size / 16u) * (size / 16u) * (NOISE_LAYERS / 16u)) {
         noiseSweepBlock(tensor, sweep, colour, id.x, size);
     }
+}
+
+#ifdef FK_NOISE_LINKED
+// The consumer's tensor and its side on SPIR-V, linked in from the module importing this one's module build
+extern public uint fkBlueNoise(uint x, uint y, uint t);
+extern public uint fkBlueNoiseSize();
+#endif
+
+// The consumer's texel (x, y) of layer t, NOISE_UNBOUND without a tensor: its fkBlueNoise
+public func noiseRank(x: uint, y: uint, t: uint) -> uint {
+    __target_switch {
+    case cpp:
+        // The tests' default, white, unless a test binds a tensor
+        __requirePrelude("#ifndef FK_BLUE_NOISE\n"
+            "static uint32_t fkBlueNoise(uint32_t, uint32_t, uint32_t) { return 0xFFFFFFFFu; }\n#endif\n");
+        __intrinsic_asm "fkBlueNoise($0, $1, $2)";
+    case cuda:
+    case wgsl:
+    case glsl:
+        __intrinsic_asm "fkBlueNoise($0, $1, $2)";
+#ifdef FK_NOISE_LINKED
+    case spirv: return fkBlueNoise(x, y, t);
+#endif
+    default: return NOISE_UNBOUND;
+    }
+}
+
+// The tensor's side S, a power of two up to 2048, bound with it: the consumer's fkBlueNoiseSize
+public func noiseSize() -> uint {
+    __target_switch {
+    case cpp:
+        // The tests' default unless a test binds a tensor
+        __requirePrelude("#ifndef FK_BLUE_NOISE\nstatic uint32_t fkBlueNoiseSize() { return 512u; }\n#endif\n");
+        __intrinsic_asm "fkBlueNoiseSize()";
+    case cuda:
+    case wgsl:
+    case glsl:
+        __intrinsic_asm "fkBlueNoiseSize()";
+#ifdef FK_NOISE_LINKED
+    case spirv: return fkBlueNoiseSize();
+#endif
+    default: return 512u;
+    }
+}
+
+// Texel offset of step k: the R2 sequence's k * (1 / g, 1 / g^2) of S, g the plastic number, in 32-bit fixed point
+// => O(k) = floor(fract(k * (0.7548777, 0.5698403)) * S), the fraction's high 16 bits times S, exact for S <= 2^16
+[CudaDeviceExport] public func noiseOffset(k: uint) -> uint2 {
+    return (uint2(k * 3242174889u, k * 2447445414u) >> 16u) * noiseSize() >> 16u;
+}
+
+// Origin of the k-th path of pixel p over all frames: pixel p + O(8192 + k / 1024 + 2^20 * tile), shifted every 1024
+// paths so that no origin repeats and by its 2048-pixel tile, and its time k mod 1024; packed as x, y in 11 bits each
+// and the time in 10, the reservoir's seed. Kept modulo 2048, draw taking the texel, so that every pixel keeps a seed
+// and white numbers of its own
+[CudaDeviceExport] public func noiseOrigin(p: uint2, k: uint) -> uint {
+    let tile: uint = p.x >> 11u | p.y >> 11u << 4u;
+    let at: uint2 = (p + noiseOffset(8192u + (k >> 10u) + (tile << 20u))) & 2047u;
+    return at.x | at.y << 11u | (k & 1023u) << 22u;
+}
+
+// Address of a vertex at bounce b: origin + O(64 + b * NOISE_VARIABLES) of the origin's time, packed as the origin is.
+// O is linear in its step, O(j) + O(k) = O(j + k) to a texel, so draw's O(v) on top gives each bounce's variables
+// steps of their own, none shared with another bounce's
+[CudaDeviceExport] public func noiseAddress(origin: uint, bounce: uint) -> uint {
+    let at: uint2 = (uint2(origin & 2047u, origin >> 11u & 2047u) + noiseOffset(64u + bounce * NOISE_VARIABLES))
+        & 2047u;
+    return at.x | at.y << 11u | origin >> 22u << 22u;
+}
+
+// Variable v at a vertex's address: the rank of v's channel of the tensor's texel at address + O(v) of the address's
+// time f; without a tensor white, a pair's second member the next number after its first's. Frame f steps through the
+// layers in order within each epoch e = f / NOISE_LAYERS, and each epoch shifts the texel by O(4096 + e) and the layers
+// by L(e) = floor(fract(e / golden ratio) * NOISE_LAYERS). Out of line: its ~30 call sites inlined fault Vulkan shaders
+[noinline] [CudaDeviceExport] public func draw(address: uint, variable: uint) -> Random {
+    let f: uint = address >> 22u;
+    let e: uint = f / NOISE_LAYERS;
+    let at: uint2 = (uint2(address & 2047u, address >> 11u & 2047u) + noiseOffset(variable & ~NOISE_SECOND)
+        + noiseOffset(4096u + e)) & (noiseSize() - 1u);
+    // L(e) in 32-bit fixed point, NOISE_LAYERS = 2^5
+    let texel: uint = noiseRank(at.x, at.y, (f + (e * 2654435769u >> 27u)) % NOISE_LAYERS);
+    let second: bool = (variable & NOISE_SECOND) != 0u;
+    let white: Random = pcg(stream(address, variable & ~NOISE_SECOND));
+    // A ternary: NVIDIA's Vulkan driver (620.70.06) miscompiles this choice as a select, the white numbers run eagerly
+    return Random(address, texel == NOISE_UNBOUND ? select(white.value, pcg(white.state).value, second)
+        : (float(select(texel & 0xFFFFu, texel >> 16u, second)) + 0.5f) / 65536.0f);
 }
