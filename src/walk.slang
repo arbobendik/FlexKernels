@@ -2172,11 +2172,12 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                         lobe_throughput = sheenVelvetBSDF(dir, n_i, alpha, material, lobe_terms);
                         break;
 #ifdef FK_TOON
-                    case LOBE_TOON:
-                        pdf = toonPDF(n_i_dot_l, dot(dir, lobe_terms.toon_axis), abs(n_dot_v), alpha, lobe_terms, eta.x,
-                            eta.y);
-                        lobe_throughput = toonBSDF(dir, n_i, alpha, material, lobe_terms);
+                    case LOBE_TOON: {
+                        let profile: ToonProfile = toonProfile(negate(in_dir), n_i, material);
+                        pdf = toonPDF(dir, n_i, profile, lobe_terms);
+                        lobe_throughput = toonBSDF(dir, n_i, profile, lobe_terms);
                         break;
+                    }
 #endif
                     default:
                         pdf = reflectPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
