@@ -647,18 +647,20 @@ __extern_cpp public struct BSDFLobes {
     // Try refraction through the properly oriented half vector
     let eta: float = eta_i / eta_o;
     let refracted: float3 = normalize(refract(in_dir, ggx_n, eta));
-    // F0 = r^2, r = sqrt(specular_level) * |eta_i - eta_o| / (eta_i + eta_o)
-    // F0 = ((eta_level - 1) / (eta_level + 1))^2 => eta_level = (1 + r) / (1 - r)
-    // F_dielectric = specular_tint * F0 + (1 - specular_tint * F0) * (F(eta_level) - F0) / (1 - F0), 1 past total
-    // internal reflection
+    // r = sqrt(specular_level) * |eta_i - eta_o| / (eta_i + eta_o)
+    // F0 = r^2
+    // F0 = ((eta_level - 1) / (eta_level + 1))^2
+    // => eta_level = (1 + r) / (1 - r)
     let r: float = min(sqrt(material.specular_level) * abs(eta_i - eta_o) / (eta_i + eta_o), 1.0f - BIAS);
     let f0: float = r * r;
     let eta_level: float = (1.0f + r) / (1.0f - r);
+    // F_dielectric = specular_tint * F0 + (1 - specular_tint * F0) * (F(eta_level) - F0) / (1 - F0)
+    // F_dielectric = 1 past total internal reflection: eta_i^2 * (1 - v_dot_h^2) >= eta_o^2
     let F_level: float = fresnel(abs(v_dot_h), eta_i > eta_o ? eta_level : 1.0f, eta_i > eta_o ? 1.0f : eta_level);
     let total: bool = eta_i * eta_i * (1.0f - v_dot_h * v_dot_h) >= eta_o * eta_o;
     let F_dielectric: float3 = total ? float3(1.0f) : material.specular_tint * f0 + (1.0f - material.specular_tint * f0)
         * (F_level - f0) / (1.0f - f0);
-    // albedo, sheen_profile's
+    // Sheen: albedo, sheen_profile's
     // BSDF = sheen * f
     // sheen = material.sheen / max(albedo, 1)
     // => integral BSDF * n_dot_l dl = material.sheen * min(albedo, 1)
@@ -684,26 +686,31 @@ __extern_cpp public struct BSDFLobes {
         toon = mark * material.albedo;
     }
 #endif
-    // On-surface rebounces of the metallic lobe, summed as a series: a ray single scattering loses meets
+    // Metal: on-surface rebounces of the metallic lobe, summed as a series: a ray single scattering loses meets
     // the microsurface again and leaves with Ebar, else bounces on, each meeting weighted by F = albedo
     // albedo = F * E + F^2 * Ebar * (1 - E) / (1 - F * (1 - Ebar)), E(mu) taken as Ebar
     // => albedo = F * Ebar * m, m = 1 / (1 - F * (1 - Ebar))
     // Limited per view so that no view returns more than it receives: m <= 1 / E_up(mu, r) with E_up >= E
-    // 1 - Ebar(alpha) = alpha^1.81585 * (2.15372 - 0.73285 alpha) / (1 + 1.28095 alpha), alpha = r^2: a fit of the white
-    // GGX lobe's average single-bounce return, measured by sampleBSDF, off by at most 0.0005
+    // 1 - Ebar(alpha) = alpha^1.81585 * (2.15372 - 0.73285 alpha) / (1 + 1.28095 alpha), alpha = r^2: a fit of the
+    // white GGX lobe's average single-bounce return, measured by sampleBSDF, off by at most 0.0005
     // E_up(mu, r) = 1.000645 - sum c_ij r^i mu^j (i >= 1, i + j <= 4): a fit of the single-bounce return from above,
     // at or above it at every measured (mu, r), at most 0.118 (low r, grazing) and on average 0.014 above it
-    // r = roughness; anisotropic metal takes r of its smoother axis, whose single bounce returns the most, so its E_up stays above
-    let smoother: float = select(material.roughness, sqrt(min(frame.alphas.x, frame.alphas.y)), frame.alphas.x > 0.0f);
-    let alpha: float = smoother * smoother;
-    let lost: float = select(0.0f, pow(alpha, 1.81585f) * (2.15372f - 0.73285f * alpha) / (1.0f + 1.28095f * alpha),
-        alpha > 0.0f);
-    let mu: float = clamp(dot(n_i, v), 0.0f, 1.0f);
-    let return_up: float = min(1.000645f - smoother * (0.003755f + mu * (-0.041334f + mu * (-0.909385f + mu * 0.352754f)))
-        - smoother * smoother * (0.276028f + mu * (1.270234f + mu * 0.0474f)) - smoother * smoother * smoother
-        * (0.314529f - mu * 0.348307f)
-        + smoother * smoother * smoother * smoother * 0.272297f, 1.0f);
-    let rebounce: float3 = min(1.0f / (1.0f - material.albedo * lost), float3(1.0f / max(return_up, BIAS)));
+    // r = roughness; anisotropic metal takes r of its smoother axis, whose single bounce returns the most, so its E_up
+    // stays above
+    var rebounce: float3 = float3(1.0f);
+    if (material.metallic > 0.0f) {
+        let smoother: float = select(material.roughness, sqrt(min(frame.alphas.x, frame.alphas.y)),
+            frame.alphas.x > 0.0f);
+        let alpha: float = smoother * smoother;
+        let lost: float = select(0.0f, pow(alpha, 1.81585f) * (2.15372f - 0.73285f * alpha)
+            / (1.0f + 1.28095f * alpha), alpha > 0.0f);
+        let mu: float = clamp(dot(n_i, v), 0.0f, 1.0f);
+        let return_up: float = min(1.000645f - smoother * (0.003755f + mu * (-0.041334f + mu * (-0.909385f
+            + mu * 0.352754f))) - smoother * smoother * (0.276028f + mu * (1.270234f + mu * 0.0474f))
+            - smoother * smoother * smoother * (0.314529f - mu * 0.348307f)
+            + smoother * smoother * smoother * smoother * 0.272297f, 1.0f);
+        rebounce = min(1.0f / (1.0f - material.albedo * lost), float3(1.0f / max(return_up, BIAS)));
+    }
     var F: float3 = mix(F_dielectric, material.albedo * rebounce, material.metallic) * scale;
     let F_greyscale: float = rgb_to_greyscale(F);
     // BSDF weights (these are artistic choices to balance the lobes)
