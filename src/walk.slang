@@ -36,14 +36,12 @@ public static const uint PATH_STRATUM = 25u;
 
 // Random streams besides the per vertex ones
 public static const uint STREAM_NEE = 64u;
-public static const uint STREAM_RR = 128u;
 public static const uint STREAM_SELECT = 193u;
-public static const uint STREAM_COVERAGE = 256u;
-// Free flight
+// Tracking through a varying medium
 public static const uint STREAM_MEDIUM = 320u;
 // Tracking from the camera
 public static const uint STREAM_CAMERA = 384u;
-// Sky samples, apart from STREAM_COVERAGE where coverage is drawn
+// Sky samples
 #ifdef FK_FCPT_WALK
 public static const uint STREAM_SKY = 448u;
 #else
@@ -355,13 +353,14 @@ func shadowContext(surface: Surface, turned: bool, extinction: float3, filling: 
 }
 #endif
 
-// T(d) = exp(-extinction * d), free flight sampled by sigma
-// Unscattered: T(d) / P(t > d) = exp(-extinction * d) / exp(-sigma * d) = exp((sigma - extinction) * d)
-// Scattered at d: scatter * T(d) / PDF(d) = scatter * exp(-extinction * d) / (sigma * exp(-sigma * d))
-// => scatter * passed / sigma
-func flightWeight(scatter: float3, extinction: float3, sigma: float, distance: float, scatters: bool) -> float3 {
-    let passed: float3 = exp((float3(sigma) - extinction) * distance);
-    return select(passed, scatter * passed / sigma, scatters);
+// T(d) = exp(-extinction * d), free flight by channel c of probability 1 / 3, PDF_c(t) = scatter_c * exp(-scatter_c * t)
+// PDF(t) = sum_c scatter_c * exp(-scatter_c * t) / 3, P(t > d) = sum_c exp(-scatter_c * d) / 3
+// Unscattered: T(d) / P(t > d) = 3 * exp(-extinction * d) / sum_c exp(-scatter_c * d)
+// Scattered at d: scatter * T(d) / PDF(d) = 3 * scatter * exp(-extinction * d) / sum_c scatter_c * exp(-scatter_c * d)
+func flightWeight(scatter: float3, extinction: float3, distance: float, scatters: bool) -> float3 {
+    let survived: float3 = exp(- scatter * distance);
+    let passed: float3 = 3.0f * exp(- extinction * distance);
+    return select(passed / (survived.x + survived.y + survived.z), scatter * passed / dot(scatter, survived), scatters);
 }
 // z = 1 - 2 * u uniform in [-1, 1], phi = 2 * PI * v
 // => uniform on the sphere, PDF = 1 / (4 * PI)
@@ -1488,28 +1487,32 @@ uint extractBits(uint e, uint offset, uint count) {
     spectral_weight: float3,
     out ended: Shift) -> bool {
     ended = Shift(float3(0.0f), 0.0f);
-    // Free flight by the mean scattering coefficient, or tracking under a varying medium's majorant
+    // Free flight by a channel's scattering coefficient, drawn uniformly, or tracking under a varying medium's majorant
     let varying: bool = scene.varyingUsed() && filling != UINT_MAX;
-    // sigma: majorant of a varying medium, else mean scattering
-    let sigma: float = varying ? scene.majorant(filling) : (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f;
-    if (replay && b == stop && rc == RC_SURFACE && sigma > 0.0f) {
+    // Collisions: under a varying medium's majorant, else of any channel's scattering
+    let collides: bool = varying ? scene.majorant(filling) > 0.0f : any(scatter_in > 0.0f);
+    if (replay && b == stop && rc == RC_SURFACE && collides) {
         return true;
     }
-    prev.rough = prev.rough && !(sigma > 0.0f);
+    prev.rough = prev.rough && !collides;
     var tracking: uint = stream(r.seed, select(b + STREAM_MEDIUM, STREAM_CAMERA, b == UINT_MAX));
     // Tracking weight and emission up to the next collision
     weight = float3(1.0f);
     glowed = float3(0.0f);
     while (hit.instance_index != UINT_MAX) {
-        // PDF(t) = sigma * exp(-sigma * t)
-        // CDF(t) = 1 - exp(-sigma * t) = u
-        // => t = -ln(1 - u) / sigma
-        var along: float = - log(1.0f - pcg(stream(r.seed, select(b + STREAM_MEDIUM, STREAM_CAMERA,
-            b == UINT_MAX))).value) / sigma;
+        // Nothing to scatter at: no flight
+        var along: float = hit.distance;
         if (varying) {
             along = scene.trackMedium(filling, ray.origin, ray.unit_direction, hit.distance, tracking, weight, glowed,
                 scatter_in, extinction_in, g_in, select(b, 0u, b == UINT_MAX),
                 select(prev.lobe, LOBE_NONE, b == UINT_MAX), b == UINT_MAX);
+        } else if (collides) {
+            // c = floor(3 u), PDF_c(t) = scatter_c * exp(-scatter_c * t)
+            // CDF_c(t) = 1 - exp(-scatter_c * t) = 3 u - c
+            // => t = -ln(1 - (3 u - c)) / scatter_c
+            let u: float = 3.0f * draw(noiseAddress(r.seed, b), NOISE_FLIGHT).value;
+            let c: uint = min(uint(u), 2u);
+            along = - log(1.0f - (u - float(c))) / scatter_in[c];
         }
         if (!(along < hit.distance)) {
             break;
@@ -1520,7 +1523,7 @@ uint extractBits(uint e, uint offset, uint count) {
         glowed = float3(0.0f);
         b++;
         ray.origin += along * ray.unit_direction;
-        throughput *= select(flightWeight(scatter_in, extinction_in, sigma, along, true),
+        throughput *= select(flightWeight(scatter_in, extinction_in, along, true),
             select(weight, float3(upsample(weight, wavelength)), wavelength > 0.0f), varying);
         tracking = stream(r.seed, b + STREAM_MEDIUM);
         weight = float3(1.0f);
@@ -1566,7 +1569,7 @@ uint extractBits(uint e, uint offset, uint count) {
             }
             offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
             let survival_probability: float = survivalProbability(abs(throughput), density);
-            if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
+            if (b >= scene.maxBounces() || (survival_probability < 1.0f && survival_probability < draw(noiseAddress(r.seed, b), NOISE_RR).value)) {
                 return true;
             }
             density *= survival_probability;
@@ -1716,7 +1719,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 }
                 throughput *= weight;
             } else {
-                throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
+                throughput *= flightWeight(scatter_in, extinction_in, hit.distance, false);
             }
         }
         if (coneUsed()) {
@@ -1754,7 +1757,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 surface = emitting(surface, !passed);
             }
             if (coverageUsed()) {
-                surface = uncovered(surface, pcg(stream(r.seed, b + STREAM_COVERAGE)).value);
+                surface = uncovered(surface, draw(noiseAddress(r.seed, b), NOISE_COVERAGE).value);
             }
             front_n = surface.smooth_n;
             if (mediaUsed()) {
@@ -2241,7 +2244,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (point_light_lighting || scatter) {
                 survival_probability = survivalProbability(abs(throughput), density);
             }
-            if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
+            if (b >= scene.maxBounces() || (survival_probability < 1.0f && survival_probability < draw(noiseAddress(r.seed, b), NOISE_RR).value)) {
                 break;
             }
             density *= survival_probability;
@@ -2329,7 +2332,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 }
                 throughput *= weight;
             } else {
-                throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
+                throughput *= flightWeight(scatter_in, extinction_in, hit.distance, false);
             }
         }
         if (coneUsed()) {
@@ -2728,8 +2731,8 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     var seen: float3 = float3(0.0f);
     for (var i: uint = 0u; i < scene.samples(); i++) {
         var r: Reservoir = emptyReservoir();
-        r.seed = stream(pixel_seed, i);
         let k: uint = scene.frame() * scene.samples() + i;
+        r.seed = noiseOrigin(global_invocation_id.xy, k);
         r.path = insertBits(insertBits(0u, 1u, PATH_STRATIFIED, 1u), (offset + k * 2654435769u) >> 25u,
             PATH_STRATUM, 7u);
         var path: Domain = {};
@@ -2764,8 +2767,8 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     initial.random_state = stream(pixel_seed, STREAM_SELECT);
     for (var i: uint = 0u; i < scene.samples(); i++) {
         var r: Reservoir = {};
-        r.seed = stream(pixel_seed, i);
         let k: uint = scene.frame() * scene.samples() + i;
+        r.seed = noiseOrigin(global_invocation_id.xy, k);
         r.path = insertBits(insertBits(0u, 1u, PATH_STRATIFIED, 1u), (offset + k * 2654435769u) >> 25u,
             PATH_STRATUM, 7u);
         walk(scene, dom, r, false, 1.0f / float(scene.samples()), initial);
