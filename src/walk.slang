@@ -36,14 +36,12 @@ public static const uint PATH_STRATUM = 25u;
 
 // Random streams besides the per vertex ones
 public static const uint STREAM_NEE = 64u;
-public static const uint STREAM_RR = 128u;
 public static const uint STREAM_SELECT = 193u;
-public static const uint STREAM_COVERAGE = 256u;
-// Free flight
+// Tracking through a varying medium
 public static const uint STREAM_MEDIUM = 320u;
 // Tracking from the camera
 public static const uint STREAM_CAMERA = 384u;
-// Sky samples, apart from STREAM_COVERAGE where coverage is drawn
+// Sky samples
 #ifdef FK_FCPT_WALK
 public static const uint STREAM_SKY = 448u;
 #else
@@ -1415,10 +1413,7 @@ uint extractBits(uint e, uint offset, uint count) {
         // PDF(t) = sigma * exp(-sigma * t)
         // CDF(t) = 1 - exp(-sigma * t) = u
         // => t = -ln(1 - u) / sigma
-        var along: float =
-            - log(1.0f - pcg(stream(r.seed, select(b + STREAM_MEDIUM, STREAM_CAMERA,
-            b == UINT_MAX))).value)
-            / sigma;
+        var along: float = - log(1.0f - draw(noiseAddress(r.seed, b), NOISE_FLIGHT).value) / sigma;
         if (varying) {
             along = scene.trackMedium(filling, ray.origin, ray.unit_direction, hit.distance, tracking, weight, glowed,
                 scatter_in, extinction_in, g_in, select(b, 0u, b == UINT_MAX),
@@ -1479,7 +1474,7 @@ uint extractBits(uint e, uint offset, uint count) {
             }
             offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
             let survival_probability: float = survivalProbability(abs(throughput), density);
-            if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
+            if (survival_probability < draw(noiseAddress(r.seed, b), NOISE_RR).value || b >= scene.maxBounces()) {
                 return true;
             }
             density *= survival_probability;
@@ -1666,7 +1661,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (fullWalk()) {
                 // Only the top layer emits
                 surface.material.emissive = select(surface.material.emissive, float3(0.0f), passed);
-                surface = uncovered(surface, pcg(stream(r.seed, b + STREAM_COVERAGE)).value);
+                surface = uncovered(surface, draw(noiseAddress(r.seed, b), NOISE_COVERAGE).value);
             }
             front_n = surface.smooth_n;
             if (fullWalk()) {
@@ -2145,7 +2140,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (point_light_lighting || scatter) {
                 survival_probability = survivalProbability(abs(throughput), density);
             }
-            if (survival_probability < pcg(stream(r.seed, b + STREAM_RR)).value || b >= scene.maxBounces()) {
+            if (survival_probability < draw(noiseAddress(r.seed, b), NOISE_RR).value || b >= scene.maxBounces()) {
                 break;
             }
             density *= survival_probability;
@@ -2633,8 +2628,8 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     var seen: float3 = float3(0.0f);
     for (var i: uint = 0u; i < scene.samples(); i++) {
         var r: Reservoir = emptyReservoir();
-        r.seed = stream(pixel_seed, i);
         let k: uint = scene.frame() * scene.samples() + i;
+        r.seed = noiseOrigin(global_invocation_id.xy, k);
         r.path = insertBits(insertBits(0u, 1u, PATH_STRATIFIED, 1u), (offset + k * 2654435769u) >> 25u,
             PATH_STRATUM, 7u);
         var path: Domain = {};
@@ -2669,8 +2664,8 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     initial.random_state = stream(pixel_seed, STREAM_SELECT);
     for (var i: uint = 0u; i < scene.samples(); i++) {
         var r: Reservoir = {};
-        r.seed = stream(pixel_seed, i);
         let k: uint = scene.frame() * scene.samples() + i;
+        r.seed = noiseOrigin(global_invocation_id.xy, k);
         r.path = insertBits(insertBits(0u, 1u, PATH_STRATIFIED, 1u), (offset + k * 2654435769u) >> 25u,
             PATH_STRATUM, 7u);
         walk(scene, dom, r, false, 1.0f / float(scene.samples()), initial);
