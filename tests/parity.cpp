@@ -32,7 +32,7 @@ struct Result {
     unsigned h_state; Vec h, cosine_hemisphere, tangent_to_world, world_to_tangent, vndf, safe_divide;
     unsigned normal_state; float normal_value; unsigned sphere_state; Vec sphere; unsigned hemisphere_state; Vec hemisphere;
     float g1; Vec normal_map;
-    BSDFLobes lobes; float n_dot_h; Vec lobe_throughput[3]; float lobe_density[3]; SampleBSDF sample;
+    Weights lobes; float n_dot_h; Vec lobe_throughput[3]; float lobe_density[3]; SampleBSDF sample;
     Vec connected[3]; float connected_pdf[3]; Vec bsdf; unsigned nee; Reservoir r; Selection sel; unsigned path;
     Vec beer_lambert, point_light, nee_balance, nee_power, straight_through;
     float importance_first, importance_second; unsigned child;
@@ -79,8 +79,8 @@ __device__ Result evaluate(const Case& c) {
     const float ggx_n[] = {h[0] * scale, h[1] * scale, h[2] * scale};
     const Vec v = vec(minus_in);
     const AnisotropicFrame frame = anisotropicFrame(material, vec(n_i));
-    r.lobes = bsdfLobes(in_dir, v, vec(n_i), vec(ggx_n), material, c.in[18], c.in[19], frame,
-        sheenAlbedo(v, vec(n_i), material));
+    r.lobes = lobeWeights(in_dir, v, vec(n_i), vec(ggx_n), frame, sheenAlbedo(v, vec(n_i), material), material,
+        c.in[18], c.in[19]);
     r.n_dot_h = dot3(vec(n_i), vec(ggx_n));
     const float p_lobe[] = {r.lobes.p_diffuse, r.lobes.p_refract, r.lobes.p_reflect};
     for (unsigned lobe = 0; lobe < 3; lobe++) {
@@ -246,7 +246,7 @@ int main() {
         print(r.safe_divide);
         printf(" %u %.9g %u", r.normal_state, r.normal_value, r.sphere_state); print(r.sphere);
         printf(" %u", r.hemisphere_state); print(r.hemisphere);
-        const BSDFLobes& l = r.lobes;
+        const Weights& l = r.lobes;
         printf(" %.9g", r.g1); print(r.normal_map);
         printf(" %.9g %.9g", l.v_dot_h, r.n_dot_h); print(l.refracted); print(l.F);
         printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g", rgb_to_greyscale(l.F), l.reflect_weight, l.diffuse_weight.x,
