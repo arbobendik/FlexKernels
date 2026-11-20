@@ -1556,8 +1556,14 @@ static const float HAIR_TILTS[4] = {-2.0f, 1.0f, 4.0f, 0.0f};
 }
 
 // Covered share straight through at IOR 1, else blocked; the uncovered rest passes
+// A coat crossed once: through *= mix(1, (1 - F(|n_c . toward|, 1, n)) * coat_tint, coat), n = max(coat_ior, 1.01),
+// the smooth coat's Fresnel in place of the refracted lobe's E_VNDF[f_c]
 [CudaDeviceExport] public func occluderTransmittance(toward: float3, n: float3, material: Material, coverage: float) -> float3 {
-    let through: float3 = material.ior == 1.0f ? straightThrough(toward, n, material) : float3(0.0f);
+    var through: float3 = material.ior == 1.0f ? straightThrough(toward, n, material) : float3(0.0f);
+    if (coatUsed() && material.coat > 0.0f) {
+        let F_c: float = fresnel(abs(dot(coatNormal(material, n), toward)), 1.0f, max(material.coat_ior, 1.01f));
+        through *= mix(float3(1.0f), (1.0f - F_c) * material.coat_tint, material.coat);
+    }
     return through * coverage + (1.0f - coverage);
 }
 
