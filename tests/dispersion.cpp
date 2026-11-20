@@ -22,11 +22,22 @@ int main() {
     printf("dispersion: n(d) - ior at most %.1e, Abbe number off by %.1e, N-BK7 n_F %.5f n_C %.5f%s\n", at_d, abbe,
         bk7_f, bk7_c, lines ? "" : "  FAILED");
     const int STEPS = 400000;
-    double white[3] = {};
+    // The primaries' reflectances project to the unit colours, integral w_c(λ) upsample(e_k, λ) dλ = (c == k), in [0, 1]
+    double white[3] = {}, projected[3][3] = {}, low = 0, high = 1;
     for (int i = 0; i < STEPS; i++) {
         const Vector<float, 3> w = wavelengthWeights(0.38f + 0.4f * (i + 0.5f) / STEPS);
         white[0] += w.x * 0.4 / STEPS, white[1] += w.y * 0.4 / STEPS, white[2] += w.z * 0.4 / STEPS;
+        for (int k = 0; k < 3; k++) {
+            const float r = upsample(Vector<float, 3>(k == 0, k == 1, k == 2), 0.38f + 0.4f * (i + 0.5f) / STEPS);
+            low = fmin(low, r), high = fmax(high, r);
+            projected[k][0] += w.x * r * 0.4 / STEPS, projected[k][1] += w.y * r * 0.4 / STEPS;
+            projected[k][2] += w.z * r * 0.4 / STEPS;
+        }
     }
+    double trip = 0;
+    for (int k = 0; k < 9; k++) trip = fmax(trip, fabs(projected[k / 3][k % 3] - (k / 3 == k % 3)));
+    printf("primaries: projected off the unit colours by at most %.1e, reflectance from %.4f to %.4f%s\n", trip, low,
+        high, trip < 2e-5 && low >= 0 && high <= 1 ? "" : "  FAILED");
     double density = 0, mean[3] = {}, least = 1, most = 0, previous = 0.38;
     for (int i = 0; i < STEPS; i++) {
         const Vector<float, 2> drawn = sampleWavelength((i + 0.5f) / STEPS);
@@ -35,7 +46,7 @@ int main() {
         least = fmin(least, drawn.x), most = fmax(most, drawn.x);
         mean[0] += w.x / drawn.y / STEPS, mean[1] += w.y / drawn.y / STEPS, mean[2] += w.z / drawn.y / STEPS;
     }
-    bool ok = lines && least >= 0.38 && most <= 0.78 && fabs(density - 1) < 1e-3;
+    bool ok = lines && trip < 2e-5 && low >= 0 && high <= 1 && least >= 0.38 && most <= 0.78 && fabs(density - 1) < 1e-3;
     for (int c = 0; c < 3; c++) ok = ok && fabs(white[c] - 1) < 1e-4 && fabs(mean[c] - 1) < 1e-3;
     printf("wavelengths: integral of w (%.5f, %.5f, %.5f), of p %.5f over %.3f to %.3f um", white[0], white[1],
         white[2], density, least, most);
