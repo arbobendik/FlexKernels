@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <initializer_list>
 #include "pathtracer.cpp"
+#include "terms.h"
 
 int main() {
     const Vector<float, 3> ONE(1, 1, 1), ZERO(0, 0, 0), up(0, 0, 1), in(0.6f, 0, -0.8f), out(0.6f, 0, 0.8f);
