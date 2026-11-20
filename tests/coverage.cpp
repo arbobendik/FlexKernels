@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <math.h>
 #include "pathtracer.cpp"
+#include "terms.h"
 
 #include <fstream>
 #include <sstream>
