@@ -84,14 +84,14 @@ __device__ Result evaluate(const Case& c) {
     const float p_lobe[] = {r.lobes.p_diffuse, r.lobes.p_refract, r.lobes.p_reflect};
     for (unsigned lobe = 0; lobe < 3; lobe++) {
         const bool side = lobe == 1 ? dot3(vec(n_i), out_dir) < 0 : dot3(vec(n_i), out_dir) > 0;
-        const Vec throughput = lobe == 0 ? diffuseBSDF(out_dir, vec(n_i), alpha, material, r.lobes)
+        const Vec throughput = lobe == 0 ? diffuseBSDF(out_dir, vec(n_i), material, r.lobes)
             : lobe == 1 ? refractBSDF(out_dir, vec(n_i), alpha, frame, material, r.lobes)
             : reflectBSDF(out_dir, vec(n_i), alpha, frame, r.lobes);
         r.lobe_throughput[lobe] = p_lobe[lobe] > 1e-6f && side ? throughput : vec(zero);
         const float n_i_dot_l = dot3(vec(n_i), out_dir), l_dot_h = dot3(out_dir, vec(ggx_n));
         const float n_i_dot_v = fabsf(n_dot_v);
         const float pdf_h = vndfPDF(v, vec(ggx_n), vec(n_i), n_i_dot_v, alpha, frame, r.lobes.v_dot_h);
-        r.lobe_density[lobe] = lobe == 0 ? diffusePDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, r.lobes, c.in[18], c.in[19])
+        r.lobe_density[lobe] = lobe == 0 ? diffusePDF(n_i_dot_l, n_i_dot_v, material, r.lobes)
             : lobe == 1 ? refractPDF(l_dot_h, pdf_h, r.lobes, c.in[18], c.in[19]) : reflectPDF(pdf_h, r.lobes);
     }
     r.sample = sampleBSDF(in_dir, n, material, c.in[18], c.in[19], c.random_state);
@@ -249,7 +249,7 @@ int main() {
         const BSDFLobes& l = r.lobes;
         printf(" %.9g", r.g1); print(r.normal_map);
         printf(" %.9g %.9g", l.v_dot_h, r.n_dot_h); print(l.refracted); print(l.F);
-        printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g", l.F_greyscale, l.reflect_weight, l.diffuse_weight.x,
+        printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g", rgb_to_greyscale(l.F), l.reflect_weight, l.diffuse_weight.x,
             l.refract_weight.x, l.p_diffuse, l.p_reflect, l.p_refract);
         for (unsigned lobe = 0; lobe < 3; lobe++) { print(r.lobe_throughput[lobe]); printf(" %.9g", r.lobe_density[lobe]); }
         print(r.sample.unit_direction); print(r.sample.throughput);
