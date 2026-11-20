@@ -62,15 +62,18 @@ fn parity_importance(node: LightBounds, p: vec3<f32>, normal: vec3<f32>) -> f32 
 const LOBES = /* wgsl */ `
 fn parity_throughput(l: vec3<f32>, n_i: vec3<f32>, alpha: f32, material: Material, lobes: BSDFLobes, lobe: u32)
     -> vec3<f32> {
+    let frame = anisotropicFrame(material, n_i);
     if (lobe == 0u) { return diffuseBSDF(l, n_i, alpha, material, lobes); }
-    if (lobe == 1u) { return refractBSDF(l, n_i, alpha, material, lobes); }
-    return reflectBSDF(l, n_i, alpha, material, lobes);
+    if (lobe == 1u) { return refractBSDF(l, n_i, alpha, frame, material, lobes); }
+    return reflectBSDF(l, n_i, alpha, frame, lobes);
 }
 fn parity_density(n_i_dot_l: f32, l_dot_h: f32, n_i_dot_v: f32, alpha: f32, lobes: BSDFLobes, eta_i: f32,
-    eta_o: f32, lobe: u32) -> f32 {
+    eta_o: f32, lobe: u32, v: vec3<f32>, h: vec3<f32>, n_i: vec3<f32>, material: Material) -> f32 {
+    let frame = anisotropicFrame(material, n_i);
     if (lobe == 0u) { return diffusePDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, lobes, eta_i, eta_o); }
-    if (lobe == 1u) { return refractPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, lobes, eta_i, eta_o); }
-    return reflectPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, lobes, eta_i, eta_o);
+    let pdf_h = vndfPDF(v, h, n_i, n_i_dot_v, alpha, frame, lobes.v_dot_h);
+    if (lobe == 1u) { return refractPDF(l_dot_h, pdf_h, lobes, eta_i, eta_o); }
+    return reflectPDF(pdf_h, lobes);
 }
 fn parity_toward(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: Material, eta_i: f32, eta_o: f32,
     lobe: u32, random_state: u32) -> SampleBSDF {
@@ -88,7 +91,8 @@ fn parity_toward(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: 
     var lobes = bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, eta_i, eta_o, anisotropicFrame(material, n_i),
         sheenProfile(- in_dir, n_i, material));
     lobes.translucent_share = translucentShare(material);
-    let pdf = parity_density(dot(n_i, out_dir), l_dot_h, abs(n_dot_v), alpha, lobes, eta_i, eta_o, lobe);
+    let pdf = parity_density(dot(n_i, out_dir), l_dot_h, abs(n_dot_v), alpha, lobes, eta_i, eta_o, lobe,
+        - in_dir, ggx_n, n_i, material);
     if (!(pdf > 0.0)) {
         return SampleBSDF();
     }
@@ -185,7 +189,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         : `bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19], anisotropicFrame(material, n_i),
             sheenProfile(- in_dir, n_i, material))`};
     r[41] = bitcast<u32>(lobes.v_dot_h);
-    r[42] = bitcast<u32>(lobes.n_dot_h);
+    r[42] = bitcast<u32>(${FLEXLIGHT ? "lobes.n_dot_h" : "dot(n_i, ggx_n)"});
     parity_put(&r, 43u, lobes.refracted);
     parity_put(&r, 46u, lobes.F);
     r[49] = bitcast<u32>(lobes.F_greyscale);
@@ -204,7 +208,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         parity_put(&r, 56u + 4u * lobe, throughput);
         r[59u + 4u * lobe] = bitcast<u32>(${DENSITY}(dot(n_i, out_dir), dot(out_dir, ggx_n), abs(dot(n, in_dir)), alpha,
-            lobes, v[18], v[19], lobe));
+            lobes, v[18], v[19], lobe${FLEXLIGHT ? "" : ", - in_dir, ggx_n, n_i, material"}));
     }
     let sample = sampleBSDF(in_dir, n, material, v[18], v[19], random_state, vec2<f32>(0.0));
     parity_put(&r, 68u, sample.unit_direction);
