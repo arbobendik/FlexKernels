@@ -1237,6 +1237,50 @@ static const float WAVELENGTH_STEP = 0.005f;
         mass / WAVELENGTH_STEP);
 }
 
+// r(λ) = a_0 + a_1 * g_1(λ) + a_2 * g_2(λ), λ in um
+// g_1 = exp(-((λ - 0.45) / 0.03)^2 / 2), g_2 = exp(-((λ - 0.64) / 0.04)^2 / 2), g_0 = 1
+// integral w_c(λ) r(λ) dλ = rgb_c in every channel: a = G^-1 rgb, G_ck = integral w_c(λ) g_k(λ) dλ
+// G by trapezoids over WAVELENGTH_WEIGHTS; integral w_c dλ = 1 is G's first column, so r = 1 for white
+// => upsample(rgb, λ) = dot(G^-1 rgb, (1, g_1(λ), g_2(λ))), linear in rgb
+[CudaDeviceExport] public func upsample(rgb: float3, wavelength: float) -> float {
+    let a: float3 = float3(dot(float3(-0.080117f, 1.089018f, -0.008899f), rgb),
+        dot(float3(0.12177f, -1.229032f, 1.10725f), rgb), dot(float3(1.172524f, -1.216034f, 0.043502f), rgb));
+    let x_1: float = (wavelength - 0.45f) / 0.03f;
+    let x_2: float = (wavelength - 0.64f) / 0.04f;
+    return a.x + a.y * exp(-0.5f * x_1 * x_1) + a.z * exp(-0.5f * x_2 * x_2);
+}
+
+// The material at λ: each colour its reflectance at λ, emission its radiance at λ, in all three channels
+[CudaDeviceExport] public func atWavelength(material: Material, wavelength: float) -> Material {
+    var at: Material = material;
+    at.albedo = float3(upsample(material.albedo, wavelength));
+    at.emissive = float3(upsample(material.emissive, wavelength));
+    at.absorption = float3(upsample(material.absorption, wavelength));
+    at.specular_tint = float3(upsample(material.specular_tint, wavelength));
+    at.translucent = float3(upsample(material.translucent, wavelength));
+    at.sheen = float3(upsample(material.sheen, wavelength));
+    return at;
+}
+
+// The material's colours at the path's wavelength past its first dispersive hit, its own before (wavelength 0)
+[CudaDeviceExport] public func pathMaterial(material: Material, wavelength: float) -> Material {
+    return wavelength > 0.0f ? atWavelength(material, wavelength) : material;
+}
+
+// Indices at the path's wavelength past its first dispersive hit, at the material's IOR before (wavelength 0)
+[CudaDeviceExport] public func wavelengthEta(material: Material, n_dot_v: float, wavelength: float) -> float2 {
+    var refractive: Material = material;
+    refractive.ior = select(material.ior, dispersedIor(material.ior, material.dispersion, wavelength),
+        wavelength > 0.0f);
+    return vertexEta(refractive, n_dot_v);
+}
+
+// Colour at accumulation: f_c = w_c(λ) / p(λ) * upsample(f, λ), f a spectral path's throughput times the radiance
+// it meets; RGB paths (wavelength 0) unchanged
+[CudaDeviceExport] public func pathColor(f: float3, weight: float3, wavelength: float) -> float3 {
+    return wavelength > 0.0f ? weight * upsample(f, wavelength) : f;
+}
+
 // Decide between next event estimation and emission on the next hit, as the path tracer does
 [CudaDeviceExport] public func neeDecision(material: Material, n_dot_v: float, eta_i: float, eta_o: float) -> bool {
     // Calculate fresnel term
