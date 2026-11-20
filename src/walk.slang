@@ -2139,8 +2139,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 } else
 #endif
                 {
-                    // The stored lobe toward dir by its half vector terms, those of sampleBSDF where drawn
+                    // The stored lobe toward dir by its half vector's weights, those of sampleBSDF where drawn
                     let in_dir: float3 = ray.unit_direction;
+                    let v: float3 = negate(in_dir);
                     let n_i: float3 = surface.smooth_n * sign(n_dot_v);
                     let n_i_dot_l: float = dot(n_i, dir);
                     let alpha: float = material.roughness * material.roughness;
@@ -2150,39 +2151,37 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                         ggx_n = refractedHalf(in_dir, dir, surface.smooth_n, eta.x, eta.y);
                     }
                     if (lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_TOON) {
-                        ggx_n = sampledHalf(negate(in_dir), n_i, alpha, frame, surface.random_state);
+                        ggx_n = sampledHalf(v, n_i, alpha, frame, surface.random_state);
                     }
-                    let lobe_terms: BSDFLobes = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta.x, eta.y,
-                        frame);
+                    let w: Weights = lobeWeights(in_dir, v, n_i, ggx_n, frame, material, eta.x, eta.y);
                     // The VNDF's density of the half vector, the refraction's and the reflection's
-                    let pdf_h: float = vndfPDF(negate(in_dir), ggx_n, n_i, abs(n_dot_v), alpha, frame,
-                        lobe_terms.v_dot_h);
+                    let pdf_h: float = vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, w.v_dot_h);
                     var pdf: float = 0.0f;
                     var lobe_throughput: float3 = float3(0.0f);
                     switch (lobe_index) {
                     case LOBE_DIFFUSE:
-                        pdf = diffusePDF(n_i_dot_l, abs(n_dot_v), material, lobe_terms);
-                        lobe_throughput = diffuseBSDF(dir, n_i, material, lobe_terms);
+                        pdf = diffusePDF(n_i_dot_l, abs(n_dot_v), material, w);
+                        lobe_throughput = diffuseBSDF(dir, n_i, material, w);
                         break;
                     case LOBE_REFRACT:
-                        pdf = refractPDF(dot(dir, ggx_n), pdf_h, lobe_terms, eta.x, eta.y);
-                        lobe_throughput = refractBSDF(dir, n_i, alpha, frame, material, lobe_terms);
+                        pdf = refractPDF(dot(dir, ggx_n), pdf_h, w, eta.x, eta.y);
+                        lobe_throughput = refractBSDF(dir, n_i, alpha, frame, material, w);
                         break;
                     case LOBE_SHEEN_VELVET:
-                        pdf = sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), lobe_terms);
-                        lobe_throughput = sheenVelvetBSDF(dir, negate(in_dir), n_i, material, lobe_terms);
+                        pdf = sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), w);
+                        lobe_throughput = sheenVelvetBSDF(dir, v, n_i, material, w);
                         break;
 #ifdef FK_TOON
                     case LOBE_TOON: {
-                        let shape: ToonShape = toonShape(negate(in_dir), n_i, material);
-                        pdf = toonPDF(n_i_dot_l, dot(dir, shape.axis), shape, lobe_terms);
-                        lobe_throughput = toonBSDF(dir, n_i, shape, lobe_terms);
+                        let shape: ToonShape = toonShape(v, n_i, material);
+                        pdf = toonPDF(n_i_dot_l, dot(dir, shape.axis), shape, w);
+                        lobe_throughput = toonBSDF(dir, n_i, shape, w);
                         break;
                     }
 #endif
                     default:
-                        pdf = reflectPDF(pdf_h, lobe_terms);
-                        lobe_throughput = reflectBSDF(dir, n_i, alpha, frame, lobe_terms);
+                        pdf = reflectPDF(pdf_h, w);
+                        lobe_throughput = reflectBSDF(dir, n_i, alpha, frame, w);
                         break;
                     }
                     // Directions the lobe can't sample carry no throughput
