@@ -70,3 +70,113 @@ void noiseStart(uint3 id: SV_DispatchThreadID, uniform RWStructuredBuffer<uint> 
         tensor[id.x] = noiseWhite(id.x % size, id.x / size % size, id.x / (size * size), size);
     }
 }
+
+// Block number `block` of colour `colour` on sweep `sweep`: its first texel. Blocks are 8 texels and 8 layers wide,
+// a 2 x 2 x 2 colouring 16 apart, the grid shifted by the sweep, so a colour's blocks stay 8 >= 3 + 1 apart and their
+// swaps in parallel never read one another's texels. Each colour has (S / 16)^2 * NOISE_LAYERS / 16 blocks
+[CudaDeviceExport] public func noiseBlock(sweep: uint, colour: uint, block: uint, size: uint) -> uint3 {
+    let g: uint = hash(sweep * 7919u + 1u);
+    let across: uint = size / 16u;
+    let k: uint3 = uint3(block % across, block / across % across, block / (across * across));
+    let c: uint3 = uint3(colour & 1u, colour >> 1u & 1u, colour >> 2u);
+    return k * 16u + c * 8u + uint3(g & 7u, g >> 3u & 7u, g >> 6u & 7u);
+}
+
+// The swaps' arithmetic is in integers, exact on every target and compiler, so every consumer's build takes the same
+// swaps and stores the same tensor
+// exp(-x) of x = q / 2^12 in 16-bit fixed point: 2^-y, y = x * log2(e), a shift by y's integer part and its
+// fraction's 2^-f by a quartic least-squares fit on [0, 1), off by at most 4e-6; to 2e-4 with the fixed point
+func noiseExp(q: uint) -> uint {
+    // log2(e) = 23637 / 2^14
+    let y: uint = q * 23637u >> 14u;
+    let f: int = int(y & 4095u);
+    var e: int = 448;
+    e = -3486 + (e * f >> 12);
+    e = 15688 + (e * f >> 12);
+    e = -45418 + (e * f >> 12);
+    e = 65536 + (e * f >> 12);
+    return y >> 12u < 31u ? uint(e) >> (y >> 12u) : 0u;
+}
+
+// floor(sqrt(q)), digit by digit, q below 2^30
+func noiseRoot(q: uint) -> uint {
+    var rest: uint = q;
+    var root: uint = 0u;
+    for (var bit: uint = 1u << 28u; bit != 0u; bit >>= 2u) {
+        let step: bool = rest >= root + bit;
+        rest -= step ? root + bit : 0u;
+        root = (root >> 1u) + (step ? bit : 0u);
+    }
+    return root;
+}
+
+// exp(-|a - v|) of two texels' ranks in 16-bit fixed point, |a - v| their distance in the plane of values rank / 2^16,
+// from the ranks' 14 high bits: r = |a - v| * 2^14
+func noiseFalloff(a: uint, v: uint) -> uint {
+    let d0: uint = (max(a & 0xFFFFu, v & 0xFFFFu) - min(a & 0xFFFFu, v & 0xFFFFu)) >> 2u;
+    let d1: uint = (max(a >> 16u, v >> 16u) - min(a >> 16u, v >> 16u)) >> 2u;
+    return noiseExp(noiseRoot(d0 * d0 + d1 * d1) >> 2u);
+}
+
+// One neighbour n's terms of E(a) and E(b), K(d) * exp(-|a - v|) and K(d) * exp(-|b - v|), d2 = d^2 its distance
+func noiseNear(tensor: RWStructuredBuffer<uint>, n: uint3, d2: uint, a: uint, b: uint, size: uint) -> uint2 {
+    let v: uint = tensor[(n.z * size + n.y) * size + n.x];
+    return (noiseExp(d2 * 929u) >> 8u) * uint2(noiseFalloff(a, v), noiseFalloff(b, v));
+}
+
+// E(a) of texel `at` holding ranks a: its neighbours within 3 texels in its layer and within 3 layers along its pixel,
+// apart from `skip`, each K(d) * exp(-|a - v|) of their ranks v, the exponent d / 2 of d = 2 values, K(d) =
+// exp(-d^2 / 2.1^2) a Gaussian of sigma 2.1 in 8-bit fixed point, d^2 / 2.1^2 = d^2 * 929 / 2^12; at most 54 * 256 *
+// 65536 < 2^30
+func noiseEnergy(tensor: RWStructuredBuffer<uint>, at: uint3, a: uint, b: uint, skip: uint3, size: uint) -> uint2 {
+    var e: uint2 = uint2(0u);
+    for (var d: int = -3; d <= 3; d++) {
+        for (var dx: int = -3; dx <= 3; dx++) {
+            // (dx, d) within the layer
+            let n: uint3 = uint3((at.x + uint(dx + int(size))) & (size - 1u),
+                (at.y + uint(d + int(size))) & (size - 1u), at.z);
+            if ((dx != 0 || d != 0) && !all(n == skip)) {
+                e += noiseNear(tensor, n, uint(dx * dx + d * d), a, b, size);
+            }
+        }
+        // d along the pixel
+        let n: uint3 = uint3(at.x, at.y, (at.z + uint(d + int(NOISE_LAYERS))) % NOISE_LAYERS);
+        if (d != 0 && !all(n == skip)) {
+            e += noiseNear(tensor, n, uint(d * d), a, b, size);
+        }
+    }
+    return e;
+}
+
+// Block `block` of colour `colour` on sweep `sweep`: 512 attempts in order, each two texels p and q of one layer of the
+// block, swapped, both channels together, where that lowers the energy, before = E_p(a) + E_q(b) above after =
+// E_p(b) + E_q(a)
+func noiseSweepBlock(tensor: RWStructuredBuffer<uint>, sweep: uint, colour: uint, block: uint,
+    size: uint) {
+    let corner: uint3 = noiseBlock(sweep, colour, block, size);
+    let wrap: uint3 = uint3(size - 1u, size - 1u, NOISE_LAYERS - 1u);
+    for (var attempt: uint = 0u; attempt < 512u; attempt++) {
+        let h: uint = hash(stream(corner.x | corner.y << 11u | corner.z << 22u, sweep * 4096u + attempt));
+        let p: uint3 = (corner + uint3(h & 7u, h >> 3u & 7u, h >> 6u & 7u)) & wrap;
+        let q: uint3 = uint3((corner.x + (h >> 9u & 7u)) & wrap.x, (corner.y + (h >> 12u & 7u)) & wrap.y, p.z);
+        let i: uint = (p.z * size + p.y) * size + p.x;
+        let j: uint = (q.z * size + q.y) * size + q.x;
+        let a: uint = tensor[i];
+        let b: uint = tensor[j];
+        let at_p: uint2 = noiseEnergy(tensor, p, a, b, q, size);
+        let at_q: uint2 = noiseEnergy(tensor, q, b, a, p, size);
+        if (i != j && at_p.y + at_q.y < at_p.x + at_q.x) {
+            tensor[i] = b;
+            tensor[j] = a;
+        }
+    }
+}
+
+// The sweeps' pass: one thread per block of colour `colour`, the consumer running the 8 colours in turn on each sweep
+[shader("compute")] [numthreads(64, 1, 1)]
+void noiseSweep(uint3 id: SV_DispatchThreadID, uniform RWStructuredBuffer<uint> tensor, uniform uint size,
+    uniform uint sweep, uniform uint colour) {
+    if (id.x < (size / 16u) * (size / 16u) * (NOISE_LAYERS / 16u)) {
+        noiseSweepBlock(tensor, sweep, colour, id.x, size);
+    }
+}
