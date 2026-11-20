@@ -1,8 +1,8 @@
 module pathtracer;
+__exported import noise;
 
 public static const float PI = 3.141592653589793;
 public static const float MAX_SAFE_INTEGER_FOR_F32 = 8388607.0;
-public static const uint UINT_MAX = 4294967295u;
 public static const float BIAS = 0.0000152587890625;
 public static const float INV_PI = 0.3183098861837907;
 // SHEEN_ALBEDO nodes per side, least sheen_roughness
@@ -238,11 +238,6 @@ __extern_cpp public struct Material {
     __extern_cpp public float dispersion = 0.0f;
 };
 
-__extern_cpp public struct Random {
-    __extern_cpp public uint state;
-    __extern_cpp public float value;
-};
-
 __extern_cpp public struct RandomSphere {
     __extern_cpp public uint state;
     __extern_cpp public float3 value;
@@ -250,21 +245,6 @@ __extern_cpp public struct RandomSphere {
 
 [CudaDeviceExport] public func rgb_to_greyscale(rgb: float3) -> float {
     return dot(rgb, float3(0.299, 0.587, 0.114));
-}
-
-float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f; }
-
-[CudaDeviceExport] public Random pcg(uint state) {
-    __target_switch {
-    case wgsl:
-    case glsl:
-    // PCG random number generator
-    // Reference: http://www.pcg-random.org/
-    return Random(state * 747796405u + 2891336453u, float(hash(state)) / float(UINT_MAX));
-    default:
-        const float value = random(state);
-        return Random(state, value);
-    }
 }
 
 [CudaDeviceExport] public func normal_distribution(state: uint) -> Random {
@@ -1362,13 +1342,3 @@ public static const uint LOBE_SHEEN_VELVET = 4u;
 public static const uint LOBE_TOON = 6u;
 
 __include walk;
-
-[CudaDeviceExport] public func hash(x: uint) -> uint {
-    let state: uint = x * 747796405u + 2891336453u;
-    let word: uint = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
-[CudaDeviceExport] public func stream(seed: uint, index: uint) -> uint {
-    return hash(seed ^ hash(index));
-}
