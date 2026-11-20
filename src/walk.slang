@@ -2118,16 +2118,16 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     let n_i_dot_l: float = dot(n_i, dir);
                     let alpha: float = material.roughness * material.roughness;
                     let terms: MaterialTerms = precomputeMaterial(material, eta.x, eta.y);
-                    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
+                    let view_terms: ViewTerms = precomputeView(in_dir, surface.smooth_n, material, terms);
                     var ggx_n: float3 = reflectedHalf(in_dir, dir);
                     if (lobe_index == LOBE_REFRACT) {
                         ggx_n = refractedHalf(in_dir, dir, surface.smooth_n, eta.x, eta.y);
                     }
                     if (lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_TOON) {
-                        ggx_n = sampledHalf(in_dir, surface.smooth_n, material, surface.random_state, frame);
+                        ggx_n = sampledHalf(in_dir, surface.smooth_n, material, surface.random_state, view_terms);
                     }
-                    let lobe_terms: HalfTerms = precomputeHalf(in_dir, negate(in_dir), n_i, ggx_n, material, eta.x,
-                        eta.y, frame, terms);
+                    let lobe_terms: HalfTerms = precomputeHalf(in_dir, ggx_n, material, eta.x, eta.y, terms,
+                        view_terms);
                     var pdf: float = 0.0f;
                     var lobe_throughput: float3 = float3(0.0f);
                     switch (lobe_index) {

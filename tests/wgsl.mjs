@@ -75,19 +75,19 @@ fn parity_density(n_i_dot_l: f32, l_dot_h: f32, n_i_dot_v: f32, alpha: f32, lobe
 fn parity_toward(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: Material, eta_i: f32, eta_o: f32,
     lobe: u32, random_state: u32) -> SampleBSDF {
     let terms = precomputeMaterial(material, eta_i, eta_o);
+    let view_terms = precomputeView(in_dir, n, material, terms);
     let n_dot_v = dot(n, - in_dir);
     let n_i = n * sign(n_dot_v);
     let alpha = material.roughness * material.roughness;
     var l_dot_h = 0.0;
     var ggx_n = reflectedHalf(in_dir, out_dir);
     if (lobe == 0u) {
-        ggx_n = sampledHalf(in_dir, n, material, random_state, anisotropicFrame(material, n_i));
+        ggx_n = sampledHalf(in_dir, n, material, random_state, view_terms);
     } else if (lobe == 1u) {
         ggx_n = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
         l_dot_h = dot(out_dir, ggx_n);
     }
-    let lobes = precomputeHalf(in_dir, - in_dir, n_i, ggx_n, material, eta_i, eta_o, anisotropicFrame(material, n_i),
-        terms);
+    let lobes = precomputeHalf(in_dir, ggx_n, material, eta_i, eta_o, terms, view_terms);
     let pdf = parity_density(dot(n_i, out_dir), l_dot_h, abs(n_dot_v), alpha, lobes, eta_i, eta_o, lobe);
     if (!(pdf > 0.0)) {
         return SampleBSDF();
@@ -153,10 +153,11 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         vec2<f32>(uv.x + 0.5, uv.y + 0.1 * albedo.z), vec2<f32>(uv.x + 0.2 * albedo.x, uv.y + 0.6), n)));
     let material = Material(albedo, vec3<f32>(0.0), v[16], v[15], v[17], max(v[18], v[19])${FLEXLIGHT ? "" : ", vec3<f32>(0.0), vec3<f32>(1.0), 1.0, vec3<f32>(0.0), vec3<f32>(0.0), 0.5, 0.0, 0.0, vec3<f32>(0.0), 0.0"});
     let ggx_n = normalize(- in_dir + out_dir);
+    ${FLEXLIGHT ? "" : `let terms = precomputeMaterial(material, v[18], v[19]);
+    let view_terms = precomputeView(in_dir, n, material, terms);`}
     let lobes = ${FLEXLIGHT
         ? "bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19], anisotropicFrame(material, n_i))"
-        : "precomputeHalf(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19], anisotropicFrame(material, n_i), "
-        + "precomputeMaterial(material, v[18], v[19]))"};
+        : "precomputeHalf(in_dir, ggx_n, material, v[18], v[19], terms, view_terms)"};
     r[41] = bitcast<u32>(lobes.v_dot_h);
     r[42] = bitcast<u32>(lobes.n_dot_h);
     parity_put(&r, 43u, lobes.refracted);

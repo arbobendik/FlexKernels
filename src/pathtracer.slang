@@ -423,10 +423,10 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 // as throughput = BSDF_lobe * n_dot_l / PDF_lobe
 [CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {
     let terms: MaterialTerms = precomputeMaterial(material, eta_i, eta_o);
+    let view_terms: ViewTerms = precomputeView(in_dir, n, material, terms);
     let v: float3 = negate(in_dir);
     let n_dot_v: float = dot(n, v);
     let n_i: float3 = n * sign(n_dot_v);
-    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
     let n_i_dot_l: float = dot(n_i, out_dir);
     let alpha: float = material.roughness * material.roughness;
     // Diffuse, reflection and sheen, then toon where present, on the same side; refraction alone across
@@ -450,13 +450,13 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
         let lobe_half: uint = lobe == LOBE_TOON ? LOBE_DIFFUSE : lobe == LOBE_SHEEN_VELVET ? LOBE_REFLECT : lobe;
         if (lobe_half != half_of) {
             if (lobe_half == LOBE_DIFFUSE) {
-                ggx_n = sampledHalf(in_dir, n, material, random_state, frame);
+                ggx_n = sampledHalf(in_dir, n, material, random_state, view_terms);
             } else if (lobe_half == LOBE_REFRACT) {
                 ggx_n = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
             } else {
                 ggx_n = reflectedHalf(in_dir, out_dir);
             }
-            lobe_terms = precomputeHalf(in_dir, negate(in_dir), n_i, ggx_n, material, eta_i, eta_o, frame, terms);
+            lobe_terms = precomputeHalf(in_dir, ggx_n, material, eta_i, eta_o, terms, view_terms);
             half_of = lobe_half;
         }
         var pdf: float = 0.0f;
@@ -497,14 +497,14 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 // removed in front of it, where BSDF counted it
 [CudaDeviceExport] public func translucentCorrection(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {
     let terms: MaterialTerms = precomputeMaterial(material, eta_i, eta_o);
+    let view_terms: ViewTerms = precomputeView(in_dir, n, material, terms);
     // Refractive half-vector (eq. 16)
     let through: bool = dot(n, out_dir) * dot(n, negate(in_dir)) < 0.0f;
     let n_dot_v: float = dot(n, negate(in_dir));
     let n_i: float3 = n * sign(n_dot_v);
-    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
     let alpha: float = material.roughness * material.roughness;
-    let sampled: HalfTerms = precomputeHalf(in_dir, negate(in_dir), n_i, sampledHalf(in_dir, n, material,
-        random_state, frame), material, eta_i, eta_o, frame, terms);
+    let sampled: HalfTerms = precomputeHalf(in_dir, sampledHalf(in_dir, n, material, random_state, view_terms),
+        material, eta_i, eta_o, terms, view_terms);
     let diffuse_pdf: float = diffusePDF(dot(n_i, out_dir), 0.0f, abs(n_dot_v), alpha, sampled, eta_i, eta_o);
     let diffuse: float3 = diffuse_pdf > 0.0f ? diffuseBSDF(out_dir, n_i, alpha, material, sampled) * diffuse_pdf
         : float3(0.0f);
@@ -660,23 +660,26 @@ __extern_cpp public struct MaterialTerms {
 #endif
 }
 
-// The values of one half vector ggx_n at a vertex, the lobes' weights and shares
-[CudaDeviceExport] public func precomputeHalf(in_dir: float3, v: float3, n_i: float3, ggx_n: float3, material: Material,
-    eta_i: float, eta_o: float, frame: AnisotropicFrame, terms: MaterialTerms) -> HalfTerms {
-    // Calculate shared half vector dot products
-    let v_dot_h: float = dot(ggx_n, v);
-    let n_dot_h: float = dot(n_i, ggx_n);
-    // Try refraction through the properly oriented half vector
-    let eta: float = eta_i / eta_o;
-    let refracted: float3 = normalize(refract(in_dir, ggx_n, eta));
-    // F_dielectric = specular_tint * F0 + (1 - specular_tint * F0) * (F(eta_level) - F0) / (1 - F0)
-    // F_dielectric = 1 past total internal reflection: eta_i^2 * (1 - v_dot_h^2) >= eta_o^2
-    let f0: float = terms.f0;
-    let eta_level: float = terms.eta_level;
-    let F_level: float = fresnel(abs(v_dot_h), eta_i > eta_o ? eta_level : 1.0f, eta_i > eta_o ? 1.0f : eta_level);
-    let total: bool = eta_i * eta_i * (1.0f - v_dot_h * v_dot_h) >= eta_o * eta_o;
-    let F_dielectric: float3 = total ? float3(1.0f) : material.specular_tint * f0 + (1.0f - material.specular_tint * f0)
-        * (F_level - f0) / (1.0f - f0);
+// The view's values at a vertex, the same for every half vector: frame, sheen, toon and the metal's rebounce
+__extern_cpp public struct ViewTerms {
+    __extern_cpp public float3 v;
+    __extern_cpp public float3 n_i;
+    __extern_cpp public AnisotropicFrame frame;
+    __extern_cpp public float3 scale;
+    __extern_cpp public float sheen_component;
+    __extern_cpp public float3 sheen;
+    __extern_cpp public float3 view;
+    __extern_cpp public float3 rebounce;
+#ifdef FK_TOON
+    __extern_cpp public float toon_view;
+    __extern_cpp public float3 toon_axis;
+#endif
+}
+[ForceInline] [CudaDeviceExport] public func precomputeView(in_dir: float3, n: float3, material: Material,
+    terms: MaterialTerms) -> ViewTerms {
+    let v: float3 = negate(in_dir);
+    let n_i: float3 = n * sign(dot(n, v));
+    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
     // albedo = exp(bilinear SHEEN_ALBEDO), bilinear VELVET_ALBEDO for velvet
     // BSDF = sheen * f
     // sheen = material.sheen / max(albedo, 1)
@@ -726,7 +729,6 @@ __extern_cpp public struct MaterialTerms {
             : max(1.0f - (theta_v - terms.toon_a) / max(terms.toon_s, BIAS), 0.0f);
         toon_axis = terms.toon_glossy ? normalize(2.0f * dot(n_i, v) * n_i - v) : n_i;
     }
-    let toon_component: float = terms.toon_component;
 #endif
     // On-surface rebounces of the metallic lobe, summed as a series: a ray single scattering loses meets
     // the microsurface again and leaves with Ebar, else bounces on, each meeting weighted by F = albedo
@@ -748,6 +750,41 @@ __extern_cpp public struct MaterialTerms {
         * (0.314529f - mu * 0.348307f)
         + smoother * smoother * smoother * smoother * 0.272297f, 1.0f);
     let rebounce: float3 = min(1.0f / (1.0f - material.albedo * lost), float3(1.0f / max(return_up, BIAS)));
+#ifdef FK_TOON
+    return ViewTerms(v, n_i, frame, scale, sheen_component, sheen, view, rebounce, toon_view, toon_axis);
+#else
+    return ViewTerms(v, n_i, frame, scale, sheen_component, sheen, view, rebounce);
+#endif
+}
+
+// The values of one half vector ggx_n at a vertex, the lobes' weights and shares
+[CudaDeviceExport] public func precomputeHalf(in_dir: float3, ggx_n: float3, material: Material, eta_i: float,
+    eta_o: float, terms: MaterialTerms, view_terms: ViewTerms) -> HalfTerms {
+    let v: float3 = view_terms.v;
+    let n_i: float3 = view_terms.n_i;
+    let frame: AnisotropicFrame = view_terms.frame;
+    // Calculate shared half vector dot products
+    let v_dot_h: float = dot(ggx_n, v);
+    let n_dot_h: float = dot(n_i, ggx_n);
+    // Try refraction through the properly oriented half vector
+    let eta: float = eta_i / eta_o;
+    let refracted: float3 = normalize(refract(in_dir, ggx_n, eta));
+    // F_dielectric = specular_tint * F0 + (1 - specular_tint * F0) * (F(eta_level) - F0) / (1 - F0)
+    // F_dielectric = 1 past total internal reflection: eta_i^2 * (1 - v_dot_h^2) >= eta_o^2
+    let f0: float = terms.f0;
+    let eta_level: float = terms.eta_level;
+    let F_level: float = fresnel(abs(v_dot_h), eta_i > eta_o ? eta_level : 1.0f, eta_i > eta_o ? 1.0f : eta_level);
+    let total: bool = eta_i * eta_i * (1.0f - v_dot_h * v_dot_h) >= eta_o * eta_o;
+    let F_dielectric: float3 = total ? float3(1.0f) : material.specular_tint * f0 + (1.0f - material.specular_tint * f0)
+        * (F_level - f0) / (1.0f - f0);
+    let scale: float3 = view_terms.scale;
+    let sheen_component: float = view_terms.sheen_component;
+    let sheen: float3 = view_terms.sheen;
+    let view: float3 = view_terms.view;
+#ifdef FK_TOON
+    let toon_component: float = terms.toon_component;
+#endif
+    let rebounce: float3 = view_terms.rebounce;
     var F: float3 = mix(F_dielectric, material.albedo * rebounce, material.metallic) * scale;
     let F_greyscale: float = rgb_to_greyscale(F);
     // BSDF weights (these are artistic choices to balance the lobes)
@@ -781,7 +818,7 @@ __extern_cpp public struct MaterialTerms {
     return HalfTerms(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight,
         p_diffuse, p_reflect, p_refract, terms.translucent_share, sheen, p_sheen_velvet, view, frame.tangent,
         frame.alphas, visible, toon_component * base_component_inv, terms.toon, terms.toon_a, terms.toon_s,
-        terms.toon_b, terms.toon_glossy, terms.toon_norm, toon_view, toon_axis);
+        terms.toon_b, terms.toon_glossy, terms.toon_norm, view_terms.toon_view, view_terms.toon_axis);
 #else
     return HalfTerms(v_dot_h, n_dot_h, refracted, F, F_greyscale, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect, p_refract, terms.translucent_share, sheen, p_sheen_velvet, view, frame.tangent, frame.alphas, visible);
 #endif
@@ -1131,11 +1168,12 @@ __extern_cpp public struct MaterialTerms {
     let n_i_dot_v: float = abs(n_dot_v);
     // Material constants
     let alpha: float = material.roughness * material.roughness;
+    let terms: MaterialTerms = precomputeMaterial(material, eta_i, eta_o);
+    let view_terms: ViewTerms = precomputeView(in_dir, n, material, terms);
     // Sample using GGX importance sampling for potential refractive or reflective case
-    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
+    let frame: AnisotropicFrame = view_terms.frame;
     let ggx_n: float3 = sampleHalfVector(v, n_i, alpha, frame, random_state);
-    let lobes: HalfTerms = precomputeHalf(in_dir, v, n_i, ggx_n, material, eta_i, eta_o, frame,
-        precomputeMaterial(material, eta_i, eta_o));
+    let lobes: HalfTerms = precomputeHalf(in_dir, ggx_n, material, eta_i, eta_o, terms, view_terms);
 
     let random_p: Random = pcg(random_state);
     random_state = random_p.state;
@@ -1168,11 +1206,11 @@ __extern_cpp public struct MaterialTerms {
 
 // sampleBSDF's half vector, drawn from random_state as sampleBSDF draws it: the diffuse and toon lobes'
 [CudaDeviceExport] public func sampledHalf(in_dir: float3, n: float3, material: Material, random_state: uint,
-    frame: AnisotropicFrame) -> float3 {
+    view_terms: ViewTerms) -> float3 {
     var state: uint = random_state;
     let v: float3 = negate(in_dir);
     // Diffuse half-vector of sampleBSDF
-    return sampleHalfVector(v, n * sign(dot(n, v)), material.roughness * material.roughness, frame, state);
+    return sampleHalfVector(v, n * sign(dot(n, v)), material.roughness * material.roughness, view_terms.frame, state);
 }
 
 // The reflection's and the sheen's half vector of out_dir
@@ -1229,20 +1267,20 @@ __extern_cpp public struct MaterialTerms {
 // => BSDF * n_dot_l / pdf * w_power = throughput * PDF_lobe / (pdf * (1 + (PDF_lobe / pdf)^2))
 [CudaDeviceExport] public func neeBSDF(in_dir: float3, dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, refracted: bool, pdf: float, power: bool, random_state: uint) -> float3 {
     let terms: MaterialTerms = precomputeMaterial(material, eta_i, eta_o);
+    let view_terms: ViewTerms = precomputeView(in_dir, n, material, terms);
     var each: float3[5];
     var reached: uint = 0u;
-    return neeLobes(in_dir, dir, n, material, eta_i, eta_o, refracted, pdf, power, random_state, terms, each,
-        reached);
+    return neeLobes(in_dir, dir, n, material, eta_i, eta_o, refracted, pdf, power, random_state, terms, view_terms,
+        each, reached);
 }
 
 // neeBSDF, light and sky sampling's one body: the sum, each lobe's term of the diffuse, refraction, reflection, sheen
 // and toon lobes in that order, and the bits of the lobes reached
 public func neeLobes(in_dir: float3, dir: float3, n: float3, material: Material, eta_i: float, eta_o: float,
-    refracted: bool, pdf: float, power: bool, random_state: uint, terms: MaterialTerms,
+    refracted: bool, pdf: float, power: bool, random_state: uint, terms: MaterialTerms, view_terms: ViewTerms,
     out each: float3[5], out reached: uint) -> float3 {
     let n_dot_v: float = dot(n, negate(in_dir));
     let n_i: float3 = n * sign(n_dot_v);
-    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
     let n_i_dot_l: float = dot(n_i, dir);
     let alpha: float = material.roughness * material.roughness;
     var f: float3 = float3(0.0f);
@@ -1269,13 +1307,13 @@ public func neeLobes(in_dir: float3, dir: float3, n: float3, material: Material,
             let lobe_half: uint = lobe == LOBE_TOON ? LOBE_DIFFUSE : lobe == LOBE_SHEEN_VELVET ? LOBE_REFLECT : lobe;
             if (lobe_half != half_of) {
                 if (lobe_half == LOBE_DIFFUSE) {
-                    ggx_n = sampledHalf(in_dir, n, material, random_state, frame);
+                    ggx_n = sampledHalf(in_dir, n, material, random_state, view_terms);
                 } else if (lobe_half == LOBE_REFRACT) {
                     ggx_n = refractedHalf(in_dir, dir, n, eta_i, eta_o);
                 } else {
                     ggx_n = reflectedHalf(in_dir, dir);
                 }
-                lobe_terms = precomputeHalf(in_dir, negate(in_dir), n_i, ggx_n, material, eta_i, eta_o, frame, terms);
+                lobe_terms = precomputeHalf(in_dir, ggx_n, material, eta_i, eta_o, terms, view_terms);
                 half_of = lobe_half;
             }
             var lobe_pdf: float = 0.0f;
