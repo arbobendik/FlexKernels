@@ -371,8 +371,8 @@ int main() {
     recording = false;
     int seeds_off = 0, hits_off = 0, colored = 0;
     for (int y = 0, k = 0; y < H; y++) for (int x = 0; x < W; x++) {
-        const uint32_t pixel_seed = stream(hash(HookScene_frame_0()), x + W * y);
-        for (uint32_t i = 0; i < 4; i++) seeds_off += asked_seeds[k++] != stream(pixel_seed, i);
+        for (uint32_t i = 0; i < 4; i++)
+            seeds_off += asked_seeds[k++] != noiseOrigin(Vector<uint32_t, 2>(x, y), HookScene_frame_0() * 4 + i);
         hits_off += stored_hit[y * W + x].triangle_index != stored[y * W + x].seed || !(stored[y * W + x].w > 0);
         colored += added[y * W + x].x != 0 || added[y * W + x].w != 1;
     }

@@ -78,13 +78,13 @@ build/cuda-restir/noise-start.spv build/cuda-restir/noise-sweep.spv: src/noise.s
 build/cuda/noise.slang-module build/cuda-restir/noise.slang-module build/restir-passes/noise.slang-module: \
 		src/noise.slang $(SLANGC)
 	mkdir -p $(@D)
-	$(SLANGC) $< -warnings-as-errors 30081 -o $@
+	$(SLANGC) $< -warnings-as-errors 30081 -DFK_NOISE_LINKED=1 -o $@
 
 build/cuda/pathtracer.slang-module build/cuda-restir/pathtracer.slang-module \
 		build/restir-passes/pathtracer.slang-module: $(SOURCE) $(SLANGC) build/cuda/noise.slang-module \
 		build/cuda-restir/noise.slang-module build/restir-passes/noise.slang-module
 	mkdir -p $(@D)
-	$(SLANGC) $< -warnings-as-errors 30081 $(MODULEFLAGS) -o $@
+	$(SLANGC) $< -warnings-as-errors 30081 $(MODULEFLAGS) -DFK_NOISE_LINKED=1 -o $@
 
 build/cpp/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp
