@@ -417,34 +417,40 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     return clamp(dot(diffs * angle_tan, uvw), 0.0f, min_edge_length * 0.125f);
 }
 
-// out_dir on in_dir's side of g_n: BSDF * n_dot_l = throughput_diffuse * PDF_diffuse + throughput_reflect * PDF_reflect
-// + throughput_sheen * PDF_sheen + throughput_toon * PDF_toon
-// otherwise: BSDF * n_dot_l = throughput_refract * PDF_refract
+// Each lobe toward out_dir: its throughput and PDF_lobe in the diffuse, refraction, reflection, sheen and toon slots,
+// PDF_lobe = 0 where it doesn't reach out_dir
+// out_dir across the face (refracted): the refraction, and the diffuse where translucent through the shading normal
+// otherwise: the diffuse, but where translucent through the shading normal, the reflection, the sheen and the toon
 // as throughput = BSDF_lobe * n_dot_l / PDF_lobe
-[CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {
+// => BSDF * n_dot_l = sum throughput * PDF_lobe
+[CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, material: Material, eta_i: float,
+    eta_o: float, refracted: bool, random_state: uint, out throughputs: float3[5], out pdfs: float[5]) -> float3 {
     let v: float3 = negate(in_dir);
     let n_dot_v: float = dot(n, v);
     let n_i: float3 = n * sign(n_dot_v);
     let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
     let n_i_dot_l: float = dot(n_i, out_dir);
     let alpha: float = material.roughness * material.roughness;
-    // Diffuse, reflection and sheen, then toon where present, on the same side; refraction alone across
-    // Test if v and l are on the same side of the surface
-    let same_side: bool = dot(g_n, v) * dot(g_n, out_dir) > 0.0f;
+    let translucent: bool = translucencyUsed() && rgb_to_greyscale(material.translucent) > 0.0f;
+    let through: bool = dot(n, out_dir) * n_dot_v < 0.0f;
 #ifdef FK_TOON
-    let toon: uint = abs(material.toon.x) > 0.0f ? 1u : 0u;
+    let lobes: uint = abs(material.toon.x) > 0.0f ? 5u : 4u;
 #else
-    let toon: uint = 0u;
+    let lobes: uint = 4u;
 #endif
-    let lobes: uint = same_side ? 3u + toon : 1u;
-    var f: float3 = float3(0.0f);
+    for (var i: uint = 0u; i < 5u; i++) {
+        throughputs[i] = float3(0.0f);
+        pdfs[i] = 0.0f;
+    }
     // The lobe's half vector and its terms, taken again only where they differ from the last lobe's
     var half_of: uint = UINT_MAX;
     var ggx_n: float3 = float3(0.0f);
     var lobe_terms: BSDFLobes = {};
     for (var i: uint = 0u; i < lobes; i++) {
-        let lobe: uint = !same_side ? LOBE_REFRACT : i == 0u ? LOBE_DIFFUSE : i == 1u ? LOBE_REFLECT
-            : i == 2u ? LOBE_SHEEN_VELVET : LOBE_TOON;
+        let lobe: uint = i == 3u ? LOBE_SHEEN_VELVET : i == 4u ? LOBE_TOON : i;
+        if ((lobe == LOBE_DIFFUSE && translucent ? through : lobe == LOBE_REFRACT) != refracted) {
+            continue;
+        }
         // sampleBSDF's half vector for the diffuse and toon lobes, out_dir's reflective one for reflection and sheen
         let lobe_half: uint = lobe == LOBE_TOON ? LOBE_DIFFUSE : lobe == LOBE_SHEEN_VELVET ? LOBE_REFLECT : lobe;
         if (lobe_half != half_of) {
@@ -459,63 +465,40 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
             lobe_terms.translucent_share = translucentShare(material);
             half_of = lobe_half;
         }
-        var pdf: float = 0.0f;
-        var throughput: float3 = float3(0.0f);
         switch (lobe) {
         case LOBE_DIFFUSE:
-            pdf = diffusePDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
-            throughput = diffuseBSDF(out_dir, n_i, alpha, material, lobe_terms);
+            pdfs[0] = diffusePDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+            throughputs[0] = diffuseBSDF(out_dir, n_i, alpha, material, lobe_terms);
             break;
         case LOBE_REFRACT:
-            pdf = refractPDF(n_i_dot_l, dot(out_dir, ggx_n), abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
-            throughput = refractBSDF(out_dir, n_i, alpha, material, lobe_terms);
+            pdfs[1] = refractPDF(n_i_dot_l, dot(out_dir, ggx_n), abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+            throughputs[1] = refractBSDF(out_dir, n_i, alpha, material, lobe_terms);
             break;
         case LOBE_SHEEN_VELVET:
-            pdf = sheenVelvetPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
-            throughput = sheenVelvetBSDF(out_dir, n_i, alpha, material, lobe_terms);
+            pdfs[3] = sheenVelvetPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+            throughputs[3] = sheenVelvetBSDF(out_dir, n_i, alpha, material, lobe_terms);
             break;
 #ifdef FK_TOON
         case LOBE_TOON:
-            pdf = toonPDF(n_i_dot_l, dot(out_dir, lobe_terms.toon_axis), abs(n_dot_v), alpha, lobe_terms, eta_i,
+            pdfs[4] = toonPDF(n_i_dot_l, dot(out_dir, lobe_terms.toon_axis), abs(n_dot_v), alpha, lobe_terms, eta_i,
                 eta_o);
-            throughput = toonBSDF(out_dir, n_i, alpha, material, lobe_terms);
+            throughputs[4] = toonBSDF(out_dir, n_i, alpha, material, lobe_terms);
             break;
 #endif
         default:
-            pdf = reflectPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
-            throughput = reflectBSDF(out_dir, n_i, alpha, material, lobe_terms);
+            pdfs[2] = reflectPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+            throughputs[2] = reflectBSDF(out_dir, n_i, alpha, material, lobe_terms);
             break;
         }
-        // Directions the lobe can't sample carry no throughput
-        let weighted: float3 = pdf > 0.0f ? throughput * pdf : float3(0.0f);
-        f = i == 0u ? weighted : f + weighted;
+    }
+    // Directions a lobe can't sample carry no throughput
+    var f: float3 = float3(0.0f);
+    for (var i: uint = 0u; i < 5u; i++) {
+        if (pdfs[i] > 0.0f) {
+            f += throughputs[i] * pdfs[i];
+        }
     }
     return f;
-}
-
-// Diffuse lobe toward out_dir through the shading normal: added behind the geometry normal,
-// removed in front of it, where BSDF counted it
-[CudaDeviceExport] public func translucentCorrection(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {
-    // Refractive half-vector (eq. 16)
-    let through: bool = dot(n, out_dir) * dot(n, negate(in_dir)) < 0.0f;
-    let n_dot_v: float = dot(n, negate(in_dir));
-    let n_i: float3 = n * sign(n_dot_v);
-    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
-    let alpha: float = material.roughness * material.roughness;
-    var sampled: BSDFLobes = bsdfLobes(in_dir, negate(in_dir), n_i, sampledHalf(in_dir, n, material, random_state,
-        frame), material, eta_i, eta_o, frame);
-    sampled.translucent_share = translucentShare(material);
-    let diffuse_pdf: float = diffusePDF(dot(n_i, out_dir), 0.0f, abs(n_dot_v), alpha, sampled, eta_i, eta_o);
-    let diffuse: float3 = diffuse_pdf > 0.0f ? diffuseBSDF(out_dir, n_i, alpha, material, sampled) * diffuse_pdf
-        : float3(0.0f);
-    let incident: bool = dot(g_n, negate(in_dir)) * dot(g_n, out_dir) > 0.0f;
-    return select(float3(0.0f), diffuse * select(1.0f, -1.0f, incident), through);
-}
-
-// BSDF * n_dot_l with a translucent diffuse lobe
-[CudaDeviceExport] public func translucentBSDF(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {
-    return BSDF(in_dir, out_dir, n, g_n, material, eta_i, eta_o, random_state)
-        + translucentCorrection(in_dir, out_dir, n, g_n, material, eta_i, eta_o, random_state);
 }
 
 __extern_cpp public struct SampleBSDF {

@@ -181,7 +181,10 @@ void main(uint3 id: SV_DispatchThreadID, uint local: SV_GroupIndex, uint3 group:
     const float3 n = normalize(mix(r.dir, r.radiance, sign(r.w)));
     const Material material = Material(r.f, r.radiance, r.w, r.c, r.jac, 1.5f, r.dir);
     const SampleBSDF sampled = sampleBSDF(r.dir, n, material, 1.0f, 1.5f, stream(r.seed, id.x), float2(0.0f));
-    const float3 connected = BSDF(r.dir, sampled.unit_direction, n, n, material, 1.0f, 1.5f, pcg(hash(r.path)).state);
+    float3 throughputs[5];
+    float pdfs[5];
+    const float3 connected = BSDF(r.dir, sampled.unit_direction, n, material, 1.0f, 1.5f,
+        dot(n, -r.dir) * dot(n, sampled.unit_direction) <= 0.0f, pcg(hash(r.path)).state, throughputs, pdfs);
     Selection sel = {};
     offer(sel, withEnd(r, 1u, 2u, connected * smithG1(r.w, fresnel(r.c, 1.0f, 1.5f))),
         safeDivide(r.f, tangentToWorldNormalMap(r.radiance, float3x3(r.dir, r.f, n))));

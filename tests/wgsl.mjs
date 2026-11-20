@@ -94,6 +94,14 @@ fn parity_toward(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: 
     return SampleBSDF(out_dir, parity_throughput(out_dir, n_i, alpha, material, lobes, lobe), random_state,
         lobe == 1u, lobe, pdf);
 }
+// BSDF toward out_dir, across the face where in_dir and out_dir lie on opposite sides of g_n
+fn parity_face(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, g_n: vec3<f32>, material: Material, eta_i: f32,
+    eta_o: f32, random_state: u32) -> vec3<f32> {
+    var throughputs: array<vec3<f32>, 5>;
+    var pdfs: array<f32, 5>;
+    return BSDF(in_dir, out_dir, n, material, eta_i, eta_o, dot(g_n, - in_dir) * dot(g_n, out_dir) <= 0.0,
+        random_state, &throughputs, &pdfs);
+}
 `;
 const THROUGHPUT = FLEXLIGHT ? "lobeThroughput" : "parity_throughput";
 const DENSITY = FLEXLIGHT ? "lobeDensity" : "parity_density";
@@ -188,7 +196,8 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         parity_put(&r, 78u + 4u * lobe, connected.throughput * connected.pdf);
         r[81u + 4u * lobe] = bitcast<u32>(connected.pdf);
     }
-    parity_put(&r, 90u, BSDF(in_dir, out_dir, n, vec3<f32>(v[9], v[10], v[11]), material, v[18], v[19], random_state));
+    parity_put(&r, 90u, ${FLEXLIGHT ? "BSDF" : "parity_face"}(in_dir, out_dir, n, vec3<f32>(v[9], v[10], v[11]),
+        material, v[18], v[19], random_state));
     r[93] = u32(neeDecision(material, dot(n, - in_dir), v[18], v[19]));
     var a = Reservoir();
     a.seed = random_state;

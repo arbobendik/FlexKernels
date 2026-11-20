@@ -96,7 +96,10 @@ __device__ Result evaluate(const Case& c) {
         r.connected[lobe] = vec(weighted);
         r.connected_pdf[lobe] = s.pdf;
     }
-    r.bsdf = BSDF(in_dir, out_dir, n, vec(c.in + 9), material, c.in[18], c.in[19], c.random_state);
+    FixedArray<Vec, 5> throughputs;
+    FixedArray<float, 5> pdfs;
+    r.bsdf = BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19],
+        dot_0(vec(c.in + 9), -in_dir) * dot_0(vec(c.in + 9), out_dir) <= 0, c.random_state, &throughputs, &pdfs);
     r.nee = neeDecision(material, dot_0(n, -in_dir), c.in[18], c.in[19]);
     Reservoir a = {}, b = {};
     const float turned[] = {c.in[13], c.in[14], c.in[12]};
