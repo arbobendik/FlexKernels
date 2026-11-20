@@ -1395,14 +1395,13 @@ func hairLight<S: IScene>(scene: S, surface: Surface, in_dir: float3, light: Tre
 // => neeBSDF * radiance * PDF_light = BSDF * n_dot_l * L / PDF_light * w_power
 // Delta lights or no competing BSDF sample: w_power = 1
 func lightBSDF(in_dir: float3, light: TreeSample, smooth_n: float3, geometry_n: float3, material: Material, eta_i: float, eta_o: float, competing: bool, random_state: uint) -> float3 {
-    if (!competing || light.density == 0.0f) {
-        // Translucent materials transmit past the face too
-        if (isTranslucent(material)) {
-            return translucentBSDF(in_dir, light.dir, smooth_n, geometry_n, material, eta_i, eta_o, random_state) * light.radiance;
-        }
-        return BSDF(in_dir, light.dir, smooth_n, geometry_n, material, eta_i, eta_o, random_state) * light.radiance;
-    }
     let refracted: bool = dot(geometry_n, - in_dir) * dot(geometry_n, light.dir) <= 0.0f;
+    if (!competing || light.density == 0.0f) {
+        var throughputs: float3[5];
+        var pdfs: float[5];
+        return BSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, random_state, throughputs, pdfs)
+            * light.radiance;
+    }
     return neeBSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, light.density, true, random_state) * light.radiance * light.density;
 }
 

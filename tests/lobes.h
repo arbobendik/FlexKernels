@@ -45,3 +45,12 @@ static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m
     if (!(pdf > 0)) return SampleBSDF{};
     return SampleBSDF{out_dir, throughput, random_init, lobe == 1, lobe, pdf};
 }
+
+// BSDF toward out_dir, across the face where in_dir and out_dir lie on opposite sides of g_n
+static TermsV faceBSDF(TermsV in_dir, TermsV out_dir, TermsV n, TermsV g_n, Material m, float eta_i, float eta_o,
+    unsigned random_state) {
+    FixedArray<TermsV, 5> throughputs;
+    FixedArray<float, 5> pdfs;
+    return BSDF(in_dir, out_dir, n, m, eta_i, eta_o, dot_0(g_n, negate_0(in_dir)) * dot_0(g_n, out_dir) <= 0,
+        random_state, &throughputs, &pdfs);
+}

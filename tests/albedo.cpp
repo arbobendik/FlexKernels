@@ -44,7 +44,8 @@ int main() {
         for (unsigned i = 0; i < 1u << 18; i++) {
             const SampleBSDF s = sampleBSDF(in_dir, n, TRANSLUCENT[m], 1, 1, hash(i), Vector<float, 2>(0, 0));
             const SampleBSDF c = towardLobe(in_dir, s.unit_direction, n, TRANSLUCENT[m], 1, 1, 0u, hash(i));
-            const float f = translucentBSDF(in_dir, s.unit_direction, n, n, TRANSLUCENT[m], 1, 1, hash(i)).x, back = s.unit_direction.z < 0;
+            const float f = faceBSDF(in_dir, s.unit_direction, n, n, TRANSLUCENT[m], 1, 1, hash(i)).x;
+            const float back = s.unit_direction.z < 0;
             sum += s.throughput.x, through += back * s.throughput.x;
             failed |= s.refracted != back || (m == 0 && !back);
             worst = fmax(worst, fmax(fabs(c.pdf / s.pdf - 1), fabs(f / (s.throughput.x * s.pdf) - 1)));
@@ -88,8 +89,8 @@ int main() {
         for (int i = 0; i < 512; i++) for (int j = 0; j < 1024; j++) {
             const float t = (i + 0.5f) / 512 * PI / 2, phi = (j + 0.5f) / 1024 * 2 * PI;
             const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
-            albedo += BSDF(in_dir, l, n, n, SHEEN[0], 1, 1, 0).x * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
-            white += BSDF(in_dir, l, n, n, SHEEN[1], 1, 1, 0).x * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
+            albedo += faceBSDF(in_dir, l, n, n, SHEEN[0], 1, 1, 0).x * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
+            white += faceBSDF(in_dir, l, n, n, SHEEN[1], 1, 1, 0).x * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
         }
         for (unsigned i = 0; i < 1u << 18; i++) {
             const SampleBSDF s = sampleBSDF(in_dir, n, SHEEN[0], 1, 1, hash(i), Vector<float, 2>(0, 0));
@@ -120,10 +121,10 @@ int main() {
         for (int i = 0; i < 512; i++) for (int j = 0; j < 1024; j++) {
             const float t = (i + 0.5f) / 512 * PI / 2, phi = (j + 0.5f) / 1024 * 2 * PI;
             const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
-            const float f = BSDF(in_dir, l, n, n, VELVET[0], 1, 1, 0).x / cosf(t);
-            const float g = BSDF(-l, v, n, n, VELVET[0], 1, 1, 0).x / mu;
+            const float f = faceBSDF(in_dir, l, n, n, VELVET[0], 1, 1, 0).x / cosf(t);
+            const float g = faceBSDF(-l, v, n, n, VELVET[0], 1, 1, 0).x / mu;
             albedo += f * cosf(t) * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
-            white += BSDF(in_dir, l, n, n, VELVET[1], 1, 1, 0).x * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
+            white += faceBSDF(in_dir, l, n, n, VELVET[1], 1, 1, 0).x * sinf(t) * (PI / 2 / 512) * (2 * PI / 1024);
             asymmetry = fmax(asymmetry, fabs(f - g) / fmax(f, 1e-3));
         }
         for (unsigned i = 0; i < 1u << 18; i++) {
@@ -159,7 +160,7 @@ int main() {
                 const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
                 const Material velvet = {ZERO, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, RING_SIGMAS[k], 0, 0, ZERO,
                     1};
-                e += BSDF(-v, l, n, n, velvet, 1, 1, 0).x * sinf(t) * (PI / 2 / 256) * (2 * PI / 512);
+                e += faceBSDF(-v, l, n, n, velvet, 1, 1, 0).x * sinf(t) * (PI / 2 / 256) * (2 * PI / 512);
             }
             hemisphere += 2 * e * mu / 64;
             const float LOW[] = {0.9f, 0.4f, 0.15f}, HIGH[] = {1, 0.6f, 0.3f};
@@ -187,11 +188,11 @@ int main() {
         for (int i = 0; i < 256; i++) for (int j = 0; j < 512; j++) {
             const float t = (i + 0.5f) / 256 * PI / 2, phi = (j + 0.5f) / 512 * 2 * PI;
             const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
-            const float f = BSDF(Vector<float, 3>(-v.x, -v.y, -v.z), l, up, up, toon, 1, 1, hash(i * 512 + j)).x
+            const float f = faceBSDF(Vector<float, 3>(-v.x, -v.y, -v.z), l, up, up, toon, 1, 1, hash(i * 512 + j)).x
                 / cosf(t);
             albedo += f * cosf(t) * sinf(t) * (PI / 2 / 256) * (2 * PI / 512);
-            const float back = BSDF(Vector<float, 3>(-l.x, -l.y, -l.z), v, up, up, toon, 1, 1, hash(i * 512 + j)).x
-                / v.z;
+            const float back = faceBSDF(Vector<float, 3>(-l.x, -l.y, -l.z), v, up, up, toon, 1, 1,
+                hash(i * 512 + j)).x / v.z;
             asymmetry = fmax(asymmetry, fabs(f - back));
         }
         for (unsigned i = 0; i < 1u << 16; i++) {
@@ -317,19 +318,19 @@ int main() {
         for (int i = 0; i < 1024; i++) for (int j = 0; j < 1024; j++) {
             const float t = (i + 0.5f) / 1024 * PI, phi = (j + 0.5f) / 1024 * 2 * PI;
             const Vector<float, 3> l(sinf(t) * cosf(phi), sinf(t) * sinf(phi), cosf(t));
-            albedo += BSDF(in_dir, l, n, n, M, 1, 1.5f, 0u).x * sinf(t) * (PI / 1024) * (2 * PI / 1024);
+            albedo += faceBSDF(in_dir, l, n, n, M, 1, 1.5f, 0u).x * sinf(t) * (PI / 1024) * (2 * PI / 1024);
         }
         for (unsigned i = 0; i < 1u << 18; i++) {
             const SampleBSDF s = sampleBSDF(in_dir, n, M, 1, 1.5f, hash(i), Vector<float, 2>(0, 0));
             const SampleBSDF c = towardLobe(in_dir, s.unit_direction, n, M, 1, 1.5f, s.lobe, hash(i));
             const Vector<float, 3> l = s.unit_direction;
-            const float f = BSDF(in_dir, l, n, n, M, 1, 1.5f, hash(i)).x;
+            const float f = faceBSDF(in_dir, l, n, n, M, 1, 1.5f, hash(i)).x;
             sum += s.throughput.x / (1 << 18), squares += s.throughput.x * s.throughput.x / (1 << 18);
             if (s.pdf > 0 && s.throughput.x > 0) worst = fmax(worst, fmax(fabs(c.pdf / s.pdf - 1), fabs(f / (s.throughput.x * s.pdf) - 1)));
             if (m < 2 && s.throughput.x > 0) worst = fmax(worst, fmax(fabs(f / (factor(1) * D(unit(v + l)) * G1(v)
                 * G1(l) / (4 * v.z)) - 1),
                 // Reciprocal but for the factor, which takes each direction's own view
-                fabs(f / factor(1) / l.z / (BSDF(Vector<float, 3>(-l.x, -l.y, -l.z), v, n, n, M, 1, 1.5f, 0u).x
+                fabs(f / factor(1) / l.z / (faceBSDF(Vector<float, 3>(-l.x, -l.y, -l.z), v, n, n, M, 1, 1.5f, 0u).x
                 / rebounce(1, l.z, sqrtf(fminf(ax, ay))) / v.z) - 1)));
             for (int r = 0; m < 2 && r < 2; r++) {
                 const Vector<float, 3> t = sampleBSDF(in_dir, n, stretched(m, COLORS[r]), 1, 1.5f, hash(i), Vector<float, 2>(0, 0)).throughput;
