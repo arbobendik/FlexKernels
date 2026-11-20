@@ -22,8 +22,9 @@ static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m
         l_dot_h = dot_0(out_dir, h_t);
         BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, h_t, m, eta_i, eta_o, frame, sheen_albedo);
         h.translucent_share = translucentShare(m);
-        pdf = refractPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, h, eta_i, eta_o);
-        throughput = refractBSDF(out_dir, n_i, alpha, m, h);
+        pdf = refractPDF(l_dot_h, vndfPDF(negate_0(in_dir), h_t, n_i, n_i_dot_v, alpha, frame, h.v_dot_h), h, eta_i,
+            eta_o);
+        throughput = refractBSDF(out_dir, n_i, alpha, frame, m, h);
     } else if (lobe == 4) {
         BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, reflectedHalf(in_dir, out_dir), m, eta_i, eta_o, frame,
             sheen_albedo);
@@ -43,8 +44,9 @@ static SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, Material m
         BSDFLobes h = bsdfLobes(in_dir, negate_0(in_dir), n_i, reflectedHalf(in_dir, out_dir), m, eta_i, eta_o, frame,
             sheen_albedo);
         h.translucent_share = translucentShare(m);
-        pdf = reflectPDF(n_i_dot_l, 0, n_i_dot_v, alpha, h, eta_i, eta_o);
-        throughput = reflectBSDF(out_dir, n_i, alpha, m, h);
+        pdf = reflectPDF(vndfPDF(negate_0(in_dir), reflectedHalf(in_dir, out_dir), n_i, n_i_dot_v, alpha, frame,
+            h.v_dot_h), h);
+        throughput = reflectBSDF(out_dir, n_i, alpha, frame, h);
     }
     if (!(pdf > 0)) return SampleBSDF{};
     return SampleBSDF{out_dir, throughput, random_init, lobe == 1, lobe, pdf};
