@@ -113,7 +113,10 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         vec2<f32>(uv.x + 0.5, uv.y + 0.1 * albedo.z), vec2<f32>(uv.x + 0.2 * albedo.x, uv.y + 0.6), n)));
     let material = Material(albedo, vec3<f32>(0.0), v[16], v[15], v[17], max(v[18], v[19])${FLEXLIGHT ? "" : ", vec3<f32>(0.0), vec3<f32>(1.0), 1.0, vec3<f32>(0.0), vec3<f32>(0.0), 0.5, 0.0, 0.0, vec3<f32>(0.0), 0.0"});
     let ggx_n = normalize(- in_dir + out_dir);
-    let lobes = bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19], anisotropicFrame(material, n_i));
+    let lobes = ${FLEXLIGHT
+        ? "bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19], anisotropicFrame(material, n_i))"
+        : "precomputeHalf(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19], anisotropicFrame(material, n_i), "
+        + "precomputeMaterial(material, v[18], v[19]))"};
     r[41] = bitcast<u32>(lobes.v_dot_h);
     r[42] = bitcast<u32>(lobes.n_dot_h);
     parity_put(&r, 43u, lobes.refracted);
