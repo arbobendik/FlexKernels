@@ -37,6 +37,7 @@ build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	$(SLANGC) $(SLANGFLAGS) $< -target cuda -o $@
 	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#define Matrix SlangMatrix\n#include "slang-cuda-prelude.h"|' $@
 	sed -i -E 's/^__device__ (HalfTerms (sampled|reflected|refracted)Half)\(/__device__ __forceinline__ \1(/' $@
+	sed -i -E 's/^__device__ ([A-Za-z]+ precompute(Material|View|Half))\(/__device__ __forceinline__ \1(/' $@
 	sed -i -E 's/^__device__ (float3  (diffuse|refract|reflect|sheenVelvet|toon)BSDF)\(/__device__ __forceinline__ \1(/' $@
 	sed -i -E 's/^__device__ (SampleBSDF [a-zA-Z]+Sample|float [a-zA-Z]+PDF)\(/__device__ __forceinline__ \1(/' $@
 	sed -i -E 's/^__device__ (float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF)\(/__device__ __forceinline__ \1(/' $@
