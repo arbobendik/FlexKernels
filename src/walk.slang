@@ -2085,6 +2085,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     var lobe_terms: BSDFLobes = bsdfLobes(in_dir, negate(in_dir), n_i, ggx_n, material, eta.x, eta.y,
                         frame, sheen_profile);
                     lobe_terms.translucent_share = translucentShare(material);
+                    // The VNDF's density of the half vector, the refraction's and the reflection's
+                    let pdf_h: float = vndfPDF(negate(in_dir), ggx_n, n_i, abs(n_dot_v), alpha, frame,
+                        lobe_terms.v_dot_h);
                     var pdf: float = 0.0f;
                     var lobe_throughput: float3 = float3(0.0f);
                     switch (lobe_index) {
@@ -2093,8 +2096,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                         lobe_throughput = diffuseBSDF(dir, n_i, alpha, material, lobe_terms);
                         break;
                     case LOBE_REFRACT:
-                        pdf = refractPDF(n_i_dot_l, dot(dir, ggx_n), abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
-                        lobe_throughput = refractBSDF(dir, n_i, alpha, material, lobe_terms);
+                        pdf = refractPDF(dot(dir, ggx_n), pdf_h, lobe_terms, eta.x, eta.y);
+                        lobe_throughput = refractBSDF(dir, n_i, alpha, frame, material, lobe_terms);
                         break;
                     case LOBE_SHEEN_VELVET:
                         pdf = sheenVelvetPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
@@ -2109,8 +2112,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     }
 #endif
                     default:
-                        pdf = reflectPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
-                        lobe_throughput = reflectBSDF(dir, n_i, alpha, material, lobe_terms);
+                        pdf = reflectPDF(pdf_h, lobe_terms);
+                        lobe_throughput = reflectBSDF(dir, n_i, alpha, frame, lobe_terms);
                         break;
                     }
                     // Directions the lobe can't sample carry no throughput
