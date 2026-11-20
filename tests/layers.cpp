@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <initializer_list>
 #include "pathtracer.cpp"
+#include "terms.h"
 
 int main() {
     int mismatches = 0;

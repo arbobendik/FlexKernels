@@ -4,6 +4,8 @@ import { create, globals } from "webgpu";
 
 const FLEXLIGHT = process.argv.includes("--flexlight");
 const OUTPUTS = 156;
+// FK passes the material's and the view's precomputed values; FlexLight's reference has none
+const TERMS = FLEXLIGHT ? "" : ", terms, view_terms";
 const MATERIAL = /* wgsl */ `
 struct Material {
     albedo: vec3<f32>,
@@ -140,7 +142,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         r[59u + 4u * lobe] = bitcast<u32>(lobeDensity(dot(n_i, out_dir), dot(out_dir, ggx_n), abs(dot(n, in_dir)), alpha,
             lobes, v[18], v[19], lobe));
     }
-    let sample = sampleBSDF(in_dir, n, material, v[18], v[19], random_state, vec2<f32>(0.0));
+    let sample = sampleBSDF(in_dir, n, material, v[18], v[19], random_state, vec2<f32>(0.0)${TERMS});
     parity_put(&r, 68u, sample.unit_direction);
     parity_put(&r, 71u, sample.throughput);
     r[74] = sample.random_state;
@@ -148,11 +150,12 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[76] = sample.lobe;
     r[77] = bitcast<u32>(sample.pdf);
     for (var lobe = 0u; lobe < 3u; lobe++) {
-        let connected = lobeBSDF(in_dir, out_dir, n, material, v[18], v[19], lobe, random_state);
+        let connected = lobeBSDF(in_dir, out_dir, n, material, v[18], v[19], lobe, random_state${TERMS});
         parity_put(&r, 78u + 4u * lobe, connected.throughput * connected.pdf);
         r[81u + 4u * lobe] = bitcast<u32>(connected.pdf);
     }
-    parity_put(&r, 90u, BSDF(in_dir, out_dir, n, vec3<f32>(v[9], v[10], v[11]), material, v[18], v[19], random_state));
+    parity_put(&r, 90u, BSDF(in_dir, out_dir, n, vec3<f32>(v[9], v[10], v[11]), material, v[18], v[19],
+        random_state${TERMS}));
     r[93] = u32(neeDecision(material, dot(n, - in_dir), v[18], v[19]));
     var a = Reservoir();
     a.seed = random_state;
@@ -193,8 +196,10 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     parity_put(&r, 116u, power);` : `
-    parity_put(&r, 113u, neeBSDF(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, false, random_state));
-    parity_put(&r, 116u, neeBSDF(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, true, random_state));`}
+    parity_put(&r, 113u, neeBSDF(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, false, random_state,
+        terms, view_terms));
+    parity_put(&r, 116u, neeBSDF(in_dir, out_dir, n, material, v[18], v[19], refracted, pdf, true, random_state,
+        terms, view_terms));`}
     ${FLEXLIGHT ? `let straight = bsdfLobes(in_dir, - in_dir, n_i, n_i, material, 1.0, 1.0, anisotropicFrame(material, n_i));
     let through = lobeThroughput(in_dir, n_i, alpha, material, straight, 1u) * straight.p_refract;
     parity_put(&r, 119u, select(vec3<f32>(0.0), through, straight.p_refract > 0.0));` : `

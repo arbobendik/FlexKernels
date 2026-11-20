@@ -12,6 +12,7 @@ __device__ Vec2 vec2(const float* a) { return make_float2(a[0], a[1]); }
 __device__ float rnorm(const float* a) { return rnorm3df(a[0], a[1], a[2]); }
 #else
 #include "pathtracer.cpp"
+#include "terms.h"
 #define __device__
 #define __global__
 typedef Vector<float, 3> Vec;

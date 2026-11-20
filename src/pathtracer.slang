@@ -421,40 +421,48 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 // + throughput_sheen * PDF_sheen + throughput_toon * PDF_toon
 // otherwise: BSDF * n_dot_l = throughput_refract * PDF_refract
 // as throughput = BSDF_lobe * n_dot_l / PDF_lobe
-[CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {
+[CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint, terms: MaterialTerms, view_terms: ViewTerms) -> float3 {
     // Test if v and l are on the same side of the surface
     if (dot(g_n, negate(in_dir)) * dot(g_n, out_dir) > 0.0f) {
-        let diffuse: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_DIFFUSE, random_state);
+        let diffuse: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_DIFFUSE, random_state,
+            terms, view_terms);
         let reflection: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_REFLECT,
-            random_state);
-        let sheen: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_SHEEN_VELVET, random_state);
+            random_state, terms, view_terms);
+        let sheen: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_SHEEN_VELVET, random_state,
+            terms, view_terms);
 #ifdef FK_TOON
         if (abs(material.toon.x) > 0.0f) {
-            let toon: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_TOON, random_state);
+            let toon: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_TOON, random_state,
+                terms, view_terms);
             return diffuse.throughput * diffuse.pdf + reflection.throughput * reflection.pdf
                 + sheen.throughput * sheen.pdf + toon.throughput * toon.pdf;
         }
 #endif
         return diffuse.throughput * diffuse.pdf + reflection.throughput * reflection.pdf + sheen.throughput * sheen.pdf;
     }
-    let refraction: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_REFRACT, random_state);
+    let refraction: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_REFRACT, random_state,
+        terms, view_terms);
     return refraction.throughput * refraction.pdf;
 }
 
 // Diffuse lobe toward out_dir through the shading normal: added behind the geometry normal,
 // removed in front of it, where BSDF counted it
-[CudaDeviceExport] public func translucentCorrection(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {
+[CudaDeviceExport] public func translucentCorrection(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint, terms: MaterialTerms, view_terms: ViewTerms) -> float3 {
     // Refractive half-vector (eq. 16)
     let through: bool = dot(n, out_dir) * dot(n, negate(in_dir)) < 0.0f;
-    let diffuse: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_DIFFUSE, random_state);
+    let diffuse: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_DIFFUSE, random_state,
+        terms, view_terms);
     let incident: bool = dot(g_n, negate(in_dir)) * dot(g_n, out_dir) > 0.0f;
     return select(float3(0.0f), diffuse.throughput * diffuse.pdf * select(1.0f, -1.0f, incident), through);
 }
 
 // BSDF * n_dot_l with a translucent diffuse lobe
 [CudaDeviceExport] public func translucentBSDF(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {
-    return BSDF(in_dir, out_dir, n, g_n, material, eta_i, eta_o, random_state)
-        + translucentCorrection(in_dir, out_dir, n, g_n, material, eta_i, eta_o, random_state);
+    // The material's and the view's values once for both
+    let terms: MaterialTerms = precomputeMaterial(material, eta_i, eta_o);
+    let view_terms: ViewTerms = precomputeView(in_dir, n, material, terms);
+    return BSDF(in_dir, out_dir, n, g_n, material, eta_i, eta_o, random_state, terms, view_terms)
+        + translucentCorrection(in_dir, out_dir, n, g_n, material, eta_i, eta_o, random_state, terms, view_terms);
 }
 
 __extern_cpp public struct SampleBSDF {
@@ -972,7 +980,7 @@ __extern_cpp public struct ViewTerms {
 
 // SampleBSDF takes in incoming direction, surface normal, material and random state and returns an outgoing direction with throughput according to the BSDF for global illumination
 
-[CudaDeviceExport] public func sampleBSDF(in_dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, random_init: uint, screen_space: float2) -> SampleBSDF {
+[CudaDeviceExport] public func sampleBSDF(in_dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, random_init: uint, screen_space: float2, terms: MaterialTerms, view_terms: ViewTerms) -> SampleBSDF {
     var random_state: uint = random_init;
     // Basic dot products
     let v: float3 = negate(in_dir);
@@ -981,8 +989,6 @@ __extern_cpp public struct ViewTerms {
     let n_i_dot_v: float = abs(n_dot_v);
     // Material constants
     let alpha: float = material.roughness * material.roughness;
-    let terms: MaterialTerms = precomputeMaterial(material, eta_i, eta_o);
-    let view_terms: ViewTerms = precomputeView(in_dir, n, material, terms);
     // Sample using GGX importance sampling for potential refractive or reflective case
     let frame: AnisotropicFrame = view_terms.frame;
     let ggx_n: float3 = sampleHalfVector(v, n_i, alpha, frame, random_state);
@@ -1084,14 +1090,12 @@ __extern_cpp public struct ViewTerms {
 }
 
 // sampleBSDF's lobe toward a given out_dir, for connections
-[CudaDeviceExport] public func lobeBSDF(in_dir: float3, out_dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, lobe: uint, random_init: uint) -> SampleBSDF {
+[CudaDeviceExport] public func lobeBSDF(in_dir: float3, out_dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, lobe: uint, random_init: uint, terms: MaterialTerms, view_terms: ViewTerms) -> SampleBSDF {
     var random_state: uint = random_init;
     let v: float3 = negate(in_dir);
     let n_dot_v: float = dot(n, v);
     let n_i: float3 = n * sign(n_dot_v);
     let alpha: float = material.roughness * material.roughness;
-    let terms: MaterialTerms = precomputeMaterial(material, eta_i, eta_o);
-    let view_terms: ViewTerms = precomputeView(in_dir, n, material, terms);
     let frame: AnisotropicFrame = view_terms.frame;
     var ggx_n: float3 = normalize(v + out_dir);
     var l_dot_h: float = dot(out_dir, ggx_n);
@@ -1167,7 +1171,7 @@ __extern_cpp public struct ViewTerms {
 // => BSDF * n_dot_l / pdf * w_balance = throughput * PDF_lobe / (PDF_lobe + pdf)
 // w_power = pdf^2 / (pdf^2 + PDF_lobe^2)
 // => BSDF * n_dot_l / pdf * w_power = throughput * PDF_lobe / (pdf * (1 + (PDF_lobe / pdf)^2))
-[CudaDeviceExport] public func neeBSDF(in_dir: float3, dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, refracted: bool, pdf: float, power: bool, random_state: uint) -> float3 {
+[CudaDeviceExport] public func neeBSDF(in_dir: float3, dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, refracted: bool, pdf: float, power: bool, random_state: uint, terms: MaterialTerms, view_terms: ViewTerms) -> float3 {
     var f: float3 = float3(0.0f);
     // Diffuse, refraction, reflection, sheen and toon lobes
 #ifdef FK_TOON
@@ -1180,7 +1184,7 @@ __extern_cpp public struct ViewTerms {
         // Translucent diffuse lobe: through the shading normal on the refracted side
         if (lobe == LOBE_DIFFUSE && translucencyUsed() && rgb_to_greyscale(material.translucent) > 0.0f
             ? (dot(n, dir) * dot(n, negate(in_dir)) < 0.0f) == refracted : (lobe == LOBE_REFRACT) == refracted) {
-            let l: SampleBSDF = lobeBSDF(in_dir, dir, n, material, eta_i, eta_o, lobe, random_state);
+            let l: SampleBSDF = lobeBSDF(in_dir, dir, n, material, eta_i, eta_o, lobe, random_state, terms, view_terms);
             if (l.pdf > 0.0f) {
                 if (power) {
                     let ratio: float = l.pdf / pdf;
