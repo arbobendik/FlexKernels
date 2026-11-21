@@ -2113,7 +2113,10 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             // Diffuse, sheen and toon lobes are never delta
             let spread_out: bool = lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_SHEEN_VELVET
                 || lobe_index == LOBE_TOON;
-            let delta: bool = AT_HAIR(false, !spread_out && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y)));
+            // The coat lobe's roughness is the coat's
+            let roughness: float = select(material.roughness, material.coat_roughness, lobe_index == LOBE_COAT);
+            let delta: bool = AT_HAIR(false, !spread_out && (roughness == 0.0f
+                || (lobe_index == LOBE_REFRACT && eta.x == eta.y)));
 #ifdef FK_FCPT_WALK
             straight = !hair && lobe_index == LOBE_REFRACT && material.ior == 1.0f;
             // Camera status kept by a refraction at equal indices, which bends no ray
@@ -2134,7 +2137,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             // Inverse ray footprint criterion for the density of the direction leaving this vertex (Eq. 5)
             let inverse_footprint: bool = withinInverseFootprint(lobe.pdf, spread_out, prev.cos, hit.distance, threshold);
-            let rough: bool = roughLobe(lobe.pdf, spread_out, material.roughness);
+            let rough: bool = roughLobe(lobe.pdf, spread_out, roughness);
             if (arrived) {
                 if (!inverse_footprint) {
                     return fail;

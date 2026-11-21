@@ -125,7 +125,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     let view_terms = precomputeView(in_dir, n, material, terms, random_state);`}
     let lobes = ${FLEXLIGHT
         ? "bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19], anisotropicFrame(material, n_i))"
-        : "precomputeHalf(in_dir, ggx_n, material, v[18], v[19], terms, view_terms)"};
+        : "precomputeHalf(in_dir, ggx_n, view_terms.coat_h, material, v[18], v[19], terms, view_terms)"};
     r[41] = bitcast<u32>(lobes.v_dot_h);
     r[42] = bitcast<u32>(lobes.n_dot_h);
     parity_put(&r, 43u, lobes.refracted);
