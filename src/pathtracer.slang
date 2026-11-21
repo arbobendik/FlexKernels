@@ -422,27 +422,24 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 // otherwise: BSDF * n_dot_l = throughput_refract * PDF_refract
 // as throughput = BSDF_lobe * n_dot_l / PDF_lobe
 [CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint, terms: MaterialTerms, view_terms: ViewTerms) -> float3 {
-    // Test if v and l are on the same side of the surface
-    if (dot(g_n, negate(in_dir)) * dot(g_n, out_dir) > 0.0f) {
-        let diffuse: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_DIFFUSE, random_state,
-            terms, view_terms);
-        let reflection: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_REFLECT,
-            random_state, terms, view_terms);
-        let sheen: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_SHEEN_VELVET, random_state,
-            terms, view_terms);
+    // Diffuse, reflection and sheen, then toon where present, on the same side; refraction alone across
+    let same_side: bool = dot(g_n, negate(in_dir)) * dot(g_n, out_dir) > 0.0f;
 #ifdef FK_TOON
-        if (abs(material.toon.x) > 0.0f) {
-            let toon: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_TOON, random_state,
-                terms, view_terms);
-            return diffuse.throughput * diffuse.pdf + reflection.throughput * reflection.pdf
-                + sheen.throughput * sheen.pdf + toon.throughput * toon.pdf;
-        }
+    let toon: uint = abs(material.toon.x) > 0.0f ? 1u : 0u;
+#else
+    let toon: uint = 0u;
 #endif
-        return diffuse.throughput * diffuse.pdf + reflection.throughput * reflection.pdf + sheen.throughput * sheen.pdf;
+    let lobes: uint = same_side ? 3u + toon : 1u;
+    var f: float3 = float3(0.0f);
+    for (var i: uint = 0u; i < lobes; i++) {
+        let lobe: uint = !same_side ? LOBE_REFRACT : i == 0u ? LOBE_DIFFUSE : i == 1u ? LOBE_REFLECT
+            : i == 2u ? LOBE_SHEEN_VELVET : LOBE_TOON;
+        // One call site for every lobe
+        let l: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, lobe, random_state, terms,
+            view_terms);
+        f = i == 0u ? l.throughput * l.pdf : f + l.throughput * l.pdf;
     }
-    let refraction: SampleBSDF = lobeBSDF(in_dir, out_dir, n, material, eta_i, eta_o, LOBE_REFRACT, random_state,
-        terms, view_terms);
-    return refraction.throughput * refraction.pdf;
+    return f;
 }
 
 // Diffuse lobe toward out_dir through the shading normal: added behind the geometry normal,
