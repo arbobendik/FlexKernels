@@ -30,6 +30,9 @@ public static const uint PATH_LOBE = 18u;
 public static const uint PATH_NEE = 21u;
 public static const uint PATH_INSIDE = 22u;
 public static const uint PATH_SPECTRAL = 23u;
+// The path's wavelength number in stratum PATH_STRATUM of 128 when PATH_STRATIFIED is set, else drawn uniformly
+public static const uint PATH_STRATIFIED = 24u;
+public static const uint PATH_STRATUM = 25u;
 
 // Random streams besides the per vertex ones
 public static const uint STREAM_NEE = 64u;
@@ -850,6 +853,7 @@ public interface IScene {
     public bool hairUsed();
     public bool dispersionUsed();
     public bool shadowFirst();
+    public bool worldReadsPath();
     public Medium outsideMedium(Hit hit);
     public Medium cameraMedium(float3 direction, float distance, out uint filling);
     public float trackMedium(uint filling, float3 origin, float3 dir, float distance, inout uint random_state, inout float3 weight, inout float3 glowed, inout float3 scatter, inout float3 extinction, inout float g, uint depth, uint lobe, bool camera);
@@ -994,6 +998,10 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "false")
     __target_intrinsic(cuda, "fcptShadowFirst()")
     public bool shadowFirst();
+    // Whether the world's program reads the ray's depth or kind (Light Path), so that a sky sample asks it per lobe
+    __target_intrinsic(wgsl, "false")
+    __target_intrinsic(cuda, "fcptWorldReadsPath()")
+    public bool worldReadsPath();
     // Medium a ray enters leaving the volume of hit's face, none by default
     __target_intrinsic(wgsl, "Medium()")
     __target_intrinsic(cuda, "fcptOutsideMedium($0)")
@@ -1479,7 +1487,9 @@ func searchCDF<S: IScene>(scene: S, start: uint2, step: uint2, count: uint, u: f
 #ifdef FK_FCPT_WALK
     // Medium on the side of dir
     let front: bool = dot(context.side, dir) > 0.0f;
-    return scene.env_map_sample(dir, 0u, LOBE_NONE) * scene.shadowTransmittanceIn(ray, POW32,
+    // The transmittance alone where the world reads Light Path, its world then taken per lobe by skyColor
+    let world: float3 = scene.worldReadsPath() ? float3(1.0f) : scene.env_map_sample(dir, 0u, LOBE_NONE);
+    return world * scene.shadowTransmittanceIn(ray, POW32,
         select(context.extinction_behind, context.extinction_front, front),
         select(context.fillings.x, context.fillings.y, front), random_state, context.depth, context.lobe,
         context.surface && !context.fiber, context.length, context.width, noHit(), noHit());
@@ -1515,12 +1525,25 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     if (!(pdf > 0.0f) || all(f == float3(0.0f))) {
         return SkySample(dir, float3(0.0f), float3(0.0f), random_3.state);
     }
+#ifdef FK_FCPT_WALK
+    // Where the world reads Light Path, the world as each lobe's ray sees it, the ray toward the sky being the path's
+    // next; taken before the shadow ray, so nothing of the surface stays live across its trace
+    var seen: float3 = f;
+    if (scene.worldReadsPath()) {
+        seen = skyColor(scene, ray.unit_direction, dir, surface, eta, is_inside, pdf, lobe_state, context.depth + 1u);
+    }
+#endif
     let radiance: float3 = skyRadiance(scene, ray.origin, surface, is_inside, dir
 #ifdef FK_FCPT_WALK
         , context, random_3.state
 #endif
         );
+#ifdef FK_FCPT_WALK
+    // radiance is the transmittance where the world reads Light Path
+    return SkySample(dir, radiance, seen * radiance, random_3.state);
+#else
     return SkySample(dir, radiance, f * radiance, random_3.state);
+#endif
 }
 
 // neeBSDF by the balance heuristic against the BSDF sampled escape
@@ -1532,6 +1555,38 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     return neeBSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y, refracted, pdf, false, random_state,
         terms, view_terms);
 }
+
+#ifdef FK_FCPT_WALK
+// skyBSDF with the world toward dir as the ray leaving by each lobe at depth sees it; a call of its own on every
+// target, as skyBSDF is, so the sky sample's own code stays main's
+[noinline] func skyColor<S: IScene>(scene: S, in_dir: float3, dir: float3, surface: Surface, eta: float2,
+    is_inside: bool, pdf: float, random_state: uint, depth: uint) -> float3 {
+    // neeBSDF's balance heuristic, lobe by lobe
+    let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
+    let n: float3 = surface.smooth_n;
+    // The material's and the view's values once for every lobe
+    let terms: MaterialTerms = precomputeMaterial(surface.material, eta.x, eta.y);
+    let view_terms: ViewTerms = precomputeView(in_dir, n, surface.material, terms);
+    var color: float3 = float3(0.0f);
+#ifdef FK_TOON
+    let lobes: uint = abs(surface.material.toon.x) > 0.0f ? 5u : 4u;
+#else
+    let lobes: uint = 4u;
+#endif
+    for (var i: uint = 0u; i < lobes; i++) {
+        let lobe: uint = i == 3u ? LOBE_SHEEN_VELVET : i == 4u ? LOBE_TOON : i;
+        if (lobe == LOBE_DIFFUSE && translucencyUsed() && rgb_to_greyscale(surface.material.translucent) > 0.0f
+            ? (dot(n, dir) * dot(n, negate(in_dir)) < 0.0f) == refracted : (lobe == LOBE_REFRACT) == refracted) {
+            let l: SampleBSDF = lobeBSDF(in_dir, dir, n, surface.material, eta.x, eta.y, lobe, random_state, terms,
+                view_terms);
+            if (l.pdf > 0.0f) {
+                color += l.throughput * l.pdf / (l.pdf + pdf) * scene.env_map_sample(dir, depth, lobe);
+            }
+        }
+    }
+    return color;
+}
+#endif
 
 // w = PDF_lobe / (PDF_lobe + PDF_env), 1 for delta lobes and without environment sampling
 func escapeWeight<S: IScene>(scene: S, pdf: float, dir: float3) -> float {
@@ -1640,10 +1695,12 @@ uint extractBits(uint e, uint offset, uint count) {
         }
         if (!replay) {
             var candidate: Reservoir = chain;
+            // The wavelength's stratum, kept
+            let strata: uint = insertBits(0u, extractBits(chain.path, PATH_STRATIFIED, 8u), PATH_STRATIFIED, 8u);
             if (extractBits(chain.path, PATH_RC, 2u) == RC_SURFACE) {
                 candidate.radiance = safeDivide(f, chain_throughput);
             } else {
-                candidate.path = insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_LIGHT, PATH_RC, 2u);
+                candidate.path = insertBits(insertBits(strata, b + 1u, PATH_K, 5u), RC_LIGHT, PATH_RC, 2u);
             }
             offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
             let survival_probability: float = survivalProbability(abs(throughput), density);
@@ -1720,6 +1777,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     // Template for generated paths reconnecting at the first vertex meeting both footprint criteria
     var chain: Reservoir = emptyReservoir();
     chain.seed = r.seed;
+    // Every candidate keeps the wavelength's stratum, which its replays draw again
+    let strata: uint = insertBits(0u, extractBits(r.path, PATH_STRATIFIED, 8u), PATH_STRATIFIED, 8u);
+    chain.path = strata;
     var chain_throughput: float3 = float3(0.0f);
 #ifdef FK_FCPT_WALK
     // Last vertex of the camera's segment
@@ -1774,7 +1834,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 candidate.radiance = safeDivide(f * select(weight, 1.0f, extractBits(chain.path, PATH_K, 5u) == b), chain_throughput);
             } else if (prev.rough) {
                 // Reconnection to the environment direction, guarded by the roughness threshold only (Sec. 4.2)
-                candidate.path = insertBits(insertBits(insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_ENV, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 3u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
+                candidate.path = insertBits(insertBits(insertBits(insertBits(strata, b + 1u, PATH_K, 5u), RC_ENV, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 3u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
                 candidate.jac = prev.pdf;
                 candidate.dir = ray.unit_direction;
             }
@@ -1856,10 +1916,14 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let footprint: bool = withinFootprint(scatter, prev.rough, prev.pdf, geometry_density, threshold);
         let material: Material = surface.material;
         let n_dot_v: float = dot(surface.smooth_n, - ray.unit_direction);
-        // First dispersive hit: λ from the seed, which every replay draws again
+        // First dispersive hit: λ from the seed and the path's stratum, which every replay draws again
         // f_c = integral w_c(λ) f(λ) dλ ≈ w_c(λ) / p(λ) * f(λ)
+        // u = (stratum + jitter) / 128, jitter uniform: u is uniform, its strata spread over the pixel's samples
         if (scene.dispersionUsed() && wavelength == 0.0f && scatter && dispersive(material)) {
-            let drawn: float2 = sampleWavelength(pcg(stream(r.seed, STREAM_WAVELENGTH)).value);
+            let jitter: float = pcg(stream(r.seed, STREAM_WAVELENGTH)).value;
+            let u: float = select(jitter, (float(extractBits(r.path, PATH_STRATUM, 7u)) + jitter) / 128.0f,
+                extractBits(r.path, PATH_STRATIFIED, 1u) == 1u);
+            let drawn: float2 = sampleWavelength(u);
             wavelength = drawn.x;
             throughput *= wavelengthWeights(drawn.x) / drawn.y;
         }
@@ -1900,7 +1964,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let chain_found: bool = extractBits(chain.path, PATH_RC, 2u) == RC_SURFACE;
         // Reconnection at this vertex for paths ending here
         var here: Reservoir = chain;
-        here.path = insertBits(insertBits(insertBits(insertBits(0u, b, PATH_K, 5u), RC_SURFACE, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 3u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
+        here.path = insertBits(insertBits(insertBits(insertBits(strata, b, PATH_K, 5u), RC_SURFACE, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 3u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
         here.path = insertBits(here.path, select(0u, 1u, wavelength > 0.0f), PATH_SPECTRAL, 1u);
         here.jac = prev.pdf * geometry_density;
         withReservoirHit(here, hit);
@@ -1961,6 +2025,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 if (!nee) {
                     return fail;
                 }
+#ifdef FK_FCPT_WALK
+                if (scene.worldReadsPath()) {
+                    return Shift(throughput * (skyColor(scene, ray.unit_direction, r.dir, surface, eta, is_inside,
+                        environmentPdf(scene, r.dir), surface.random_state, b + 1u) * r.radiance) / r.jac,
+                        density / r.jac);
+                }
+#endif
                 return Shift(throughput * skyBSDF(ray.unit_direction, r.dir, surface, eta, is_inside, environmentPdf(scene, r.dir), surface.random_state) * r.radiance / r.jac, density / r.jac);
             }
             if (nee != (extractBits(r.path, PATH_NEE, 1u) == 1u)) {
@@ -2027,7 +2098,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     candidate.radiance = light.radiance;
                 } else {
                     // Forced reconnection to the light vertex (Sec. 6.2.3)
-                    candidate.path = insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_LIGHT, PATH_RC, 2u);
+                    candidate.path = insertBits(insertBits(strata, b + 1u, PATH_K, 5u), RC_LIGHT, PATH_RC, 2u);
                 }
                 offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
             }
@@ -2049,7 +2120,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     candidate.radiance = sky.radiance;
                 } else {
                     // Forced reconnection to the environment direction
-                    candidate.path = insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_LIGHT, PATH_RC, 2u);
+                    candidate.path = insertBits(insertBits(strata, b + 1u, PATH_K, 5u), RC_LIGHT, PATH_RC, 2u);
                 }
                 offer(sel, withEnd(candidate, END_SKY, b, f), f * scale / density);
             }
@@ -2304,7 +2375,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 candidate.radiance = safeDivide(f * select(weight, 1.0f, extractBits(chain.path, PATH_K, 5u) == b), chain_throughput);
             } else if (prev.rough) {
                 // Reconnection to the environment direction, guarded by the roughness threshold only (Sec. 4.2)
-                candidate.path = insertBits(insertBits(insertBits(insertBits(0u, b + 1u, PATH_K, 5u), RC_ENV, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 3u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
+                candidate.path = insertBits(insertBits(insertBits(insertBits(strata, b + 1u, PATH_K, 5u), RC_ENV, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 3u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
                 candidate.jac = prev.pdf;
                 candidate.dir = ray.unit_direction;
             }
@@ -2710,6 +2781,9 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
         return;
     }
     let pixel_seed: uint = stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y);
+    // Wavelength strata of the pixel's samples over all frames: k * 2^32 / golden ratio from a fixed offset per pixel
+    let offset: uint = stream(global_invocation_id.x + scene.renderSize().x * global_invocation_id.y,
+        STREAM_WAVELENGTH);
     var initial: Selection = emptySelection();
     initial.random_state = stream(pixel_seed, STREAM_SELECT);
     initial.sums = !scene.restirUsed();
@@ -2722,6 +2796,9 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     for (var i: uint = 0u; i < scene.samples(); i++) {
         var r: Reservoir = emptyReservoir();
         r.seed = stream(pixel_seed, i);
+        let k: uint = scene.frame() * scene.samples() + i;
+        r.path = insertBits(insertBits(0u, 1u, PATH_STRATIFIED, 1u), (offset + k * 2654435769u) >> 25u,
+            PATH_STRATUM, 7u);
         var path: Domain = {};
         if (!scene.storedDomainInitial(p, r.seed, path)) {
             seen += scene.missed(p, path, scale);
@@ -2747,11 +2824,17 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
         return;
     }
     let pixel_seed: uint = stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y);
+    // Wavelength strata of the pixel's samples over all frames: k * 2^32 / golden ratio from a fixed offset per pixel
+    let offset: uint = stream(global_invocation_id.x + scene.renderSize().x * global_invocation_id.y,
+        STREAM_WAVELENGTH);
     var initial: Selection = {};
     initial.random_state = stream(pixel_seed, STREAM_SELECT);
     for (var i: uint = 0u; i < scene.samples(); i++) {
         var r: Reservoir = {};
         r.seed = stream(pixel_seed, i);
+        let k: uint = scene.frame() * scene.samples() + i;
+        r.path = insertBits(insertBits(0u, 1u, PATH_STRATIFIED, 1u), (offset + k * 2654435769u) >> 25u,
+            PATH_STRATUM, 7u);
         walk(scene, dom, r, false, 1.0f / float(scene.samples()), initial);
     }
     scene.storeReservoirInitial(p, finalize(initial, 1.0f), dom.hit);

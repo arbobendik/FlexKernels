@@ -37,8 +37,9 @@ build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	$(SLANGC) $(SLANGFLAGS) $< -target cuda -o $@
 	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#define Matrix SlangMatrix\n#include "slang-cuda-prelude.h"|' $@
 	sed -i 's|^__device__ SampleBSDF lobeBSDF(|__device__ __forceinline__ SampleBSDF lobeBSDF(|' $@
+	sed -i -E 's/^__device__ ([A-Za-z]+ precompute(Material|View|Half))\(/__device__ __forceinline__ \1(/' $@
 	sed -i -E 's/^__device__ (float3  lobeThroughput|float lobeDensity|float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF|float3  sampleHalfVector)\(/__device__ __forceinline__ \1(/' $@
-	sed -i 's/^static __device__ __noinline__ /static __device__ /' $@
+	sed -i '/ skyColor_0(/!s/^static __device__ __noinline__ /static __device__ /' $@
 	sed -i -E 's/^static __device__ (TreeSample sampleLightTree_0|float3  lightBSDF_0)\(/static __device__ __forceinline__ \1(/' $@
 	case $@ in *-restir/*) sed -i 's/^__device__ float childShare(/__device__ __forceinline__ float childShare(/' $@;; esac
 	echo '#undef Matrix' >> $@
