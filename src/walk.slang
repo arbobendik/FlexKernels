@@ -1474,24 +1474,12 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     // The material's and the view's values once for every lobe
     let terms: MaterialTerms = precomputeMaterial(surface.material, eta.x, eta.y);
     let view_terms: ViewTerms = precomputeView(in_dir, n, surface.material, terms);
-    var color: float3 = float3(0.0f);
-#ifdef FK_TOON
-    let lobes: uint = abs(surface.material.toon.x) > 0.0f ? 5u : 4u;
-#else
-    let lobes: uint = 4u;
-#endif
-    for (var i: uint = 0u; i < lobes; i++) {
-        let lobe: uint = i == 3u ? LOBE_SHEEN_VELVET : i == 4u ? LOBE_TOON : i;
-        if (lobe == LOBE_DIFFUSE && translucencyUsed() && rgb_to_greyscale(surface.material.translucent) > 0.0f
-            ? (dot(n, dir) * dot(n, negate(in_dir)) < 0.0f) == refracted : (lobe == LOBE_REFRACT) == refracted) {
-            let l: SampleBSDF = lobeBSDF(in_dir, dir, n, surface.material, eta.x, eta.y, lobe, random_state, terms,
-                view_terms);
-            if (l.pdf > 0.0f) {
-                color += l.throughput * l.pdf / (l.pdf + pdf) * scene.env_map_sample(dir, depth, lobe);
-            }
-        }
-    }
-    return color;
+    // The world toward dir as the ray leaving by each lobe at depth sees it
+    let seen: float3[5] = { scene.env_map_sample(dir, depth, LOBE_DIFFUSE),
+        scene.env_map_sample(dir, depth, LOBE_REFRACT), scene.env_map_sample(dir, depth, LOBE_REFLECT),
+        scene.env_map_sample(dir, depth, LOBE_SHEEN_VELVET), scene.env_map_sample(dir, depth, LOBE_TOON) };
+    return neeLobes(in_dir, dir, n, surface.material, eta.x, eta.y, refracted, pdf, false, random_state, terms,
+        view_terms, seen);
 }
 #endif
 
@@ -2108,9 +2096,59 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             // Connections evaluate the given direction
             if (connect || arrived) {
-                lobe = AT_HAIR(scene.connectHair(surface.hair, material.albedo, material.specular_tint, ray.unit_direction, dir),
-                    lobeBSDF(ray.unit_direction, dir, surface.smooth_n, material, eta.x, eta.y, lobe_index, surface.random_state,
-                        terms, view_terms));
+#ifdef FK_FCPT_WALK
+                if (hair) {
+                    lobe = scene.connectHair(surface.hair, material.albedo, material.specular_tint, ray.unit_direction,
+                        dir);
+                } else
+#endif
+                {
+                    // The stored lobe toward dir by its half vector terms, those of sampleBSDF where drawn
+                    let in_dir: float3 = ray.unit_direction;
+                    let n_i: float3 = surface.smooth_n * sign(n_dot_v);
+                    let n_i_dot_l: float = dot(n_i, dir);
+                    let alpha: float = material.roughness * material.roughness;
+                    var ggx_n: float3 = reflectedHalf(in_dir, dir);
+                    if (lobe_index == LOBE_REFRACT) {
+                        ggx_n = refractedHalf(in_dir, dir, surface.smooth_n, eta.x, eta.y);
+                    }
+                    if (lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_TOON) {
+                        ggx_n = sampledHalf(in_dir, surface.smooth_n, material, surface.random_state, view_terms);
+                    }
+                    let lobe_terms: HalfTerms = precomputeHalf(in_dir, ggx_n, material, eta.x, eta.y, terms,
+                        view_terms);
+                    var pdf: float = 0.0f;
+                    var lobe_throughput: float3 = float3(0.0f);
+                    switch (lobe_index) {
+                    case LOBE_DIFFUSE:
+                        pdf = diffusePDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
+                        lobe_throughput = diffuseBSDF(dir, n_i, alpha, material, lobe_terms);
+                        break;
+                    case LOBE_REFRACT:
+                        pdf = refractPDF(n_i_dot_l, dot(dir, ggx_n), abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
+                        lobe_throughput = refractBSDF(dir, n_i, alpha, material, lobe_terms);
+                        break;
+                    case LOBE_SHEEN_VELVET:
+                        pdf = sheenVelvetPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
+                        lobe_throughput = sheenVelvetBSDF(dir, n_i, alpha, material, lobe_terms);
+                        break;
+#ifdef FK_TOON
+                    case LOBE_TOON:
+                        pdf = toonPDF(n_i_dot_l, dot(dir, lobe_terms.toon_axis), abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
+                        lobe_throughput = toonBSDF(dir, n_i, alpha, material, lobe_terms);
+                        break;
+#endif
+                    default:
+                        pdf = reflectPDF(n_i_dot_l, 0.0f, abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
+                        lobe_throughput = reflectBSDF(dir, n_i, alpha, material, lobe_terms);
+                        break;
+                    }
+                    // Directions the lobe can't sample carry no throughput
+                    if (pdf > 0.0f) {
+                        lobe = SampleBSDF(dir, lobe_throughput, surface.random_state, lobe_index == LOBE_REFRACT,
+                            lobe_index, pdf);
+                    }
+                }
             }
             // Delta lobes have no competing light sample, straight transmission keeps the preceding vertex's weights
             // Diffuse, sheen and toon lobes are never delta

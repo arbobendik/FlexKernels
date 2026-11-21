@@ -43,7 +43,7 @@ int main() {
         const Vector<float, 3> in_dir(sqrtf(1 - COSINES[k] * COSINES[k]), 0, -COSINES[k]);
         for (unsigned i = 0; i < 1u << 18; i++) {
             const SampleBSDF s = sampleBSDF(in_dir, n, TRANSLUCENT[m], 1, 1, hash(i), Vector<float, 2>(0, 0));
-            const SampleBSDF c = lobeBSDF(in_dir, s.unit_direction, n, TRANSLUCENT[m], 1, 1, 0u, hash(i));
+            const SampleBSDF c = towardLobe(in_dir, s.unit_direction, n, TRANSLUCENT[m], 1, 1, 0u, hash(i));
             const float f = translucentBSDF(in_dir, s.unit_direction, n, n, TRANSLUCENT[m], 1, 1, hash(i)).x, back = s.unit_direction.z < 0;
             sum += s.throughput.x, through += back * s.throughput.x;
             failed |= s.refracted != back || (m == 0 && !back);
@@ -70,8 +70,8 @@ int main() {
         for (unsigned j = 0; j < 4096; j++) {
             const float z = (b / 8 + (j % 64 + 0.5f) / 64) / 4 - 1, phi = (b % 8 + (j / 64 + 0.5f) / 64) / 8 * 2 * PI - PI;
             const Vector<float, 3> d(sqrtf(1 - z * z) * cosf(phi), sqrtf(1 - z * z) * sinf(phi), z);
-            const float pdf = lobeBSDF(above, d, tilted, TRANSLUCENT[1], 1, 1, 0u, hash(j)).pdf;
-            const float mirrored = lobeBSDF(above, mirror(d), tilted, TRANSLUCENT[1], 1, 1, 0u, hash(j)).pdf;
+            const float pdf = towardLobe(above, d, tilted, TRANSLUCENT[1], 1, 1, 0u, hash(j)).pdf;
+            const float mirrored = towardLobe(above, mirror(d), tilted, TRANSLUCENT[1], 1, 1, 0u, hash(j)).pdf;
             expect_kept += agrees(d) * pdf * PI / 16 / 4096, expect_moved += !agrees(mirror(d)) * mirrored * PI / 16 / 4096;
         }
         worst_bin = fmax(worst_bin, fmax(fabs(kept[b] - expect_kept), fabs(moved[b] - expect_moved)) / (0.0005 + sqrt(expect_kept / (1 << 22))));
@@ -94,7 +94,7 @@ int main() {
         for (unsigned i = 0; i < 1u << 18; i++) {
             const SampleBSDF s = sampleBSDF(in_dir, n, SHEEN[0], 1, 1, hash(i), Vector<float, 2>(0, 0));
             const SampleBSDF w = sampleBSDF(in_dir, n, SHEEN[1], 1, 1, hash(i), Vector<float, 2>(0, 0));
-            const SampleBSDF c = lobeBSDF(in_dir, w.unit_direction, n, SHEEN[1], 1, 1, w.lobe, hash(i));
+            const SampleBSDF c = towardLobe(in_dir, w.unit_direction, n, SHEEN[1], 1, 1, w.lobe, hash(i));
             alone += s.throughput.x / (1 << 18), over += w.throughput.x / (1 << 18);
             alone2 += s.throughput.x * s.throughput.x / (1 << 18), over2 += w.throughput.x * w.throughput.x / (1 << 18);
             if (w.pdf > 0)
@@ -129,7 +129,7 @@ int main() {
         for (unsigned i = 0; i < 1u << 18; i++) {
             const SampleBSDF s = sampleBSDF(in_dir, n, VELVET[0], 1, 1, hash(i), Vector<float, 2>(0, 0));
             const SampleBSDF w = sampleBSDF(in_dir, n, VELVET[1], 1, 1, hash(i), Vector<float, 2>(0, 0));
-            const SampleBSDF c = lobeBSDF(in_dir, w.unit_direction, n, VELVET[1], 1, 1, w.lobe, hash(i));
+            const SampleBSDF c = towardLobe(in_dir, w.unit_direction, n, VELVET[1], 1, 1, w.lobe, hash(i));
             alone += s.throughput.x / (1 << 18), over += w.throughput.x / (1 << 18);
             alone2 += s.throughput.x * s.throughput.x / (1 << 18), over2 += w.throughput.x * w.throughput.x / (1 << 18);
             if (w.pdf > 0)
@@ -225,7 +225,7 @@ int main() {
         for (unsigned i = 0; i < 1u << 18; i++) {
             const SampleBSDF s = sampleBSDF(in_dir, up, alone, 1, 1, hash(i), Vector<float, 2>(0, 0));
             const SampleBSDF m = sampleBSDF(in_dir, up, half, 1, 1, hash(i), Vector<float, 2>(0, 0));
-            const SampleBSDF c = lobeBSDF(in_dir, m.unit_direction, up, half, 1, 1, m.lobe, hash(i));
+            const SampleBSDF c = towardLobe(in_dir, m.unit_direction, up, half, 1, 1, m.lobe, hash(i));
             sampled += s.throughput.x / (1 << 18), squares += s.throughput.x * s.throughput.x / (1 << 18);
             const Vector<float, 3> t = sampleBSDF(in_dir, up, coloured, 1, 1, hash(i), Vector<float, 2>(0, 0)).throughput;
             tinted[0] += t.x / (1 << 18), tinted[1] += t.y / (1 << 18), tinted[2] += t.z / (1 << 18);
@@ -321,7 +321,7 @@ int main() {
         }
         for (unsigned i = 0; i < 1u << 18; i++) {
             const SampleBSDF s = sampleBSDF(in_dir, n, M, 1, 1.5f, hash(i), Vector<float, 2>(0, 0));
-            const SampleBSDF c = lobeBSDF(in_dir, s.unit_direction, n, M, 1, 1.5f, s.lobe, hash(i));
+            const SampleBSDF c = towardLobe(in_dir, s.unit_direction, n, M, 1, 1.5f, s.lobe, hash(i));
             const Vector<float, 3> l = s.unit_direction;
             const float f = BSDF(in_dir, l, n, n, M, 1, 1.5f, hash(i)).x;
             sum += s.throughput.x / (1 << 18), squares += s.throughput.x * s.throughput.x / (1 << 18);
@@ -356,8 +356,8 @@ int main() {
     double limit = 0;
     for (unsigned i = 0; i < 4096; i++) {
         const SampleBSDF s = sampleBSDF(oblique, n, isotropic, 1, 1.5f, hash(i), Vector<float, 2>(0, 0));
-        const SampleBSDF c = lobeBSDF(oblique, s.unit_direction, n, near, 1, 1.5f, s.lobe, hash(i));
-        const SampleBSDF e = lobeBSDF(oblique, s.unit_direction, n, isotropic, 1, 1.5f, s.lobe, hash(i));
+        const SampleBSDF c = towardLobe(oblique, s.unit_direction, n, near, 1, 1.5f, s.lobe, hash(i));
+        const SampleBSDF e = towardLobe(oblique, s.unit_direction, n, isotropic, 1, 1.5f, s.lobe, hash(i));
         if (e.pdf > 0 && e.throughput.x > 0) limit = fmax(limit, fmax(fabs(c.pdf / e.pdf - 1), fabs(c.throughput.x / e.throughput.x - 1)));
     }
     printf("anisotropic glass toward isotropic: worst mismatch %.2g\n", limit);
@@ -376,7 +376,8 @@ int main() {
             for (unsigned j = 0; j < 4096; j++) {
                 const float z = (b / 8 + (j % 64 + 0.5f) / 64) / 4 - 1, phi = (b % 8 + (j / 64 + 0.5f) / 64) / 8 * 2 * PI - PI;
                 const Vector<float, 3> d(sqrtf(1 - z * z) * cosf(phi), sqrtf(1 - z * z) * sinf(phi), z);
-                for (unsigned lobe = 1; lobe < 3; lobe++) expect += lobeBSDF(oblique, d, n, M, 1, 1.5f, lobe, hash(j)).pdf * PI / 16 / 4096;
+                for (unsigned lobe = 1; lobe < 3; lobe++)
+                    expect += towardLobe(oblique, d, n, M, 1, 1.5f, lobe, hash(j)).pdf * PI / 16 / 4096;
             }
             worst_bin = fmax(worst_bin, fabs(share[b] - expect) / (0.0005 + sqrt(expect / (1 << 22))));
         }

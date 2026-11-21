@@ -61,6 +61,44 @@ fn parity_importance(node: LightBounds, p: vec3<f32>, normal: vec3<f32>) -> f32 
     return max(node.phi * cos_theta_p / max(d2, length(diagonal) / 2.0) * facing, 0.0);
 }
 `;
+// FK's lobes by their BSDF and PDF functions, toward a given out_dir as the walk's replay takes them
+const LOBES = /* wgsl */ `
+fn parity_throughput(l: vec3<f32>, n_i: vec3<f32>, alpha: f32, material: Material, lobes: HalfTerms, lobe: u32)
+    -> vec3<f32> {
+    if (lobe == 0u) { return diffuseBSDF(l, n_i, alpha, material, lobes); }
+    if (lobe == 1u) { return refractBSDF(l, n_i, alpha, material, lobes); }
+    return reflectBSDF(l, n_i, alpha, material, lobes);
+}
+fn parity_density(n_i_dot_l: f32, l_dot_h: f32, n_i_dot_v: f32, alpha: f32, lobes: HalfTerms, eta_i: f32,
+    eta_o: f32, lobe: u32) -> f32 {
+    if (lobe == 0u) { return diffusePDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, lobes, eta_i, eta_o); }
+    if (lobe == 1u) { return refractPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, lobes, eta_i, eta_o); }
+    return reflectPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, lobes, eta_i, eta_o);
+}
+fn parity_toward(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: Material, eta_i: f32, eta_o: f32,
+    lobe: u32, random_state: u32, terms: MaterialTerms, view_terms: ViewTerms) -> SampleBSDF {
+    let n_dot_v = dot(n, - in_dir);
+    let n_i = n * sign(n_dot_v);
+    let alpha = material.roughness * material.roughness;
+    var l_dot_h = 0.0;
+    var ggx_n = reflectedHalf(in_dir, out_dir);
+    if (lobe == 0u) {
+        ggx_n = sampledHalf(in_dir, n, material, random_state, view_terms);
+    } else if (lobe == 1u) {
+        ggx_n = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
+        l_dot_h = dot(out_dir, ggx_n);
+    }
+    let lobes = precomputeHalf(in_dir, ggx_n, material, eta_i, eta_o, terms, view_terms);
+    let pdf = parity_density(dot(n_i, out_dir), l_dot_h, abs(n_dot_v), alpha, lobes, eta_i, eta_o, lobe);
+    if (!(pdf > 0.0)) {
+        return SampleBSDF();
+    }
+    return SampleBSDF(out_dir, parity_throughput(out_dir, n_i, alpha, material, lobes, lobe), random_state,
+        lobe == 1u, lobe, pdf);
+}
+`;
+const THROUGHPUT = FLEXLIGHT ? "lobeThroughput" : "parity_throughput";
+const DENSITY = FLEXLIGHT ? "lobeDensity" : "parity_density";
 const KERNEL = /* wgsl */ `
 struct ParityCase { v: array<f32, 20>, random_state: u32 }
 @group(0) @binding(0) var<storage, read> parity_cases: array<ParityCase>;
@@ -137,10 +175,10 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         let side = select(dot(n_i, out_dir) > 0.0, dot(n_i, out_dir) < 0.0, lobe == 1u);
         var throughput = vec3<f32>(0.0);
         if (p_lobe[lobe] > 1e-6 && side) {
-            throughput = lobeThroughput(out_dir, n_i, alpha, material, lobes, lobe);
+            throughput = ${THROUGHPUT}(out_dir, n_i, alpha, material, lobes, lobe);
         }
         parity_put(&r, 56u + 4u * lobe, throughput);
-        r[59u + 4u * lobe] = bitcast<u32>(lobeDensity(dot(n_i, out_dir), dot(out_dir, ggx_n), abs(dot(n, in_dir)), alpha,
+        r[59u + 4u * lobe] = bitcast<u32>(${DENSITY}(dot(n_i, out_dir), dot(out_dir, ggx_n), abs(dot(n, in_dir)), alpha,
             lobes, v[18], v[19], lobe));
     }
     let sample = sampleBSDF(in_dir, n, material, v[18], v[19], random_state, vec2<f32>(0.0)${TERMS});
@@ -151,7 +189,8 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[76] = sample.lobe;
     r[77] = bitcast<u32>(sample.pdf);
     for (var lobe = 0u; lobe < 3u; lobe++) {
-        let connected = lobeBSDF(in_dir, out_dir, n, material, v[18], v[19], lobe, random_state${TERMS});
+        let connected = ${FLEXLIGHT ? "lobeBSDF" : "parity_toward"}(in_dir, out_dir, n, material, v[18], v[19], lobe,
+            random_state${TERMS});
         parity_put(&r, 78u + 4u * lobe, connected.throughput * connected.pdf);
         r[81u + 4u * lobe] = bitcast<u32>(connected.pdf);
     }
@@ -372,7 +411,7 @@ if (FLEXLIGHT) {
     .replace("instance_index: u32", "absorption: vec3<f32>")
     .replace("instance_material[instance_index].albedo", "absorption");
 }
-const module = device.createShaderModule({ code: (FLEXLIGHT ? LIGHT_TREE : MATERIAL) + source + KERNEL });
+const module = device.createShaderModule({ code: (FLEXLIGHT ? LIGHT_TREE : MATERIAL + LOBES) + source + KERNEL });
 const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "parity" } });
 const bindGroup = device.createBindGroup({
   layout: pipeline.getBindGroupLayout(0),

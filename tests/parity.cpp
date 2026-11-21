@@ -81,14 +81,19 @@ __device__ Result evaluate(const Case& c) {
     const float p_lobe[] = {r.lobes.p_diffuse, r.lobes.p_refract, r.lobes.p_reflect};
     for (unsigned lobe = 0; lobe < 3; lobe++) {
         const bool side = lobe == 1 ? dot3(vec(n_i), out_dir) < 0 : dot3(vec(n_i), out_dir) > 0;
-        r.lobe_throughput[lobe] = p_lobe[lobe] > 1e-6f && side ? lobeThroughput(out_dir, vec(n_i), alpha, material, r.lobes,
-            lobe) : vec(zero);
-        r.lobe_density[lobe] = lobeDensity(dot3(vec(n_i), out_dir), dot3(out_dir, vec(ggx_n)), fabsf(n_dot_v), alpha,
-            r.lobes, c.in[18], c.in[19], lobe);
+        const Vec throughput = lobe == 0 ? diffuseBSDF(out_dir, vec(n_i), alpha, material, r.lobes)
+            : lobe == 1 ? refractBSDF(out_dir, vec(n_i), alpha, material, r.lobes)
+            : reflectBSDF(out_dir, vec(n_i), alpha, material, r.lobes);
+        r.lobe_throughput[lobe] = p_lobe[lobe] > 1e-6f && side ? throughput : vec(zero);
+        const float n_i_dot_l = dot3(vec(n_i), out_dir), l_dot_h = dot3(out_dir, vec(ggx_n));
+        const float n_i_dot_v = fabsf(n_dot_v);
+        r.lobe_density[lobe] = lobe == 0 ? diffusePDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, r.lobes, c.in[18], c.in[19])
+            : lobe == 1 ? refractPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, r.lobes, c.in[18], c.in[19])
+            : reflectPDF(n_i_dot_l, l_dot_h, n_i_dot_v, alpha, r.lobes, c.in[18], c.in[19]);
     }
     r.sample = sampleBSDF(in_dir, n, material, c.in[18], c.in[19], c.random_state, Vec2{});
     for (unsigned lobe = 0; lobe < 3; lobe++) {
-        const SampleBSDF s = lobeBSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], lobe, c.random_state);
+        const SampleBSDF s = towardLobe(in_dir, out_dir, n, material, c.in[18], c.in[19], lobe, c.random_state);
         const float weighted[] = {s.throughput.x * s.pdf, s.throughput.y * s.pdf, s.throughput.z * s.pdf};
         r.connected[lobe] = vec(weighted);
         r.connected_pdf[lobe] = s.pdf;

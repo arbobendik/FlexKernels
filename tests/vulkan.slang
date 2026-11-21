@@ -185,10 +185,10 @@ void main(uint3 id: SV_DispatchThreadID, uint local: SV_GroupIndex, uint3 group:
     const ViewTerms view_terms = precomputeView(r.dir, n, material, terms);
     const SampleBSDF sampled = sampleBSDF(r.dir, n, material, 1.0f, 1.5f, stream(r.seed, id.x), float2(0.0f), terms,
         view_terms);
-    const SampleBSDF connected = lobeBSDF(r.dir, sampled.unit_direction, n, material, 1.0f, 1.5f, sampled.lobe,
-        pcg(hash(r.path)).state, terms, view_terms);
+    const float3 connected = BSDF(r.dir, sampled.unit_direction, n, n, material, 1.0f, 1.5f, pcg(hash(r.path)).state,
+        terms, view_terms);
     Selection sel = {};
-    offer(sel, withEnd(r, 1u, 2u, connected.throughput * smithG1(r.w, fresnel(r.c, 1.0f, 1.5f))),
+    offer(sel, withEnd(r, 1u, 2u, connected * smithG1(r.w, fresnel(r.c, 1.0f, 1.5f))),
         safeDivide(r.f, tangentToWorldNormalMap(r.radiance, float3x3(r.dir, r.f, n))));
     offerShifted(sel, r, Shift(r.f, rgb_to_greyscale(r.radiance)), r.c);
     const LightBounds bounds = LightBounds(r.dir, r.radiance, n, r.w, r.c);

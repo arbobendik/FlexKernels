@@ -36,9 +36,12 @@ build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	mkdir -p $(@D)
 	$(SLANGC) $(SLANGFLAGS) $< -target cuda -o $@
 	sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#define Matrix SlangMatrix\n#include "slang-cuda-prelude.h"|' $@
-	sed -i 's|^__device__ SampleBSDF lobeBSDF(|__device__ __forceinline__ SampleBSDF lobeBSDF(|' $@
+	sed -i -E 's/^__device__ (HalfTerms (sampled|reflected|refracted)Half)\(/__device__ __forceinline__ \1(/' $@
 	sed -i -E 's/^__device__ ([A-Za-z]+ precompute(Material|View|Half))\(/__device__ __forceinline__ \1(/' $@
-	sed -i -E 's/^__device__ (float3  lobeThroughput|float lobeDensity|float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF|float3  sampleHalfVector)\(/__device__ __forceinline__ \1(/' $@
+	sed -i -E 's/^__device__ (float3  (diffuse|refract|reflect|sheenVelvet|toon)BSDF)\(/__device__ __forceinline__ \1(/' $@
+	sed -i -E 's/^__device__ (SampleBSDF [a-zA-Z]+Sample|float [a-zA-Z]+PDF)\(/__device__ __forceinline__ \1(/' $@
+	sed -i -E 's/^__device__ (float3  BSDF|SampleBSDF sampleBSDF|float3  neeBSDF)\(/__device__ __forceinline__ \1(/' $@
+	sed -i -E 's/^__device__ (float3  sampleHalfVector|float3  misWeighted)\(/__device__ __forceinline__ \1(/' $@
 	sed -i '/ skyColor_0(/!s/^static __device__ __noinline__ /static __device__ /' $@
 	sed -i -E 's/^static __device__ (TreeSample sampleLightTree_0|float3  lightBSDF_0)\(/static __device__ __forceinline__ \1(/' $@
 	case $@ in *-restir/*) sed -i 's/^__device__ float childShare(/__device__ __forceinline__ float childShare(/' $@;; esac
@@ -74,7 +77,7 @@ build/cpp-untoon/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	$(SLANGC) $(SLANGFLAGS) -DFK_HAIR=1 $< -target cpp -o $@
 
 build/parity-untoon-cpu: tests/parity.cpp build/cpp-untoon/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -Ibuild/cpp-untoon $< -o $@
+	$(CXX) -std=c++20 -O2 -DFK_UNTOON=1 -Ibuild/cpp-untoon $< -o $@
 
 build/parity-cpu: tests/parity.cpp build/cpp/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -Ibuild/cpp $< -o $@
@@ -83,7 +86,7 @@ build/albedo-cpu: tests/albedo.cpp build/cpp/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -Ibuild/cpp $< -o $@
 
 build/dispersion-cpu: tests/dispersion.cpp build/cpp-restir/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
 build/cpp-restir/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	mkdir -p build/cpp-restir
@@ -94,37 +97,37 @@ build/cpp-passes/pathtracer.cpp: $(SOURCE) $(SLANGC)
 	$(SLANGC) $(SLANGFLAGS) -DFK_RESTIR=1 -DFK_FCPT_WALK=1 -DFK_RESTIR_PASSES=1 $< -target cpp -o $@
 
 build/passes-cpu: tests/passes.cpp build/cpp-passes/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-passes $< -o $@
+	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-passes $< -o $@
 
 build/summing-cpu: tests/summing.cpp build/cpp-restir/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
 build/walk-cpu: tests/walk.cpp build/cpp-restir/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
 build/scatternee-cpu: tests/scatternee.cpp build/cpp-restir/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
 build/flight-cpu: tests/flight.cpp build/cpp-restir/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
 build/shadowmedia-cpu: tests/shadowmedia.cpp build/cpp-restir/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
 build/media-cpu: tests/media.cpp build/cpp-restir/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
 build/pathray-cpu: tests/pathray.cpp build/cpp-restir/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
 build/layers-cpu: tests/layers.cpp build/cpp-restir/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
 build/cones-cpu: tests/cones.cpp build/cpp-restir/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
+	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
 build/coverage-cpu: tests/coverage.cpp build/cpp-restir/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -ffunction-sections -Wl,--gc-sections -Ibuild/cpp-restir \
+	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir \
 		-DGENERATED='"build/cpp-restir/pathtracer.cpp"' $< -o $@
 
 build/parity-cuda: tests/parity.cpp build/cuda/pathtracer.cuh $(REFERENCE)/renderer.h
