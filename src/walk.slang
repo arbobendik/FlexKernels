@@ -1778,6 +1778,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
     for (var b: uint = 0u; ; b++) {
 #endif
         let point_light_lighting: bool = hit.is_point_light == 1u;
+        // A reconnection ray meeting another surface first is not in the image of the shift
+        if (replay && rc == RC_SURFACE && b == k
+            && (hit.instance_index != rc_hit.instance_index || hit.triangle_index != rc_hit.triangle_index)) {
+            return fail;
+        }
         var surface: Surface = Surface();
         // Smooth normal the surface emits along, before it faces the ray
         var front_n: float3 = float3(0.0f);
@@ -1915,7 +1920,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         }
         if (arrived) {
             // The stored path takes over at the reconnection vertex
-            if (hit.instance_index != rc_hit.instance_index || hit.triangle_index != rc_hit.triangle_index || !footprint) {
+            if (!footprint) {
                 return fail;
             }
             // Its stored radiance, f / chain_throughput, holds only for the same spectral state at x_k
