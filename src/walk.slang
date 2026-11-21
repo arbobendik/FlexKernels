@@ -1316,7 +1316,7 @@ func lightBSDF(in_dir: float3, light: TreeSample, smooth_n: float3, geometry_n: 
     }
     // The material's and the view's values once for the light sample
     let terms: MaterialTerms = precomputeMaterial(material, eta_i, eta_o);
-    let view_terms: ViewTerms = precomputeView(in_dir, smooth_n, material, terms);
+    let view_terms: ViewTerms = precomputeView(in_dir, smooth_n, material, terms, random_state);
     if (!competing || light.density == 0.0f) {
         return BSDF(in_dir, light.dir, smooth_n, geometry_n, material, eta_i, eta_o, random_state, terms, view_terms)
             * light.radiance;
@@ -1458,7 +1458,7 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
     // The material's and the view's values once for the sky sample
     let terms: MaterialTerms = precomputeMaterial(surface.material, eta.x, eta.y);
-    let view_terms: ViewTerms = precomputeView(in_dir, surface.smooth_n, surface.material, terms);
+    let view_terms: ViewTerms = precomputeView(in_dir, surface.smooth_n, surface.material, terms, random_state);
     return neeBSDF(in_dir, dir, surface.smooth_n, surface.material, eta.x, eta.y, refracted, pdf, false, random_state,
         terms, view_terms);
 }
@@ -1473,7 +1473,7 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     let n: float3 = surface.smooth_n;
     // The material's and the view's values once for every lobe
     let terms: MaterialTerms = precomputeMaterial(surface.material, eta.x, eta.y);
-    let view_terms: ViewTerms = precomputeView(in_dir, n, surface.material, terms);
+    let view_terms: ViewTerms = precomputeView(in_dir, n, surface.material, terms, random_state);
     var color: float3 = float3(0.0f);
 #ifdef FK_TOON
     let lobes: uint = abs(surface.material.toon.x) > 0.0f ? 5u : 4u;
@@ -2045,7 +2045,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             var view_terms: ViewTerms = {};
             if (AT_HAIR(false, true)) {
                 terms = precomputeMaterial(material, eta.x, eta.y);
-                view_terms = precomputeView(ray.unit_direction, surface.smooth_n, material, terms);
+                view_terms = precomputeView(ray.unit_direction, surface.smooth_n, material, terms,
+                    surface.random_state);
             }
             // Replaying, x_k-1 connects to the reconnection vertex and x_k leaves along the stored direction with the stored lobes
             let connect: bool = replay && b == stop;
@@ -2088,7 +2089,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 wrong_side = AT_HAIR(false, wrongSide(is_inside, bsdf_sampled.refracted, bsdf_sampled.unit_direction, surface.geometry_n));
                 if (wrong_side && material.transmission > 0.0f) {
                     let geometry_bsdf_sampled: SampleBSDF = sampleBSDF(bsdf_sampled.unit_direction, surface.geometry_n, material, eta.x, eta.y, bsdf_sampled.random_state, float2(0.0f),
-                        terms, precomputeView(bsdf_sampled.unit_direction, surface.geometry_n, material, terms));
+                        terms, precomputeView(bsdf_sampled.unit_direction, surface.geometry_n, material, terms,
+                        bsdf_sampled.random_state));
                     bsdf_sampled.unit_direction = geometry_bsdf_sampled.unit_direction;
                     bsdf_sampled.refracted = geometry_bsdf_sampled.refracted;
                     bsdf_sampled.throughput = geometry_bsdf_sampled.throughput;

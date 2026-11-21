@@ -172,6 +172,12 @@ public static const float VELVET_ALBEDO[576] = {
     default: return true;
     }
 }
+[ForceInline] public bool coatUsed() {
+    __target_switch {
+    case glsl: __intrinsic_asm "(COAT)";
+    default: return true;
+    }
+}
 [ForceInline] public bool translucencyUsed() {
     __target_switch {
     case glsl: __intrinsic_asm "(TRANSLUCENT)";
@@ -236,6 +242,13 @@ __extern_cpp public struct Material {
 #endif
     // Scale over Abbe number of the spread of the IOR by wavelength, 0 for none
     __extern_cpp public float dispersion = 0.0f;
+    // Coat weight, roughness, ior and tint
+    __extern_cpp public float coat = 0.0f;
+    __extern_cpp public float coat_roughness = 0.03f;
+    __extern_cpp public float coat_ior = 1.5f;
+    __extern_cpp public float3 coat_tint = float3(1.0f);
+    // Coat normal, the shading normal where 0
+    __extern_cpp public float3 coat_normal = float3(0.0f);
 };
 
 __extern_cpp public struct Random {
@@ -460,7 +473,7 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 [CudaDeviceExport] public func translucentBSDF(in_dir: float3, out_dir: float3, n: float3, g_n: float3, material: Material, eta_i: float, eta_o: float, random_state: uint) -> float3 {
     // The material's and the view's values once for both
     let terms: MaterialTerms = precomputeMaterial(material, eta_i, eta_o);
-    let view_terms: ViewTerms = precomputeView(in_dir, n, material, terms);
+    let view_terms: ViewTerms = precomputeView(in_dir, n, material, terms, random_state);
     return BSDF(in_dir, out_dir, n, g_n, material, eta_i, eta_o, random_state, terms, view_terms)
         + translucentCorrection(in_dir, out_dir, n, g_n, material, eta_i, eta_o, random_state, terms, view_terms);
 }
@@ -538,11 +551,21 @@ __extern_cpp public struct AnisotropicFrame {
     return tangentToWorld(ggx_n, n_i);
 }
 
+// Coat normal on n's side: material.coat_normal, n where 0
+[CudaDeviceExport] public func coatNormal(material: Material, n: float3) -> float3 {
+    let given: bool = dot(material.coat_normal, material.coat_normal) > 0.0f;
+    let n_c: float3 = select(n, normalize(material.coat_normal), given);
+    return n_c * sign(dot(n_c, n));
+}
+
 // The material's own values on the side of eta_i, the same for every view and half vector of a vertex
 __extern_cpp public struct MaterialTerms {
     __extern_cpp public float f0;
     __extern_cpp public float eta_level;
     __extern_cpp public float translucent_share;
+    __extern_cpp public float3 coat_series;
+    __extern_cpp public bool coat_behind;
+    __extern_cpp public float coat_sin;
 #ifdef FK_TOON
     __extern_cpp public float toon_scale;
     __extern_cpp public float toon_component;
@@ -562,6 +585,29 @@ __extern_cpp public struct MaterialTerms {
     let r: float = min(sqrt(material.specular_level) * abs(eta_i - eta_o) / (eta_i + eta_o), 1.0f - BIAS);
     let f0: float = r * r;
     let eta_level: float = (1.0f + r) / (1.0f - r);
+    // n = max(coat_ior, 1.01)
+    // R_e = 2 * integral_0^1 F(x, 1, n) * x dx
+    //     = 1/2 + (n - 1)(3n + 1) / (6 (n + 1)^2) + n^2 (n^2 - 1)^2 / (n^2 + 1)^3 * ln((n - 1) / (n + 1))
+    //       - 2 n^3 (n^2 + 2n - 1) / ((n^2 + 1)(n^4 - 1)) + 8 n^4 (n^4 + 1) / ((n^2 + 1)(n^4 - 1)^2) * ln(n)
+    // R_i = 1 - (1 - R_e) / n^2
+    // series = coat_tint * sum_k (albedo * R_i)^k * (1 - R_i) * coat_tint, k = 0 -> inf
+    // => coat_series = coat_tint^2 * (1 - R_i) / (1 - albedo * R_i), 1 behind
+    // Behind, eta_i > eta_o: sin_c = coat_sin * sqrt(1 - v_dot_h_c^2), coat_sin = eta_i / n
+    let coat_behind: bool = eta_i > eta_o;
+    let coat_sin: float = eta_i / max(material.coat_ior, 1.01f);
+    var coat_series: float3 = float3(1.0f);
+    if (coatUsed() && material.coat > 0.0f && !coat_behind) {
+        let n_r: float = max(material.coat_ior, 1.01f);
+        let n2: float = n_r * n_r;
+        let n4: float = n2 * n2;
+        let r_e: float = 0.5f + (n_r - 1.0f) * (3.0f * n_r + 1.0f) / (6.0f * (n_r + 1.0f) * (n_r + 1.0f))
+            + n2 * (n2 - 1.0f) * (n2 - 1.0f) / ((n2 + 1.0f) * (n2 + 1.0f) * (n2 + 1.0f))
+            * log((n_r - 1.0f) / (n_r + 1.0f))
+            - 2.0f * n2 * n_r * (n2 + 2.0f * n_r - 1.0f) / ((n2 + 1.0f) * (n4 - 1.0f))
+            + 8.0f * n4 * (n4 + 1.0f) / ((n2 + 1.0f) * (n4 - 1.0f) * (n4 - 1.0f)) * log(n_r);
+        let r_i: float = 1.0f - (1.0f - r_e) / n2;
+        coat_series = material.coat_tint * material.coat_tint * (1.0f - r_i) / (1.0f - material.albedo * r_i);
+    }
 #ifdef FK_TOON
     // Toon (Blender's Toon BSDF) of mark (w, w * Size, w * Smooth), glossy for w < 0
     // a = Size * PI / 2, s = Smooth * PI / 2, b = min(a + s, PI / 2)
@@ -599,14 +645,15 @@ __extern_cpp public struct MaterialTerms {
         }
         toon_norm = 2.0f * PI * integral;
     }
-    return MaterialTerms(f0, eta_level, translucentShare(material), toon_scale, toon_component, toon, toon_a, toon_s,
-        toon_b, toon_glossy, toon_norm);
+    return MaterialTerms(f0, eta_level, translucentShare(material), coat_series, coat_behind, coat_sin, toon_scale,
+        toon_component, toon, toon_a, toon_s, toon_b, toon_glossy, toon_norm);
 #else
-    return MaterialTerms(f0, eta_level, translucentShare(material));
+    return MaterialTerms(f0, eta_level, translucentShare(material), coat_series, coat_behind, coat_sin);
 #endif
 }
 
-// The view's values at a vertex, the same for every half vector: frame, sheen, toon and the metal's rebounce
+// The view's values at a vertex, the same for every half vector: frame, sheen, toon, the metal's rebounce and
+// the coat's microfacet
 __extern_cpp public struct ViewTerms {
     __extern_cpp public float3 v;
     __extern_cpp public float3 n_i;
@@ -616,13 +663,19 @@ __extern_cpp public struct ViewTerms {
     __extern_cpp public float3 sheen;
     __extern_cpp public float3 view;
     __extern_cpp public float3 rebounce;
+    __extern_cpp public float3 coat_h;
+    __extern_cpp public uint coat_state;
+    __extern_cpp public float3 coat;
+    __extern_cpp public float coat_pdf;
+    __extern_cpp public float3 coat_up;
+    __extern_cpp public float3 coat_through;
 #ifdef FK_TOON
     __extern_cpp public float toon_view;
     __extern_cpp public float3 toon_axis;
 #endif
 }
-[CudaDeviceExport] public func precomputeView(in_dir: float3, n: float3, material: Material, terms: MaterialTerms)
-    -> ViewTerms {
+[CudaDeviceExport] public func precomputeView(in_dir: float3, n: float3, material: Material, terms: MaterialTerms,
+    random_init: uint) -> ViewTerms {
     let v: float3 = negate(in_dir);
     let n_i: float3 = n * sign(dot(n, v));
     let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
@@ -696,10 +749,48 @@ __extern_cpp public struct ViewTerms {
         * (0.314529f - mu * 0.348307f)
         + smoother * smoother * smoother * smoother * 0.272297f, 1.0f);
     let rebounce: float3 = min(1.0f / (1.0f - material.albedo * lost), float3(1.0f / max(return_up, BIAS)));
+    // n_c = coatNormal(material, n_i)
+    // coat_h drawn from the VNDF of alpha_c = coat_roughness^2 about n_c after sampleBSDF's ggx_n draw
+    // l_c = reflect(in_dir, coat_h), n = max(coat_ior, 1.01)
+    // f_c = F(v_dot_h_c, 1, n) * G1_c_l, 0 where l_c falls below n_c
+    // sin_c = eta_i / n * sqrt(1 - v_dot_h_c^2)
+    // cos_c = sqrt(1 - sin_c^2)
+    // Behind, eta_i > eta_o, the coat's inner face: f_c = F(cos_c, n, 1) * G1_c_l
+    // => coat = material.coat * f_c, behind * coat_tint^2 crossing the coat in and out
+    // => coat_up = mix(1, (1 - f_c) * coat_series, material.coat) on the lobes leaving upward
+    // => coat_through = mix(1, (1 - f_c) * coat_tint, material.coat) on the refracted lobe crossing the coat once
+    // => coat_pdf = G1_c_v * D_c / (4 * n_dot_v), PDF_COAT
+    var coat_h: float3 = float3(0.0f);
+    var coat_state: uint = random_init;
+    var coat: float3 = float3(0.0f);
+    var coat_pdf: float = 0.0f;
+    var coat_up: float3 = float3(1.0f);
+    var coat_through: float3 = float3(1.0f);
+    let n_c: float3 = coatNormal(material, n_i);
+    if (coatUsed() && material.coat > 0.0f && dot(n_c, v) > 0.0f) {
+        let alpha_c: float = material.coat_roughness * material.coat_roughness;
+        coat_state = pcg(pcg(random_init).state).state;
+        coat_h = sampleHalfVector(v, n_c, alpha_c, AnisotropicFrame(float3(0.0f), float2(0.0f)), coat_state);
+        let mu: float = dot(n_c, v);
+        let n_r: float = max(material.coat_ior, 1.01f);
+        let n_dot_l_c: float = dot(n_c, reflect(in_dir, coat_h));
+        let v_dot_h_c: float = abs(dot(v, coat_h));
+        let cos_c: float = sqrt(max(1.0f - terms.coat_sin * terms.coat_sin * (1.0f - v_dot_h_c * v_dot_h_c), 0.0f));
+        let behind: bool = terms.coat_behind;
+        let f_c: float = select(0.0f, fresnel(select(v_dot_h_c, cos_c, behind), select(1.0f, n_r, behind),
+            select(n_r, 1.0f, behind)) * smithG1(alpha_c, n_dot_l_c), n_dot_l_c > 0.0f);
+        coat = material.coat * f_c * select(float3(1.0f), material.coat_tint * material.coat_tint, behind);
+        coat_pdf = select(0.0f, smithG1(alpha_c, mu) * trowbridgeReitz(alpha_c, dot(n_c, coat_h)) / (4.0f * mu),
+            alpha_c > 0.0f);
+        coat_up = mix(float3(1.0f), (1.0f - f_c) * terms.coat_series, material.coat);
+        coat_through = mix(float3(1.0f), (1.0f - f_c) * material.coat_tint, material.coat);
+    }
 #ifdef FK_TOON
-    return ViewTerms(v, n_i, frame, scale, sheen_component, sheen, view, rebounce, toon_view, toon_axis);
+    return ViewTerms(v, n_i, frame, scale, sheen_component, sheen, view, rebounce, coat_h, coat_state, coat, coat_pdf,
+        coat_up, coat_through, toon_view, toon_axis);
 #else
-    return ViewTerms(v, n_i, frame, scale, sheen_component, sheen, view, rebounce);
+    return ViewTerms(v, n_i, frame, scale, sheen_component, sheen, view, rebounce, coat_h, coat_state, coat, coat_pdf,
+        coat_up, coat_through);
 #endif
 }
 
@@ -1271,6 +1362,7 @@ static const float WAVELENGTH_STEP = 0.005f;
     at.specular_tint = float3(upsample(material.specular_tint, wavelength));
     at.translucent = float3(upsample(material.translucent, wavelength));
     at.sheen = float3(upsample(material.sheen, wavelength));
+    at.coat_tint = float3(upsample(material.coat_tint, wavelength));
     return at;
 }
 

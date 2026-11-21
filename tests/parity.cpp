@@ -77,7 +77,7 @@ __device__ Result evaluate(const Case& c) {
     const float ggx_n[] = {h[0] * scale, h[1] * scale, h[2] * scale};
     const MaterialTerms terms = precomputeMaterial(material, c.in[18], c.in[19]);
     r.lobes = precomputeHalf(in_dir, vec(ggx_n), material, c.in[18], c.in[19], terms,
-        precomputeView(in_dir, vec(n_i), material, terms));
+        precomputeView(in_dir, vec(n_i), material, terms, 0u));
     const float p_lobe[] = {r.lobes.p_diffuse, r.lobes.p_refract, r.lobes.p_reflect};
     for (unsigned lobe = 0; lobe < 3; lobe++) {
         const bool side = lobe == 1 ? dot3(vec(n_i), out_dir) < 0 : dot3(vec(n_i), out_dir) > 0;
