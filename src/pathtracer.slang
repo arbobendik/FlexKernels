@@ -996,6 +996,16 @@ __extern_cpp public struct ViewTerms {
     var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     let random_p: Random = pcg(random_state);
     random_state = random_p.state;
+    // The base lobes over the rest
+    let u: float = random_p.value - lobes.p_sheen_velvet;
+#ifdef FK_TOON
+    let toon_share: float = lobes.p_toon;
+#else
+    let toon_share: float = 0.0f;
+#endif
+    // lobeDensity's n_i_dot_l and l_dot_h, as the lobe drawn gives them
+    var density_n_i_dot_l: float = 0.0f;
+    var density_l_dot_h: float = 0.0f;
     // Sheen case
     if (random_p.value < lobes.p_sheen_velvet) {
         let random_s_1: Random = pcg(random_state);
@@ -1005,15 +1015,10 @@ __extern_cpp public struct ViewTerms {
         let across: float = sqrt(max(0.0f, 1.0f - random_s_1.value * random_s_1.value));
         let phi: float = 2.0f * PI * random_s_2.value;
         sample.unit_direction = tangentToWorld(float3(across * cos(phi), random_s_1.value, across * sin(phi)), n_i);
-        sample.throughput = lobeThroughput(sample.unit_direction, n_i, alpha, material, lobes, LOBE_SHEEN_VELVET);
-        sample.pdf = lobeDensity(random_s_1.value, 0.0f, n_i_dot_v, alpha, lobes, eta_i, eta_o, LOBE_SHEEN_VELVET);
+        density_n_i_dot_l = random_s_1.value;
         sample.lobe = LOBE_SHEEN_VELVET;
-        return sample;
-    }
-    // The base lobes over the rest
-    var u: float = random_p.value - lobes.p_sheen_velvet;
-    // Diffuse case
-    if (u < lobes.p_diffuse) {
+    } else if (u < lobes.p_diffuse) {
+        // Diffuse case
         let random_d_1: Random = pcg(random_state);
         let random_d_2: Random = pcg(random_d_1.state);
         sample.random_state = random_d_2.state;
@@ -1023,14 +1028,12 @@ __extern_cpp public struct ViewTerms {
         let through: bool = u < lobes.p_diffuse * lobes.translucent_share;
         let toward: float = select(cosine_hemisphere.y, - cosine_hemisphere.y, through);
         sample.unit_direction = tangentToWorld(float3(cosine_hemisphere.x, toward, cosine_hemisphere.z), n_i);
-        sample.throughput = lobeThroughput(sample.unit_direction, n_i, alpha, material, lobes, LOBE_DIFFUSE);
-        sample.pdf = lobeDensity(toward, 0.0f, n_i_dot_v, alpha, lobes, eta_i, eta_o, LOBE_DIFFUSE);
+        density_n_i_dot_l = toward;
         sample.refracted = through;
-        return sample;
     }
 #ifdef FK_TOON
-    // Toon case
-    if (u < lobes.p_diffuse + lobes.p_toon) {
+    else if (u < lobes.p_diffuse + lobes.p_toon) {
+        // Toon case
         let random_t_1: Random = pcg(random_state);
         let random_t_2: Random = pcg(random_t_1.state);
         sample.random_state = random_t_2.state;
@@ -1058,33 +1061,28 @@ __extern_cpp public struct ViewTerms {
         }
         let phi: float = 2.0f * PI * random_t_2.value;
         sample.unit_direction = tangentToWorld(float3(sin(t) * cos(phi), cos(t), sin(t) * sin(phi)), lobes.toon_axis);
-        sample.throughput = lobeThroughput(sample.unit_direction, n_i, alpha, material, lobes, LOBE_TOON);
-        sample.pdf = lobeDensity(dot(n_i, sample.unit_direction), dot(sample.unit_direction, lobes.toon_axis),
-            n_i_dot_v, alpha, lobes, eta_i, eta_o, LOBE_TOON);
+        density_n_i_dot_l = dot(n_i, sample.unit_direction);
+        density_l_dot_h = dot(sample.unit_direction, lobes.toon_axis);
         sample.refracted = dot(n_i, sample.unit_direction) < 0.0f;
         sample.lobe = LOBE_TOON;
-        return sample;
     }
-    u -= lobes.p_toon;
 #endif
-    // Refractive case
-    if (u < lobes.p_diffuse + lobes.p_refract) {
-        // Refraction is valid
+    else if (u - toon_share < lobes.p_diffuse + lobes.p_refract) {
+        // Refractive case: refraction is valid
         sample.unit_direction = lobes.refracted;
-        sample.pdf = lobeDensity(0.0f, dot(sample.unit_direction, ggx_n), n_i_dot_v, alpha, lobes, eta_i, eta_o,
-            LOBE_REFRACT);
-        sample.throughput = lobeThroughput(sample.unit_direction, n_i, alpha, material, lobes, LOBE_REFRACT);
+        density_l_dot_h = dot(sample.unit_direction, ggx_n);
         sample.random_state = random_state;
         sample.refracted = true;
         sample.lobe = LOBE_REFRACT;
-        return sample;
+    } else {
+        // Otherwise assume reflective case.
+        sample.unit_direction = normalize(reflect(in_dir, ggx_n));
+        sample.random_state = random_state;
+        sample.lobe = LOBE_REFLECT;
     }
-    // Otherwise assume reflective case.
-    sample.unit_direction = normalize(reflect(in_dir, ggx_n));
-    sample.throughput = lobeThroughput(sample.unit_direction, n_i, alpha, material, lobes, LOBE_REFLECT);
-    sample.random_state = random_state;
-    sample.lobe = LOBE_REFLECT;
-    sample.pdf = lobeDensity(0.0f, 0.0f, n_i_dot_v, alpha, lobes, eta_i, eta_o, LOBE_REFLECT);
+    // One call site each for the lobe drawn
+    sample.throughput = lobeThroughput(sample.unit_direction, n_i, alpha, material, lobes, sample.lobe);
+    sample.pdf = lobeDensity(density_n_i_dot_l, density_l_dot_h, n_i_dot_v, alpha, lobes, eta_i, eta_o, sample.lobe);
     return sample;
 }
 
