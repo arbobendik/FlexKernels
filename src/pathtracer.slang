@@ -435,17 +435,27 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     let toon: uint = 0u;
 #endif
     let lobes: uint = same_side ? 3u + toon : 1u;
-    // The lobes' half vectors: sampleBSDF's of the diffuse and toon lobes, out_dir's reflective and refractive ones
-    let sampled: float3 = sampledHalf(in_dir, n, material, random_state, view_terms);
-    let reflected: float3 = reflectedHalf(in_dir, out_dir);
-    let refracting: float3 = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
     var f: float3 = float3(0.0f);
+    // The lobe's half vector and its terms, taken again only where they differ from the last lobe's
+    var half_of: uint = UINT_MAX;
+    var ggx_n: float3 = float3(0.0f);
+    var lobe_terms: HalfTerms = {};
     for (var i: uint = 0u; i < lobes; i++) {
         let lobe: uint = !same_side ? LOBE_REFRACT : i == 0u ? LOBE_DIFFUSE : i == 1u ? LOBE_REFLECT
             : i == 2u ? LOBE_SHEEN_VELVET : LOBE_TOON;
-        let ggx_n: float3 = lobe == LOBE_REFRACT ? refracting
-            : lobe == LOBE_DIFFUSE || lobe == LOBE_TOON ? sampled : reflected;
-        let lobe_terms: HalfTerms = precomputeHalf(in_dir, ggx_n, material, eta_i, eta_o, terms, view_terms);
+        // sampleBSDF's half vector for the diffuse and toon lobes, out_dir's reflective one for reflection and sheen
+        let lobe_half: uint = lobe == LOBE_TOON ? LOBE_DIFFUSE : lobe == LOBE_SHEEN_VELVET ? LOBE_REFLECT : lobe;
+        if (lobe_half != half_of) {
+            if (lobe_half == LOBE_DIFFUSE) {
+                ggx_n = sampledHalf(in_dir, n, material, random_state, view_terms);
+            } else if (lobe_half == LOBE_REFRACT) {
+                ggx_n = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
+            } else {
+                ggx_n = reflectedHalf(in_dir, out_dir);
+            }
+            lobe_terms = precomputeHalf(in_dir, ggx_n, material, eta_i, eta_o, terms, view_terms);
+            half_of = lobe_half;
+        }
         var pdf: float = 0.0f;
         var throughput: float3 = float3(0.0f);
         switch (lobe) {
@@ -463,7 +473,8 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
             break;
 #ifdef FK_TOON
         case LOBE_TOON:
-            pdf = toonPDF(n_i_dot_l, dot(out_dir, lobe_terms.toon_axis), abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+            pdf = toonPDF(n_i_dot_l, dot(out_dir, lobe_terms.toon_axis), abs(n_dot_v), alpha, lobe_terms, eta_i,
+                eta_o);
             throughput = toonBSDF(out_dir, n_i, alpha, material, lobe_terms);
             break;
 #endif
@@ -1383,39 +1394,54 @@ static const float WAVELENGTH_STEP = 0.005f;
 // w_power = pdf^2 / (pdf^2 + PDF_lobe^2)
 // => BSDF * n_dot_l / pdf * w_power = throughput * PDF_lobe / (pdf * (1 + (PDF_lobe / pdf)^2))
 [CudaDeviceExport] public func neeBSDF(in_dir: float3, dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, refracted: bool, pdf: float, power: bool, random_state: uint, terms: MaterialTerms, view_terms: ViewTerms) -> float3 {
-    let seen: float3[5] = { float3(1.0f), float3(1.0f), float3(1.0f), float3(1.0f), float3(1.0f) };
+    var each: float3[5];
+    var reached: uint = 0u;
     return neeLobes(in_dir, dir, n, material, eta_i, eta_o, refracted, pdf, power, random_state, terms, view_terms,
-        seen);
+        each, reached);
 }
 
-// neeBSDF, each lobe's term times what the ray leaving by it sees: seen of the diffuse, refraction, reflection, sheen
-// and toon lobes in that order
+// neeBSDF, light and sky sampling's one body: the sum, each lobe's term of the diffuse, refraction, reflection, sheen
+// and toon lobes in that order, and the bits of the lobes reached
 public func neeLobes(in_dir: float3, dir: float3, n: float3, material: Material, eta_i: float, eta_o: float,
     refracted: bool, pdf: float, power: bool, random_state: uint, terms: MaterialTerms, view_terms: ViewTerms,
-    seen: float3[5]) -> float3 {
+    out each: float3[5], out reached: uint) -> float3 {
     let n_dot_v: float = dot(n, negate(in_dir));
     let n_i: float3 = n * sign(n_dot_v);
     let n_i_dot_l: float = dot(n_i, dir);
     let alpha: float = material.roughness * material.roughness;
-    // The lobes' half vectors: sampleBSDF's of the diffuse and toon lobes, dir's reflective and refractive ones
-    let sampled: float3 = sampledHalf(in_dir, n, material, random_state, view_terms);
-    let reflected: float3 = reflectedHalf(in_dir, dir);
-    let refracting: float3 = refractedHalf(in_dir, dir, n, eta_i, eta_o);
     var f: float3 = float3(0.0f);
+    reached = 0u;
+    // The lobe's half vector and its terms, taken again only where they differ from the last lobe's
+    var half_of: uint = UINT_MAX;
+    var ggx_n: float3 = float3(0.0f);
+    var lobe_terms: HalfTerms = {};
     // Diffuse, refraction, reflection, sheen and toon lobes
 #ifdef FK_TOON
     let lobes: uint = abs(material.toon.x) > 0.0f ? 5u : 4u;
 #else
     let lobes: uint = 4u;
 #endif
+    for (var i: uint = 0u; i < 5u; i++) {
+        each[i] = float3(0.0f);
+    }
     for (var i: uint = 0u; i < lobes; i++) {
         let lobe: uint = i == 3u ? LOBE_SHEEN_VELVET : i == 4u ? LOBE_TOON : i;
         // Translucent diffuse lobe: through the shading normal on the refracted side
         if (lobe == LOBE_DIFFUSE && translucencyUsed() && rgb_to_greyscale(material.translucent) > 0.0f
             ? (dot(n, dir) * dot(n, negate(in_dir)) < 0.0f) == refracted : (lobe == LOBE_REFRACT) == refracted) {
-            let ggx_n: float3 = lobe == LOBE_REFRACT ? refracting
-                : lobe == LOBE_DIFFUSE || lobe == LOBE_TOON ? sampled : reflected;
-            let lobe_terms: HalfTerms = precomputeHalf(in_dir, ggx_n, material, eta_i, eta_o, terms, view_terms);
+            // sampleBSDF's half vector for the diffuse and toon lobes, dir's reflective one for reflection and sheen
+            let lobe_half: uint = lobe == LOBE_TOON ? LOBE_DIFFUSE : lobe == LOBE_SHEEN_VELVET ? LOBE_REFLECT : lobe;
+            if (lobe_half != half_of) {
+                if (lobe_half == LOBE_DIFFUSE) {
+                    ggx_n = sampledHalf(in_dir, n, material, random_state, view_terms);
+                } else if (lobe_half == LOBE_REFRACT) {
+                    ggx_n = refractedHalf(in_dir, dir, n, eta_i, eta_o);
+                } else {
+                    ggx_n = reflectedHalf(in_dir, dir);
+                }
+                lobe_terms = precomputeHalf(in_dir, ggx_n, material, eta_i, eta_o, terms, view_terms);
+                half_of = lobe_half;
+            }
             var lobe_pdf: float = 0.0f;
             var throughput: float3 = float3(0.0f);
             switch (lobe) {
@@ -1433,7 +1459,8 @@ public func neeLobes(in_dir: float3, dir: float3, n: float3, material: Material,
                 break;
 #ifdef FK_TOON
             case LOBE_TOON:
-                lobe_pdf = toonPDF(n_i_dot_l, dot(dir, lobe_terms.toon_axis), abs(n_dot_v), alpha, lobe_terms, eta_i, eta_o);
+                lobe_pdf = toonPDF(n_i_dot_l, dot(dir, lobe_terms.toon_axis), abs(n_dot_v), alpha, lobe_terms, eta_i,
+                    eta_o);
                 throughput = toonBSDF(dir, n_i, alpha, material, lobe_terms);
                 break;
 #endif
@@ -1443,7 +1470,9 @@ public func neeLobes(in_dir: float3, dir: float3, n: float3, material: Material,
                 break;
             }
             if (lobe_pdf > 0.0f) {
-                f += misWeighted(throughput, lobe_pdf, pdf, power) * seen[i];
+                each[i] = misWeighted(throughput, lobe_pdf, pdf, power);
+                reached |= 1u << i;
+                f += each[i];
             }
         }
     }

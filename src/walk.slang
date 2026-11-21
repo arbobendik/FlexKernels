@@ -1474,12 +1474,25 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, eta: float2, is_
     // The material's and the view's values once for every lobe
     let terms: MaterialTerms = precomputeMaterial(surface.material, eta.x, eta.y);
     let view_terms: ViewTerms = precomputeView(in_dir, n, surface.material, terms);
-    // The world toward dir as the ray leaving by each lobe at depth sees it
-    let seen: float3[5] = { scene.env_map_sample(dir, depth, LOBE_DIFFUSE),
-        scene.env_map_sample(dir, depth, LOBE_REFRACT), scene.env_map_sample(dir, depth, LOBE_REFLECT),
-        scene.env_map_sample(dir, depth, LOBE_SHEEN_VELVET), scene.env_map_sample(dir, depth, LOBE_TOON) };
-    return neeLobes(in_dir, dir, n, surface.material, eta.x, eta.y, refracted, pdf, false, random_state, terms,
-        view_terms, seen);
+    var each: float3[5];
+    var reached: uint = 0u;
+    neeLobes(in_dir, dir, n, surface.material, eta.x, eta.y, refracted, pdf, false, random_state, terms, view_terms,
+        each, reached);
+    // The world toward dir as the ray leaving by each lobe reached at depth sees it, the same for every lobe where the
+    // world doesn't read Light Path
+    var color: float3 = float3(0.0f);
+    var world: float3 = float3(0.0f);
+    var shaded: bool = false;
+    for (var i: uint = 0u; i < 5u; i++) {
+        if ((reached & (1u << i)) != 0u) {
+            if (scene.worldReadsPath() || !shaded) {
+                world = scene.env_map_sample(dir, depth, i == 3u ? LOBE_SHEEN_VELVET : i == 4u ? LOBE_TOON : i);
+                shaded = true;
+            }
+            color += each[i] * world;
+        }
+    }
+    return color;
 }
 #endif
 
@@ -2134,7 +2147,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                         break;
 #ifdef FK_TOON
                     case LOBE_TOON:
-                        pdf = toonPDF(n_i_dot_l, dot(dir, lobe_terms.toon_axis), abs(n_dot_v), alpha, lobe_terms, eta.x, eta.y);
+                        pdf = toonPDF(n_i_dot_l, dot(dir, lobe_terms.toon_axis), abs(n_dot_v), alpha, lobe_terms, eta.x,
+                            eta.y);
                         lobe_throughput = toonBSDF(dir, n_i, alpha, material, lobe_terms);
                         break;
 #endif
