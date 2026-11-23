@@ -1313,12 +1313,12 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, wavelength: floa
 // => throughput * PDF_lobe / pdf * w_balance = throughput * PDF_lobe / (PDF_lobe + pdf)
 [CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, material: Material, eta: float2,
     is_inside: bool, pdf: float, random_state: uint) -> float3 {
-    var throughputs: float3[5];
-    var pdfs: float[5];
+    var throughputs: float3[6];
+    var pdfs: float[6];
     BSDF(in_dir, dir, surface.smooth_n, material, eta.x, eta.y, wrongSide(is_inside, false, dir, surface.geometry_n),
         random_state, ~0u, throughputs, pdfs);
     var f: float3 = float3(0.0f);
-    for (var i: uint = 0u; i < 5u; i++) {
+    for (var i: uint = 0u; i < 6u; i++) {
         if (pdfs[i] > 0.0f) {
             f += throughputs[i] * pdfs[i] / (pdfs[i] + pdf);
         }
@@ -1331,15 +1331,15 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, wavelength: floa
 // wavelength; not inlined, so the world's code per lobe stays out of the sky sample
 [noinline] func skyColor<S: IScene>(scene: S, in_dir: float3, dir: float3, surface: Surface, wavelength: float,
     eta: float2, is_inside: bool, pdf: float, random_state: uint, depth: uint) -> float3 {
-    var throughputs: float3[5];
-    var pdfs: float[5];
+    var throughputs: float3[6];
+    var pdfs: float[6];
     BSDF(in_dir, dir, surface.smooth_n, pathMaterial(surface.material, wavelength), eta.x, eta.y,
         wrongSide(is_inside, false, dir, surface.geometry_n), random_state, ~0u, throughputs, pdfs);
     var color: float3 = float3(0.0f);
-    for (var i: uint = 0u; i < 5u; i++) {
+    for (var i: uint = 0u; i < 6u; i++) {
         if (pdfs[i] > 0.0f) {
             color += throughputs[i] * pdfs[i] / (pdfs[i] + pdf) * scene.env_map_sample(dir, depth,
-                i == 3u ? LOBE_SHEEN_VELVET : i == 4u ? LOBE_TOON : i);
+                i == 3u ? LOBE_SHEEN_VELVET : i == 4u ? LOBE_TOON : i == 5u ? LOBE_COAT : i);
         }
     }
     return color;
@@ -1781,8 +1781,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 } else
 #endif
                 {
-                    var throughputs: float3[5];
-                    var pdfs: float[5];
+                    var throughputs: float3[6];
+                    var pdfs: float[6];
                     let f: float3 = BSDF(ray.unit_direction, light.dir, surface.smooth_n, material, eta.x, eta.y,
                         dot(surface.geometry_n, - ray.unit_direction) * dot(surface.geometry_n, light.dir) <= 0.0f,
                         surface.random_state, ~0u, throughputs, pdfs);
@@ -1794,7 +1794,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     if (!(b < scene.maxBounces()) || light.density == 0.0f) {
                         lit = f * light.radiance;
                     } else {
-                        for (var i: uint = 0u; i < 5u; i++) {
+                        for (var i: uint = 0u; i < 6u; i++) {
                             if (pdfs[i] > 0.0f) {
                                 let ratio: float = pdfs[i] / light.density;
                                 lit += throughputs[i] * pdfs[i] / (light.density * (1.0f + ratio * ratio));
@@ -2000,8 +2000,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 {
                     // The stored lobe's slot of BSDF toward dir, its throughput and PDF_lobe
                     let slot: uint = lobe_index == LOBE_SHEEN_VELVET ? 3u : lobe_index == LOBE_TOON ? 4u : lobe_index;
-                    var throughputs: float3[5];
-                    var pdfs: float[5];
+                    var throughputs: float3[6];
+                    var pdfs: float[6];
                     BSDF(ray.unit_direction, dir, surface.smooth_n, material, eta.x, eta.y,
                         wrongSide(is_inside, false, dir, surface.geometry_n), surface.random_state, 1u << slot,
                         throughputs, pdfs);
@@ -2016,7 +2016,10 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             // Diffuse, sheen and toon lobes are never delta
             let spread_out: bool = lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_SHEEN_VELVET
                 || lobe_index == LOBE_TOON;
-            let delta: bool = AT_HAIR(false, !spread_out && (material.roughness == 0.0f || (lobe_index == LOBE_REFRACT && eta.x == eta.y)));
+            // The coat lobe's roughness is the coat's
+            let roughness: float = select(material.roughness, material.coat_roughness, lobe_index == LOBE_COAT);
+            let delta: bool = AT_HAIR(false, !spread_out && (roughness == 0.0f
+                || (lobe_index == LOBE_REFRACT && eta.x == eta.y)));
 #ifdef FK_FCPT_WALK
             straight = !hair && lobe_index == LOBE_REFRACT && material.ior == 1.0f;
             // Camera status kept by a refraction at equal indices, which bends no ray
@@ -2040,7 +2043,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             let inverse_footprint: bool = lobe.pdf > 0.0f
                 && (spread_out || lobe.pdf * prev.cos / (hit.distance * hit.distance) * threshold <= 1.0f);
             // Whether a sampled lobe is rough enough to reconnect through (Sec. 4.2)
-            let rough: bool = lobe.pdf > 0.0f && (spread_out || material.roughness >= RESTIR_ROUGHNESS);
+            let rough: bool = lobe.pdf > 0.0f && (spread_out || roughness >= RESTIR_ROUGHNESS);
             if (arrived) {
                 if (!inverse_footprint) {
                     return fail;

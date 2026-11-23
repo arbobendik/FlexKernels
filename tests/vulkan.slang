@@ -186,8 +186,8 @@ void main(uint3 id: SV_DispatchThreadID, uint local: SV_GroupIndex, uint3 group:
     const float3 n = normalize(mix(r.dir, r.radiance, sign(r.w)));
     const Material material = Material(r.f, r.radiance, r.w, r.c, r.jac, 1.5f, r.dir);
     const SampleBSDF sampled = sampleBSDF(r.dir, n, material, 1.0f, 1.5f, stream(r.seed, id.x));
-    float3 throughputs[5];
-    float pdfs[5];
+    float3 throughputs[6];
+    float pdfs[6];
     const float3 connected = BSDF(r.dir, sampled.unit_direction, n, material, 1.0f, 1.5f,
         dot(n, -r.dir) * dot(n, sampled.unit_direction) <= 0.0f, pcg(hash(r.path)).state, ~0u, throughputs, pdfs);
     Selection sel = {};
