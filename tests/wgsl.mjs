@@ -90,13 +90,13 @@ fn parity_toward(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: 
     let frame = anisotropicFrame(material, n_i);
     var l_dot_h = 0.0;
     var ggx_n = reflectedHalf(in_dir, out_dir);
-    if (lobe == 0u) {
-        ggx_n = sampledHalf(v, n_i, alpha, frame, random_state);
-    } else if (lobe == 1u) {
+    if (lobe == 1u) {
         ggx_n = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
         l_dot_h = dot(out_dir, ggx_n);
     }
-    let lobes = lobeWeights(in_dir, v, n_i, ggx_n, frame, sheenProfile(v, n_i, material), material, eta_i, eta_o);
+    let lobes = lobeWeights(in_dir, v, n_i, drawFacets(in_dir, n, material, random_state).h, vec3<f32>(0.0), ggx_n,
+        vec3<f32>(0.0), frame, sheenProfile(v, n_i, material), CoatFrame(vec3<f32>(0.0), 0.0, 0.0), vec3<f32>(0.0),
+        material, eta_i, eta_o);
     let pdf = parity_density(dot(n_i, out_dir), l_dot_h, abs(n_dot_v), alpha, lobes, eta_i, eta_o, lobe, v, ggx_n, n_i,
         material);
     if (!(pdf > 0.0)) {
@@ -108,19 +108,27 @@ fn parity_toward(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: 
 // BSDF toward out_dir, across the face where in_dir and out_dir lie on opposite sides of g_n
 fn parity_face(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, g_n: vec3<f32>, material: Material, eta_i: f32,
     eta_o: f32, random_state: u32) -> vec3<f32> {
-    var throughputs: array<vec3<f32>, 5>;
-    var pdfs: array<f32, 5>;
-    return BSDF(in_dir, out_dir, n, material, eta_i, eta_o, dot(g_n, - in_dir) * dot(g_n, out_dir) <= 0.0,
-        random_state, &throughputs, &pdfs);
+    var throughputs: array<vec3<f32>, 6>;
+    var pdfs: array<f32, 6>;
+    BSDF(in_dir, out_dir, n, material, eta_i, eta_o, dot(g_n, - in_dir) * dot(g_n, out_dir) <= 0.0,
+        drawFacets(in_dir, n, material, random_state), &throughputs, &pdfs);
+    var f = vec3<f32>(0.0);
+    for (var i = 0u; i < 6u; i++) {
+        if (pdfs[i] > 0.0) {
+            f += throughputs[i] * pdfs[i];
+        }
+    }
+    return f;
 }
 // BSDF's lobes by the sky's balance or the light's power heuristic against a sample of PDF pdf
 fn parity_nee(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: Material, eta_i: f32, eta_o: f32,
     refracted: bool, pdf: f32, power: bool, random_state: u32) -> vec3<f32> {
-    var throughputs: array<vec3<f32>, 5>;
-    var pdfs: array<f32, 5>;
-    BSDF(in_dir, out_dir, n, material, eta_i, eta_o, refracted, random_state, &throughputs, &pdfs);
+    var throughputs: array<vec3<f32>, 6>;
+    var pdfs: array<f32, 6>;
+    BSDF(in_dir, out_dir, n, material, eta_i, eta_o, refracted, drawFacets(in_dir, n, material, random_state),
+        &throughputs, &pdfs);
     var f = vec3<f32>(0.0);
-    for (var i = 0u; i < 5u; i++) {
+    for (var i = 0u; i < 6u; i++) {
         if (pdfs[i] > 0.0) {
             let ratio = pdfs[i] / pdf;
             if (power) {
@@ -170,7 +178,8 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[6] = bitcast<u32>(trowbridgeReitz(alpha, abs(dot(n, out_dir))));
     r[7] = bitcast<u32>(fresnel(abs(dot(n, in_dir)), v[18], v[19]));
     var h_state = random_state;
-    let h = sampleHalfVector(- in_dir, n_i, alpha, AnisotropicFrame(vec3<f32>(0.0), vec2<f32>(0.0)), &h_state);
+    let h = sampleHalfVector(- in_dir, n_i, alpha, AnisotropicFrame(vec3<f32>(0.0), vec2<f32>(0.0)),
+        &h_state${FLEXLIGHT ? "" : ", 0u"});
     r[8] = h_state;
     parity_put(&r, 9u, h);
     parity_put(&r, 12u, sampleCosWeightedHemisphere(albedo.x, albedo.y));
@@ -188,12 +197,14 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     let uv = albedo.xy;
     parity_put(&r, 38u, tangentToWorldNormalMap(out_dir, normalMapTBN(in_dir, out_dir, vec3<f32>(v[9], v[10], v[11]), uv,
         vec2<f32>(uv.x + 0.5, uv.y + 0.1 * albedo.z), vec2<f32>(uv.x + 0.2 * albedo.x, uv.y + 0.6), n)));
-    let material = Material(albedo, vec3<f32>(0.0), v[16], v[15], v[17], max(v[18], v[19])${FLEXLIGHT ? "" : ", vec3<f32>(0.0), vec3<f32>(1.0), 1.0, vec3<f32>(0.0), vec3<f32>(0.0), 0.5, 0.0, 0.0, vec3<f32>(0.0), 0.0, 0.0"});
+    let material = Material(albedo, vec3<f32>(0.0), v[16], v[15], v[17], max(v[18], v[19])${FLEXLIGHT ? "" : ", vec3<f32>(0.0), vec3<f32>(1.0), 1.0, vec3<f32>(0.0), vec3<f32>(0.0), 0.5, 0.0, 0.0, vec3<f32>(0.0), 0.0, 0.0, 0.0, 0.03, 1.5,
+        vec3<f32>(1.0), vec3<f32>(0.0)"});
     let ggx_n = normalize(- in_dir + out_dir);
     let lobes = ${FLEXLIGHT
         ? "bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19], anisotropicFrame(material, n_i))"
-        : `lobeWeights(in_dir, - in_dir, n_i, ggx_n, anisotropicFrame(material, n_i),
-            sheenProfile(- in_dir, n_i, material), material, v[18], v[19])`};
+        : `lobeWeights(in_dir, - in_dir, n_i, ggx_n, vec3<f32>(0.0), ggx_n, vec3<f32>(0.0), anisotropicFrame(material, n_i),
+            sheenProfile(- in_dir, n_i, material), CoatFrame(vec3<f32>(0.0), 0.0, 0.0), vec3<f32>(0.0),
+            material, v[18], v[19])`};
     r[41] = bitcast<u32>(lobes.v_dot_h);
     r[42] = bitcast<u32>(${FLEXLIGHT ? "lobes.n_dot_h" : "dot(n_i, ggx_n)"});
     parity_put(&r, 43u, lobes.refracted);
@@ -216,7 +227,8 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         r[59u + 4u * lobe] = bitcast<u32>(${DENSITY}(dot(n_i, out_dir), dot(out_dir, ggx_n), abs(dot(n, in_dir)), alpha,
             lobes, v[18], v[19], lobe${FLEXLIGHT ? "" : ", - in_dir, ggx_n, n_i, material"}));
     }
-    let sample = sampleBSDF(in_dir, n, material, v[18], v[19], random_state, vec2<f32>(0.0));
+    let sample = sampleBSDF(in_dir, n, material, v[18], v[19], drawFacets(in_dir, n, material, random_state),
+        random_state, vec2<f32>(0.0));
     parity_put(&r, 68u, sample.unit_direction);
     parity_put(&r, 71u, sample.throughput);
     r[74] = sample.random_state;
@@ -262,7 +274,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     let refracted = (dot(in_dir, g_n) <= 0.0) != (dot(out_dir, g_n) > 0.0);
     let pdf = 0.5 + v[17];
     ${FLEXLIGHT ? `parity_put(&r, 113u, skyBSDF(in_dir, out_dir, Surface(n, g_n, 0.0, material, false, 0u),
-        vec2<f32>(v[18], v[19]), dot(in_dir, g_n) > 0.0, pdf, random_state));
+        vec2<f32>(v[18], v[19]), dot(in_dir, g_n) > 0.0, drawFacets(in_dir, n, material, random_state), pdf));
     var power = vec3<f32>(0.0);
     for (var lobe = 0u; lobe < 3u; lobe++) {
         if ((lobe == 1u) == refracted) {

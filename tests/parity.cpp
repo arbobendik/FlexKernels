@@ -56,7 +56,7 @@ __device__ Result evaluate(const Case& c) {
     Result r = {hash(c.random_state), stream(c.random_state, 64u), p.state, p.value, rgb_to_greyscale(albedo),
         smithG1(alpha, fabsf(n_dot_in)), trowbridgeReitz(alpha, fabsf(dot3(n, out_dir))),
         fresnel(fabsf(n_dot_in), c.in[18], c.in[19]), c.random_state};
-    r.h = sampleHalfVector(vec(minus_in), vec(n_i), alpha, AnisotropicFrame{}, &r.h_state);
+    r.h = sampleHalfVector(vec(minus_in), vec(n_i), alpha, AnisotropicFrame{}, &r.h_state, 0u);
     r.cosine_hemisphere = sampleCosWeightedHemisphere(albedo.x, albedo.y);
     r.tangent_to_world = tangentToWorld(out_dir, n);
     r.world_to_tangent = worldToTangent(out_dir, n);
@@ -82,8 +82,8 @@ __device__ Result evaluate(const Case& c) {
     const float ggx_n[] = {h[0] * scale, h[1] * scale, h[2] * scale};
     const Vec v = vec(minus_in);
     const AnisotropicFrame frame = anisotropicFrame(material, vec(n_i));
-    r.lobes = lobeWeights(in_dir, v, vec(n_i), vec(ggx_n), frame, sheenProfile(v, vec(n_i), material), material,
-        c.in[18], c.in[19]);
+    r.lobes = lobeWeights(in_dir, v, vec(n_i), vec(ggx_n), vec(zero), vec(ggx_n), vec(zero), frame,
+        sheenProfile(v, vec(n_i), material), CoatFrame{}, vec(zero), material, c.in[18], c.in[19]);
     r.n_dot_h = dot3(vec(n_i), vec(ggx_n));
     const float p_lobe[] = {r.lobes.p_diffuse, r.lobes.p_refract, r.lobes.p_reflect};
     for (unsigned lobe = 0; lobe < 3; lobe++) {
@@ -121,12 +121,13 @@ __device__ Result evaluate(const Case& c) {
     r.beer_lambert = beerLambert(c.in[18] + c.in[19], albedo);
     r.point_light = pointLightRadiance(albedo, c.in[18], 1.0f + c.in[16]);
     const bool refracted = (dot3(in_dir, vec(c.in + 9)) <= 0) != (dot3(out_dir, vec(c.in + 9)) > 0);
-    FixedArray<Vec, 5> throughputs;
-    FixedArray<float, 5> pdfs;
-    BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, c.random_state, &throughputs, &pdfs);
+    FixedArray<Vec, 6> throughputs;
+    FixedArray<float, 6> pdfs;
+    BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, drawFacets(in_dir, n, material, c.random_state),
+        &throughputs, &pdfs);
     const float pdf = 0.5f + c.in[17];
     float balance[3] = {}, power[3] = {};
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         if (!(pdfs[i] > 0)) continue;
         const float ratio = pdfs[i] / pdf;
         const float t[] = {throughputs[i].x * pdfs[i], throughputs[i].y * pdfs[i], throughputs[i].z * pdfs[i]};
