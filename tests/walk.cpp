@@ -223,7 +223,7 @@ static double furnace_se = 0;
 // Channel the furnace reads
 static int furnace_channel = 0;
 // The digest of the walk drawing by noise address, no tensor bound, for two diffuse spheres under a sky of 0.7
-static const uint64_t UNMARKED_DIGEST = 0x4c66b20f61d8da8full;
+static const uint64_t UNMARKED_DIGEST = 0x9ea7bfa009738b90ull;
 // FNV-1a over each path's colour, kept sample and stored radiance, bit for bit
 static uint64_t digest = 0;
 static void digested(float x) {
