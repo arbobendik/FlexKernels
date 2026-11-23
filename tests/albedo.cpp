@@ -398,5 +398,71 @@ int main() {
     failed |= !(hair_miss < 0.01f);
     failed |= !(fabsf(asinf(hairDirection(Vector<float, 3>(-1, 0, 0), Vector<float, 3>(0, 0, 1), 0, 128, 170, 0.05f, 0.035f, 256, 512).z) + 0.0704f) < 0.001f);
     failed |= hairRow(oblique, FIBERS[2], FIBERS[1], 5, 0.3f, 0.035f, 256) != hairRow(oblique, FIBERS[2], FIBERS[1], 1, 0.3f, 0.035f, 256);
+    // Coat over a base of specular_level 0 (IOR 1.5, roughness r): white returns 1 at every sample; over black its
+    // albedo E_c is the quadrature of F * G1 over the coat's VNDF, and BSDF() over the hemisphere returns it
+    const float COAT_R[3] = {0, 0.3f, 1};
+    const double E_C[3][3] = {{0.0400, 0.0892, 0.3388}, {0.0397, 0.0867, 0.2476}, {0.0127, 0.0209, 0.0328}};
+    const auto coated = [&](Vector<float, 3> albedo, float r) {
+        Material m = {albedo, ZERO, 0.5f, 0, 0, 1.5f, ZERO, ONE, 0};
+        m.coat = 1, m.coat_roughness = r, m.coat_ior = 1.5f, m.coat_tint = ONE;
+        return m;
+    };
+    for (int j = 0; j < 3; j++) for (int k = 0; k < 3; k++) {
+        const Vector<float, 3> in_dir(-sqrtf(1 - COSINES[k] * COSINES[k]), 0, -COSINES[k]), n(0, 0, 1);
+        const Material white = coated(ONE, COAT_R[j]), black = coated(ZERO, COAT_R[j]);
+        double w = 0, b = 0, e = 0, e2 = 0;
+        for (unsigned i = 0; i < 1u << 18; i++) {
+            w += sampleBSDF(in_dir, n, white, 1, 1.5f, hash(i), Vector<float, 2>(0, 0)).throughput.x / (1 << 18);
+            b += sampleBSDF(in_dir, n, black, 1, 1.5f, hash(i), Vector<float, 2>(0, 0)).throughput.x / (1 << 18);
+            const Random u = pcg(hash(3 * i + 1)), v = pcg(u.state);
+            const float s = sqrtf(fmaxf(0, 1 - u.value * u.value));
+            const Vector<float, 3> l(s * cosf(6.2831853f * v.value), s * sinf(6.2831853f * v.value), u.value);
+            const double f = faceBSDF(in_dir, l, n, n, black, 1, 1.5f, hash(i)).x * 6.2831853;
+            e += f / (1 << 18), e2 += f * f / (1 << 18);
+        }
+        const double se = sqrt(fmax(e2 - e * e, 0) / (1 << 18));
+        const bool ok = fabs(w - 1) < 1e-4 && fabs(b - E_C[j][k]) < 0.002
+            && (j == 0 || fabs(e - E_C[j][k]) < fmax(4 * se, 0.002));
+        failed |= !ok;
+        printf("coat r %g at cosine %g: white %.4f, E_c %.4f of %.4f, BSDF() %.4f%s\n", COAT_R[j], COSINES[k], w, b,
+            E_C[j][k], e, ok ? "" : "  FAILED");
+    }
+    {
+        // Coat normal tilted 20 degrees, the view at cosine 0.5 to it: E_c as about the shading normal; coated glass
+        // seen from inside returns all
+        Material tilted = coated(ZERO, 0.3f), glass = coated(ONE, 0.3f);
+        tilted.coat_normal = Vector<float, 3>(0.34202f, 0, 0.93969f);
+        glass.transmission = 1, glass.specular_level = 1, glass.roughness = 0;
+        const Vector<float, 3> in_dir(-sinf(1.39626f), 0, -cosf(1.39626f)), up(0, 0, 1), inside(0.6f, 0, 0.8f);
+        double e = 0, through = 0;
+        for (unsigned i = 0; i < 1u << 18; i++) {
+            e += sampleBSDF(in_dir, up, tilted, 1, 1.5f, hash(i), Vector<float, 2>(0, 0)).throughput.x / (1 << 18);
+            through += sampleBSDF(inside, up, glass, 1.5f, 1, hash(i), Vector<float, 2>(0, 0)).throughput.x / (1 << 18);
+        }
+        const bool ok = fabs(e - 0.0867) < 0.002 && fabs(through - 1) < 2e-3;
+        failed |= !ok;
+        printf("coat normal tilted 20 degrees: E_c %.4f of 0.0867; coated glass from inside %.4f of 1%s\n", e, through,
+            ok ? "" : "  FAILED");
+    }
+    {
+        // towardLobe toward each lobe's samples of a coated half-transmissive material replays their microfacets:
+        // the sample's throughput and density within float rounding of the half vector, the coat's (LOBE_COAT 5)
+        // density within 2e-4
+        Material glass = coated(ONE, 0.3f);
+        glass.transmission = 0.5f, glass.specular_level = 1, glass.roughness = 0.3f;
+        const Vector<float, 3> in_dir(-0.6f, 0, -0.8f), up(0, 0, 1);
+        int replayed = 0, off = 0, lobes[6] = {};
+        for (unsigned i = 0; i < 1u << 16; i++) {
+            const SampleBSDF s = sampleBSDF(in_dir, up, glass, 1, 1.5f, hash(i), Vector<float, 2>(0, 0));
+            if (!(s.pdf > 0)) continue;
+            lobes[s.lobe]++;
+            const SampleBSDF c = towardLobe(in_dir, s.unit_direction, up, glass, 1, 1.5f, s.lobe, hash(i));
+            const float pdf_off = s.lobe == 5 ? 2e-4f : 1e-4f;
+            replayed++, off += fabsf(c.pdf / s.pdf - 1) > pdf_off || fabsf(c.throughput.x / s.throughput.x - 1) > 1e-4f;
+        }
+        failed |= off > 0 || !(lobes[0] && lobes[1] && lobes[2] && lobes[5]);
+        printf("coated half-transmissive: %d of %d samples off their connection (lobes 0, 1, 2, 5: %d, %d, %d, %d)%s\n",
+            off, replayed, lobes[0], lobes[1], lobes[2], lobes[5], off > 0 ? "  FAILED" : "");
+    }
     return failed;
 }
