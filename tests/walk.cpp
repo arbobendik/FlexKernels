@@ -345,6 +345,32 @@ int main() {
     furnace("black sphere covered at 0.3", camera, center, 0.3f, 0.49, failed);
     scene = {{center, 1, false, {dielectric(1.5f), dielectric(1.5f)}, 2, 1, false, none}};
     furnace("coat over glass", camera, center, 0.3f, 1, failed);
+    {
+        // The coat lobe against the exported layer of the same coat, tinted (0.9, 0.6, 0.3) over glass 1.5: the blue
+        // channel seen straight on (cosine 1) and at the rim (cosine 0.19); a rough 2.0 coat over 1.5 glass returns
+        // all it receives once the light it traps inside has the bounces to leave
+        Material layer = dielectric(1.5f), lobe = dielectric(1.5f);
+        layer.albedo = V(0.9f, 0.6f, 0.3f);
+        lobe.coat = 1, lobe.coat_roughness = 0, lobe.coat_ior = 1.5f, lobe.coat_tint = layer.albedo;
+        furnace_channel = 2;
+        for (const float rim : {0.0f, 1.04f}) {
+            scene = {{center, 1, false, {layer, dielectric(1.5f)}, 2, 1, false, none}};
+            const double layered = furnace("tinted coat over glass, layer", camera, V(rim, 0, 0), 0.002f, NAN, failed),
+                layered_se = furnace_se;
+            scene = {{center, 1, false, {lobe}, 1, 1, false, none}};
+            const double lobed = furnace("  coat lobe", camera, V(rim, 0, 0), 0.002f, NAN, failed);
+            const bool near = fabs(lobed - layered) < fmax(4 * hypot(layered_se, furnace_se), 0.01);
+            failed += !near;
+            printf("tinted coat over glass at %s: lobe %.4f, layer %.4f%s\n", rim > 0 ? "the rim" : "the center",
+                lobed, layered, near ? "" : "  FAILED");
+        }
+        furnace_channel = 0;
+        lobe.coat_tint = ONE, lobe.coat_roughness = 0.3f, lobe.coat_ior = 2.0f;
+        scene = {{center, 1, false, {lobe}, 1, 1, false, none}};
+        bounces = 1024;
+        furnace("rough coat 2.0 over glass 1.5", camera, center, 0.3f, 1, failed);
+        bounces = 64;
+    }
     // Each wavelength's weights integrate to white: a dispersive glass in the white sky keeps 1 in red, the channel
     // with the most negative weight
     Material dispersive = dielectric(1.5f);
