@@ -1421,9 +1421,10 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, wavelength: floa
     let dir: float3 = float3(sin(angles.y) * cos(angles.x), cos(angles.y), sin(angles.y) * sin(angles.x));
 #endif
     let pdf: float = environmentPdf(scene, dir);
-    // The material at the path's wavelength, before the shadow ray
+    // The material at the path's wavelength and the lobes' values for skyBSDF, before the shadow ray
     let material: Material = pathMaterial(surface.material, wavelength);
-    let f: float3 = skyBSDF(ray.unit_direction, dir, surface, material, eta, is_inside, pdf, lobe_state);
+    let lobes: VertexLobes = vertexLobes(ray.unit_direction, surface.smooth_n, material, eta.x, eta.y, lobe_state);
+    let f: float3 = skyBSDF(ray.unit_direction, dir, surface, material, eta, is_inside, pdf, lobe_state, lobes);
     // Only trace toward directions that contribute
     if (!(pdf > 0.0f) || all(f == float3(0.0f))) {
         return SkySample(dir, float3(0.0f), float3(0.0f), random_3.state);
@@ -1454,9 +1455,9 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, wavelength: floa
 // => throughput * PDF_lobe / pdf * w_balance = throughput * PDF_lobe / (PDF_lobe + pdf)
 // Each lobe reached toward dir by its term in terms, their sum returned
 func skyLobes(in_dir: float3, dir: float3, surface: Surface, material: Material, eta: float2, is_inside: bool,
-    pdf: float, random_state: uint, out terms: float3[6], out pdfs: float[6]) -> float3 {
+    pdf: float, random_state: uint, lobes: VertexLobes, out terms: float3[6], out pdfs: float[6]) -> float3 {
     let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
-    BSDF(in_dir, dir, surface.smooth_n, material, eta.x, eta.y, refracted, random_state, terms, pdfs);
+    vertexBSDF(in_dir, dir, surface.smooth_n, material, eta.x, eta.y, refracted, random_state, lobes, terms, pdfs);
     var f: float3 = float3(0.0f);
     for (var i: uint = 0u; i < 6u; i++) {
         if (pdfs[i] > 0.0f) {
@@ -1469,10 +1470,10 @@ func skyLobes(in_dir: float3, dir: float3, surface: Surface, material: Material,
 
 // skyLobes' sum
 [CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, material: Material, eta: float2,
-    is_inside: bool, pdf: float, random_state: uint) -> float3 {
+    is_inside: bool, pdf: float, random_state: uint, lobes: VertexLobes) -> float3 {
     var terms: float3[6];
     var pdfs: float[6];
-    return skyLobes(in_dir, dir, surface, material, eta, is_inside, pdf, random_state, terms, pdfs);
+    return skyLobes(in_dir, dir, surface, material, eta, is_inside, pdf, random_state, lobes, terms, pdfs);
 }
 
 #ifdef FK_FCPT_WALK
@@ -1484,7 +1485,8 @@ func skyLobes(in_dir: float3, dir: float3, surface: Surface, material: Material,
     let material: Material = pathMaterial(surface.material, wavelength);
     var terms: float3[6];
     var pdfs: float[6];
-    skyLobes(in_dir, dir, surface, material, eta, is_inside, pdf, random_state, terms, pdfs);
+    skyLobes(in_dir, dir, surface, material, eta, is_inside, pdf, random_state,
+        vertexLobes(in_dir, surface.smooth_n, material, eta.x, eta.y, random_state), terms, pdfs);
     // The world toward dir as the ray leaving by each lobe reached at depth sees it, the same for every lobe where the
     // world doesn't read Light Path
     var color: float3 = float3(0.0f);
@@ -1961,8 +1963,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 }
 #endif
                 return Shift(pathColor(throughput * skyBSDF(ray.unit_direction, r.dir, surface, material, eta,
-                    is_inside, environmentPdf(scene, r.dir), surface.random_state) * r.radiance, spectral_weight,
-                    wavelength) / r.jac, density / r.jac);
+                    is_inside, environmentPdf(scene, r.dir), surface.random_state, vertexLobes(ray.unit_direction,
+                    surface.smooth_n, material, eta.x, eta.y, surface.random_state)) * r.radiance,
+                    spectral_weight, wavelength) / r.jac, density / r.jac);
             }
             if (nee != (extractBits(r.path, PATH_NEE, 1u) == 1u)) {
                 return fail;
