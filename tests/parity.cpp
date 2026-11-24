@@ -82,8 +82,8 @@ __device__ Result evaluate(const Case& c) {
     const float ggx_n[] = {h[0] * scale, h[1] * scale, h[2] * scale};
     const Vec v = vec(minus_in);
     const AnisotropicFrame frame = anisotropicFrame(material, vec(n_i));
-    r.lobes = lobeWeights(in_dir, v, vec(n_i), vec(ggx_n), vec(zero), frame, sheenProfile(v, vec(n_i), material),
-        CoatFrame{}, vec(zero), material, c.in[18], c.in[19]);
+    r.lobes = lobeWeights(in_dir, v, vec(n_i), vec(ggx_n), vec(zero), 0.0f,
+        vertexLobes(in_dir, vec(n_i), material, c.in[18], c.in[19], 0u), material, c.in[18], c.in[19]);
     r.n_dot_h = dot3(vec(n_i), vec(ggx_n));
     const float p_lobe[] = {r.lobes.p_diffuse, r.lobes.p_refract, r.lobes.p_reflect};
     for (unsigned lobe = 0; lobe < 3; lobe++) {

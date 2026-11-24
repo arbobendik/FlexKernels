@@ -101,8 +101,8 @@ fn parity_toward(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: 
         ggx_n = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
         l_dot_h = dot(out_dir, ggx_n);
     }
-    let lobes = lobeWeights(in_dir, v, n_i, ggx_n, vec3<f32>(0.0), frame, sheenProfile(v, n_i, material),
-        CoatFrame(vec3<f32>(0.0), 0.0, 0.0), vec3<f32>(0.0), material, eta_i, eta_o);
+    let lobes = lobeWeights(in_dir, v, n_i, ggx_n, vec3<f32>(0.0), 0.0,
+        vertexLobes(in_dir, n_i, material, eta_i, eta_o, 0u), material, eta_i, eta_o);
     let pdf = parity_density(dot(n_i, out_dir), l_dot_h, abs(n_dot_v), alpha, lobes, eta_i, eta_o, lobe, v, ggx_n, n_i,
         material);
     if (!(pdf > 0.0)) {
@@ -200,9 +200,8 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     let ggx_n = normalize(- in_dir + out_dir);
     let lobes = ${FLEXLIGHT
         ? "bsdfLobes(in_dir, - in_dir, n_i, ggx_n, material, v[18], v[19], anisotropicFrame(material, n_i))"
-        : `lobeWeights(in_dir, - in_dir, n_i, ggx_n, vec3<f32>(0.0), anisotropicFrame(material, n_i),
-            sheenProfile(- in_dir, n_i, material), CoatFrame(vec3<f32>(0.0), 0.0, 0.0), vec3<f32>(0.0),
-            material, v[18], v[19])`};
+        : `lobeWeights(in_dir, - in_dir, n_i, ggx_n, vec3<f32>(0.0), 0.0,
+            vertexLobes(in_dir, n_i, material, v[18], v[19], 0u), material, v[18], v[19])`};
     r[41] = bitcast<u32>(lobes.v_dot_h);
     r[42] = bitcast<u32>(${FLEXLIGHT ? "lobes.n_dot_h" : "dot(n_i, ggx_n)"});
     parity_put(&r, 43u, lobes.refracted);

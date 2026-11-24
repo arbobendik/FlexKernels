@@ -2126,23 +2126,25 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     let n_i: float3 = surface.smooth_n * sign(n_dot_v);
                     let n_i_dot_l: float = dot(n_i, dir);
                     let alpha: float = material.roughness * material.roughness;
-                    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
-                    let sheen_profile: SheenProfile = sheenProfile(v, n_i, material);
-                    let coat_frame: CoatFrame = coatFrame(material, n_i);
-                    let coat_series: float3 = coatSeries(coat_frame, material);
+                    let lobes: VertexLobes = vertexLobes(in_dir, surface.smooth_n, material, eta.x, eta.y,
+                        surface.random_state);
+                    let frame: AnisotropicFrame = lobes.frame;
                     var ggx_n: float3 = reflectedHalf(in_dir, dir);
                     if (lobe_index == LOBE_REFRACT) {
                         ggx_n = refractedHalf(in_dir, dir, surface.smooth_n, eta.x, eta.y);
                     }
                     // The coat lobe's microfacet the reflective one over sampleBSDF's, the base lobes'
                     // sampleBSDF's coat's
-                    let coat_h: float3 = select(coatHalf(v, coat_frame, surface.random_state), ggx_n,
-                        lobe_index == LOBE_COAT);
+                    let coat_h: float3 = select(lobes.coat_h, ggx_n, lobe_index == LOBE_COAT);
+                    var f_c: float = lobes.coat_f;
+                    if (lobe_index == LOBE_COAT) {
+                        f_c = coatFresnel(in_dir, v, coat_h, lobes.coat, eta.x, lobes.behind);
+                    }
                     if (lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_TOON || lobe_index == LOBE_COAT) {
                         ggx_n = sampledHalf(v, n_i, alpha, frame, surface.random_state);
                     }
-                    let w: Weights = lobeWeights(in_dir, v, n_i, ggx_n, coat_h, frame, sheen_profile, coat_frame,
-                        coat_series, material, eta.x, eta.y);
+                    let w: Weights = lobeWeights(in_dir, v, n_i, ggx_n, coat_h, f_c, lobes, material, eta.x,
+                        eta.y);
                     // The VNDF's density of the half vector, the refraction's and the reflection's
                     let pdf_h: float = vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, w.v_dot_h);
                     var pdf: float = 0.0f;
@@ -2161,16 +2163,14 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                         lobe_throughput = sheenVelvetBSDF(dir, v, n_i, material, w);
                         break;
                     case LOBE_COAT:
-                        pdf = coatPDF(v, coat_h, coat_frame, w);
+                        pdf = coatPDF(v, coat_h, lobes.coat, w);
                         lobe_throughput = coatBSDF(w);
                         break;
 #ifdef FK_TOON
-                    case LOBE_TOON: {
-                        let profile: ToonProfile = toonProfile(v, n_i, material);
-                        pdf = toonPDF(dir, n_i, profile, w);
-                        lobe_throughput = toonBSDF(dir, n_i, profile, w);
+                    case LOBE_TOON:
+                        pdf = toonPDF(dir, n_i, lobes.toon, w);
+                        lobe_throughput = toonBSDF(dir, n_i, lobes.toon, w);
                         break;
-                    }
 #endif
                     default:
                         pdf = reflectPDF(pdf_h, w);
