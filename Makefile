@@ -70,7 +70,8 @@ build/wgsl-restir/noise.wgsl: NOISE_TARGET = wgsl
 build/cuda-restir/noise.cuh build/cuda-restir/noise.cpp build/wgsl-restir/noise.wgsl: src/noise.slang $(SLANGC)
 	mkdir -p $(@D)
 	$(SLANGC) $(SLANGFLAGS) $< -target $(NOISE_TARGET) -o $@
-	case $@ in *.cuh) sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#include "slang-cuda-prelude.h"|' $@;; esac
+	case $@ in *.cuh) sed -i 's|^#include ".*/slang-cuda-prelude.h"|#pragma once\n#include "slang-cuda-prelude.h"|' $@;; \
+		*.cpp) sed -i 's|^#include ".*/slang-cpp-prelude.h"|#include "slang-cpp-prelude.h"|' $@;; esac
 build/cuda-restir/noise-start.spv build/cuda-restir/noise-sweep.spv: src/noise.slang $(SLANGC)
 	mkdir -p $(@D)
 	$(SLANGC) $(SLANGFLAGS) $< -target spirv -stage compute \
@@ -129,7 +130,7 @@ build/summing-cpu: tests/summing.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
 build/noise-cpu: tests/noise.cpp build/cuda-restir/noise.cpp
-	$(CXX) -std=c++20 -O2 -Ibuild/cuda-restir $< -o $@
+	$(CXX) -std=c++20 -O2 -Ibuild/cuda-restir -I$(SLANG_PATH)/include $< -o $@
 
 build/walk-cpu: tests/walk.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
