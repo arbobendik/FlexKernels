@@ -62,6 +62,12 @@ TERMS TermsV faceBSDF(TermsV in_dir, TermsV out_dir, TermsV n, TermsV g_n, Terms
     unsigned random_state) {
     FixedArray<TermsV, 6> throughputs;
     FixedArray<float, 6> pdfs;
-    return BSDF(in_dir, out_dir, n, m, eta_i, eta_o, dot_0(g_n, negate_0(in_dir)) * dot_0(g_n, out_dir) <= 0,
-        random_state, ~0u, &throughputs, &pdfs);
+    BSDF(in_dir, out_dir, n, m, eta_i, eta_o, dot_0(g_n, negate_0(in_dir)) * dot_0(g_n, out_dir) <= 0, random_state,
+        ~0u, &throughputs, &pdfs);
+    // Directions a lobe can't sample carry no throughput
+    TermsV f = TermsV(0.0f);
+    for (int i = 0; i < 6; i++) {
+        if (pdfs[i] > 0.0f) f = f + throughputs[i] * TermsV(pdfs[i]);
+    }
+    return f;
 }

@@ -410,11 +410,12 @@ __extern_cpp public struct RandomSphere {
 // otherwise: the diffuse, but where translucent through the shading normal, the reflection, the sheen, the toon and the
 // coat
 // as throughput = BSDF_lobe * n_dot_l / PDF_lobe
-// => BSDF * n_dot_l = sum throughput * PDF_lobe
+// => BSDF * n_dot_l = sum throughput * PDF_lobe over the slots with PDF_lobe > 0, as each caller sums them
 // mask: the slots evaluated, bit i for slot i
 [CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, material: Material, eta_i: float,
     eta_o: float, refracted: bool, random_state: uint, mask: uint,
-    out throughputs: float3[6], out pdfs: float[6]) -> float3 {
+    out throughputs: float3[6], out pdfs: float[6]) {
+    // The vertex's values, shared by every lobe
     let v: float3 = negate(in_dir);
     let n_dot_v: float = dot(n, v);
     let n_i: float3 = n * sign(n_dot_v);
@@ -436,82 +437,87 @@ __extern_cpp public struct RandomSphere {
 #else
     let toon: bool = false;
 #endif
-    let lobes: uint = material.coat > 0.0f ? 6u : toon ? 5u : 4u;
-    for (var i: uint = 0u; i < 6u; i++) {
-        throughputs[i] = float3(0.0f);
-        pdfs[i] = 0.0f;
+    // The lobes reaching out_dir, of those in mask
+    let diffuse_on: bool = (mask & 1u) != 0u && (translucent && through) == refracted;
+    let refract_on: bool = (mask & 2u) != 0u && refracted;
+    let reflect_on: bool = (mask & 4u) != 0u && !refracted;
+    let sheen_on: bool = (mask & 8u) != 0u && !refracted;
+    let toon_on: bool = (mask & 16u) != 0u && !refracted && toon;
+    let coat_on: bool = (mask & 32u) != 0u && !refracted && material.coat > 0.0f;
+    throughputs = {};
+    pdfs = {};
+    // Coat: sampleBSDF's coat microfacet over the base lobes, where a lobe's weights read it
+    var coat_h: float3 = float3(0.0f);
+    if (diffuse_on || toon_on || reflect_on || sheen_on || refract_on) {
+        coat_h = coatHalf(v, coat_frame, material, random_state);
     }
-    // Coat: sampleBSDF's coat microfacet over the base lobes
-    let coat_h: float3 = coatHalf(v, coat_frame, material, random_state);
-    // sampleBSDF's half vector for the diffuse, toon and coat lobes, its weights for the diffuse and toon lobes, where
-    // they reach out_dir
+    // sampleBSDF's half vector: the diffuse, toon and coat lobes', its weights the diffuse and toon lobes'
     var sampled_n: float3 = float3(0.0f);
     var sampled_w: Weights = {};
-    if ((mask & 0x31u) != 0u && ((translucent && through) == refracted || !refracted && lobes > 4u)) {
+    if (diffuse_on || toon_on || coat_on) {
         sampled_n = sampledHalf(v, n_i, alpha, frame, random_state);
+    }
+    if (diffuse_on || toon_on) {
         sampled_w = lobeWeights(in_dir, v, n_i, sampled_n, coat_h, frame, sheen_albedo, coat_frame, coat_series,
             material, eta_i, eta_o);
     }
-    // out_dir's half vector and its weights, the refractive one across the face, the reflective one for reflection,
-    // sheen and coat otherwise
-    let ggx_n: float3 = refracted ? refractedHalf(in_dir, out_dir, n, eta_i, eta_o) : reflectedHalf(in_dir, out_dir);
-    var w: Weights = {};
-    if ((mask & 0xEu) != 0u) {
-        w = lobeWeights(in_dir, v, n_i, ggx_n, coat_h, frame, sheen_albedo, coat_frame, coat_series, material, eta_i,
-            eta_o);
+    // out_dir's reflective half vector: the reflection, sheen and coat lobes', its weights the reflection and sheen
+    // lobes'
+    var reflected_n: float3 = float3(0.0f);
+    var reflected_w: Weights = {};
+    if (reflect_on || sheen_on || coat_on) {
+        reflected_n = reflectedHalf(in_dir, out_dir);
     }
-    for (var i: uint = 0u; i < lobes; i++) {
-        let lobe: uint = i == 3u ? LOBE_SHEEN_VELVET : i == 4u ? LOBE_TOON : i == 5u ? LOBE_COAT : i;
-        if ((mask & (1u << i)) == 0u
-            || (lobe == LOBE_DIFFUSE && translucent ? through : lobe == LOBE_REFRACT) != refracted
-            || lobe == LOBE_TOON && !toon) {
-            continue;
-        }
-        // The VNDF's density of the half vector for the refraction and the reflection alone
-        switch (lobe) {
-        case LOBE_DIFFUSE:
-            pdfs[0] = diffusePDF(n_i_dot_l, abs(n_dot_v), material, sampled_w);
-            throughputs[0] = diffuseBSDF(out_dir, n_i, material, sampled_w);
-            break;
-        case LOBE_REFRACT:
-            pdfs[1] = refractPDF(dot(out_dir, ggx_n), vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, w.v_dot_h), w,
-                eta_i, eta_o);
-            throughputs[1] = refractBSDF(out_dir, n_i, alpha, frame, material, w);
-            break;
-        case LOBE_SHEEN_VELVET:
-            pdfs[3] = sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), w);
-            throughputs[3] = sheenVelvetBSDF(out_dir, v, n_i, material, w);
-            break;
-        case LOBE_COAT: {
-            // The coat lobe's microfacet: out_dir's reflective one, over sampleBSDF's half vector
-            let coat_w: Weights = lobeWeights(in_dir, v, n_i, sampled_n, ggx_n, frame, sheen_albedo, coat_frame,
-                coat_series, material, eta_i, eta_o);
-            pdfs[5] = coatPDF(v, ggx_n, coat_frame, coat_w);
-            throughputs[5] = coatBSDF(coat_w);
-            break;
-        }
+    if (reflect_on || sheen_on) {
+        reflected_w = lobeWeights(in_dir, v, n_i, reflected_n, coat_h, frame, sheen_albedo, coat_frame, coat_series,
+            material, eta_i, eta_o);
+    }
+    // out_dir's refractive half vector and its weights: the refraction's
+    var refracted_n: float3 = float3(0.0f);
+    var refracted_w: Weights = {};
+    if (refract_on) {
+        refracted_n = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
+        refracted_w = lobeWeights(in_dir, v, n_i, refracted_n, coat_h, frame, sheen_albedo, coat_frame, coat_series,
+            material, eta_i, eta_o);
+    }
+    // The VNDF's density of the half vector for the refraction and the reflection alone
+    // Diffuse
+    if (diffuse_on) {
+        pdfs[0] = diffusePDF(n_i_dot_l, abs(n_dot_v), material, sampled_w);
+        throughputs[0] = diffuseBSDF(out_dir, n_i, material, sampled_w);
+    }
+    // Refraction: the VNDF's density of its half vector
+    if (refract_on) {
+        pdfs[1] = refractPDF(dot(out_dir, refracted_n), vndfPDF(v, refracted_n, n_i, abs(n_dot_v), alpha, frame,
+            refracted_w.v_dot_h), refracted_w, eta_i, eta_o);
+        throughputs[1] = refractBSDF(out_dir, n_i, alpha, frame, material, refracted_w);
+    }
+    // Reflection: the VNDF's density of its half vector
+    if (reflect_on) {
+        pdfs[2] = reflectPDF(vndfPDF(v, reflected_n, n_i, abs(n_dot_v), alpha, frame, reflected_w.v_dot_h),
+            reflected_w);
+        throughputs[2] = reflectBSDF(out_dir, n_i, alpha, frame, reflected_w);
+    }
+    // Sheen
+    if (sheen_on) {
+        pdfs[3] = sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), reflected_w);
+        throughputs[3] = sheenVelvetBSDF(out_dir, v, n_i, material, reflected_w);
+    }
 #ifdef FK_TOON
-        case LOBE_TOON: {
-            let profile: ToonProfile = toonProfile(v, n_i, material);
-            pdfs[4] = toonPDF(out_dir, n_i, profile, sampled_w);
-            throughputs[4] = toonBSDF(out_dir, n_i, profile, sampled_w);
-            break;
-        }
+    // Toon
+    if (toon_on) {
+        let profile: ToonProfile = toonProfile(v, n_i, material);
+        pdfs[4] = toonPDF(out_dir, n_i, profile, sampled_w);
+        throughputs[4] = toonBSDF(out_dir, n_i, profile, sampled_w);
+    }
 #endif
-        default:
-            pdfs[2] = reflectPDF(vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, w.v_dot_h), w);
-            throughputs[2] = reflectBSDF(out_dir, n_i, alpha, frame, w);
-            break;
-        }
+    // Coat: its microfacet out_dir's reflective one, over sampleBSDF's half vector
+    if (coat_on) {
+        let coat_w: Weights = lobeWeights(in_dir, v, n_i, sampled_n, reflected_n, frame, sheen_albedo, coat_frame,
+            coat_series, material, eta_i, eta_o);
+        pdfs[5] = coatPDF(v, reflected_n, coat_frame, coat_w);
+        throughputs[5] = coatBSDF(coat_w);
     }
-    // Directions a lobe can't sample carry no throughput
-    var f: float3 = float3(0.0f);
-    for (var i: uint = 0u; i < 6u; i++) {
-        if (pdfs[i] > 0.0f) {
-            f += throughputs[i] * pdfs[i];
-        }
-    }
-    return f;
 }
 
 __extern_cpp public struct SampleBSDF {
@@ -570,7 +576,9 @@ __extern_cpp public struct AnisotropicFrame {
 }
 
 #ifdef FK_TOON
-// The toon's values at a vertex: toon = |w| * albedo, glossy, a, s, b, K or W, P(theta_v) and the axis R or n
+// The toon's values at a vertex: toon = |w| * albedo, glossy, a, s, b, K or W, P(theta_v), the axis R or n, and G's or
+// H's terms in a alone: k = 1 + a / s, c = cos(2a) or cos(a), d = sin(2a) / 8 - a cos(2a) / 4 or sin(a) - a cos(a),
+// core = G(a) or H(a)
 __extern_cpp public struct ToonProfile {
     __extern_cpp public float3 toon;
     __extern_cpp public bool glossy;
@@ -580,10 +588,11 @@ __extern_cpp public struct ToonProfile {
     __extern_cpp public float norm;
     __extern_cpp public float view;
     __extern_cpp public float3 axis;
+    __extern_cpp public float k;
+    __extern_cpp public float c;
+    __extern_cpp public float d;
+    __extern_cpp public float core;
 }
-// Toon of mark (w, w * Size, w * Smooth), glossy for w < 0
-// a = Size * PI / 2, s = Smooth * PI / 2, b = min(a + s, PI / 2)
-// K = 2 * PI * G(b), W = 2 * PI * H(b) glossy, R = 2 * n_dot_v * n - v
 [CudaDeviceExport] public func toonProfile(v: float3, n_i: float3, material: Material) -> ToonProfile {
     let glossy: bool = material.toon.x < 0.0f;
     let a: float = clamp(material.toon.y / material.toon.x, 1e-5f, 1.0f) * PI / 2.0f;
@@ -592,8 +601,12 @@ __extern_cpp public struct ToonProfile {
     // view = P(theta_v)
     let view: float = toonP(acos(min(dot(n_i, v), 1.0f)), a, s);
     let axis: float3 = glossy ? normalize(2.0f * dot(n_i, v) * n_i - v) : n_i;
-    return ToonProfile(min(abs(material.toon.x), 1.0f) * material.albedo, glossy, a, s, b,
-        2.0f * PI * toonIntegral(b, a, s, glossy), view, axis);
+    var profile: ToonProfile = ToonProfile(min(abs(material.toon.x), 1.0f) * material.albedo, glossy, a, s, b, 0.0f,
+        view, axis, 1.0f + a / s, glossy ? cos(a) : cos(2.0f * a),
+        glossy ? sin(a) - a * cos(a) : sin(2.0f * a) / 8.0f - a * cos(2.0f * a) / 4.0f,
+        glossy ? 1.0f - cos(a) : sin(a) * sin(a) / 2.0f);
+    profile.norm = 2.0f * PI * toonIntegral(b, profile);
+    return profile;
 }
 // P(t) = 1 below a, 1 - (t - a) / s up to a + s, 0 beyond
 [CudaDeviceExport] public func toonP(t: float, a: float, s: float) -> float {
@@ -603,13 +616,15 @@ __extern_cpp public struct ToonProfile {
 //      - ((sin(2t) / 8 - t * cos(2t) / 4) - (sin(2a) / 8 - a * cos(2a) / 4)) / s beyond a
 // H(t) = integral_0^t P sin = 1 - cos(min(t, a)) + (1 + a / s) * (cos(a) - cos(t))
 //      - ((sin(t) - t * cos(t)) - (sin(a) - a * cos(a))) / s beyond a, glossy
-[CudaDeviceExport] public func toonIntegral(t: float, a: float, s: float, glossy: bool) -> float {
-    var integral: float = glossy ? 1.0f - cos(min(t, a)) : sin(min(t, a)) * sin(min(t, a)) / 2.0f;
-    if (t > a && s > 0.0f) {
-        integral += glossy ? (1.0f + a / s) * (cos(a) - cos(t)) - ((sin(t) - t * cos(t)) - (sin(a) - a * cos(a))) / s
-            : (1.0f + a / s) * (cos(2.0f * a) - cos(2.0f * t)) / 4.0f
-            - ((sin(2.0f * t) / 8.0f - t * cos(2.0f * t) / 4.0f) - (sin(2.0f * a) / 8.0f - a * cos(2.0f * a) / 4.0f))
-            / s;
+// => beyond a: core + k * (c - cos(2t)) / 4 - ((sin(2t) / 8 - t * cos(2t) / 4) - d) / s, H's likewise
+[CudaDeviceExport] public func toonIntegral(t: float, profile: ToonProfile) -> float {
+    let glossy: bool = profile.glossy;
+    let s: float = profile.s;
+    var integral: float = t < profile.a ? (glossy ? 1.0f - cos(t) : sin(t) * sin(t) / 2.0f) : profile.core;
+    if (t > profile.a && s > 0.0f) {
+        integral += glossy ? profile.k * (profile.c - cos(t)) - ((sin(t) - t * cos(t)) - profile.d) / s
+            : profile.k * (profile.c - cos(2.0f * t)) / 4.0f - ((sin(2.0f * t) / 8.0f - t * cos(2.0f * t) / 4.0f)
+            - profile.d) / s;
     }
     return integral;
 }
@@ -978,7 +993,7 @@ __extern_cpp public struct CoatFrame {
     var t: float = core < a ? core : (a + profile.b) / 2.0f;
     for (var k: int = 0; k < 8; k++) {
         let slope: float = toonP(t, a, profile.s) * sin(t) * (profile.glossy ? 1.0f : cos(t));
-        t = clamp(t - select(0.0f, (toonIntegral(t, a, profile.s, profile.glossy) - target) / slope, slope > 0.0f),
+        t = clamp(t - select(0.0f, (toonIntegral(t, profile) - target) / slope, slope > 0.0f),
             0.0f, profile.b);
     }
     let phi: float = 2.0f * PI * random_t_2.value;

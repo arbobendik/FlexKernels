@@ -1783,7 +1783,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 {
                     var throughputs: float3[6];
                     var pdfs: float[6];
-                    let f: float3 = BSDF(ray.unit_direction, light.dir, surface.smooth_n, material, eta.x, eta.y,
+                    BSDF(ray.unit_direction, light.dir, surface.smooth_n, material, eta.x, eta.y,
                         dot(surface.geometry_n, - ray.unit_direction) * dot(surface.geometry_n, light.dir) <= 0.0f,
                         surface.random_state, ~0u, throughputs, pdfs);
                     // radiance = L / PDF_light
@@ -1791,17 +1791,15 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     // => throughput * PDF_lobe / PDF_light * w_power
                     //    = throughput * PDF_lobe / (PDF_light * (1 + (PDF_lobe / PDF_light)^2))
                     // Delta lights or no competing BSDF sample: w_power = 1
-                    if (!(b < scene.maxBounces()) || light.density == 0.0f) {
-                        lit = f * light.radiance;
-                    } else {
-                        for (var i: uint = 0u; i < 6u; i++) {
-                            if (pdfs[i] > 0.0f) {
-                                let ratio: float = pdfs[i] / light.density;
-                                lit += throughputs[i] * pdfs[i] / (light.density * (1.0f + ratio * ratio));
-                            }
+                    let competing: bool = b < scene.maxBounces() && light.density != 0.0f;
+                    for (var i: uint = 0u; i < 6u; i++) {
+                        if (pdfs[i] > 0.0f) {
+                            let ratio: float = pdfs[i] / light.density;
+                            lit += competing ? throughputs[i] * pdfs[i] / (light.density * (1.0f + ratio * ratio))
+                                : throughputs[i] * pdfs[i];
                         }
-                        lit = lit * light.radiance * light.density;
                     }
+                    lit = competing ? lit * light.radiance * light.density : lit * light.radiance;
                 }
             }
         }
