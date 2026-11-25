@@ -100,10 +100,12 @@ __device__ Result evaluate(const Case& c) {
     }
     r.sample = sampleBSDF(in_dir, n, material, c.in[18], c.in[19], c.random_state, Vec2{});
     for (unsigned lobe = 0; lobe < 3; lobe++) {
-        const SampleBSDF s = towardLobe(in_dir, out_dir, n, material, c.in[18], c.in[19], lobe, c.random_state);
-        const float weighted[] = {s.throughput.x * s.pdf, s.throughput.y * s.pdf, s.throughput.z * s.pdf};
-        r.connected[lobe] = vec(weighted);
-        r.connected_pdf[lobe] = s.pdf;
+        const bool refracted = lobe == 1 || (lobe == 0 && translucentShare(material) > 0
+            && dot3(n, out_dir) * n_dot_v < 0);
+        float density = 0;
+        r.connected[lobe] = BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, c.random_state,
+            1u << lobe, &density);
+        r.connected_pdf[lobe] = r.lobe_density[lobe];
     }
     r.bsdf = faceBSDF(in_dir, out_dir, n, vec(c.in + 9), material, c.in[18], c.in[19], c.random_state);
     r.nee = neeDecision(material, dot_0(n, -in_dir), c.in[18], c.in[19]);
@@ -121,22 +123,15 @@ __device__ Result evaluate(const Case& c) {
     r.beer_lambert = beerLambert(c.in[18] + c.in[19], albedo);
     r.point_light = pointLightRadiance(albedo, c.in[18], 1.0f + c.in[16]);
     const bool refracted = (dot3(in_dir, vec(c.in + 9)) <= 0) != (dot3(out_dir, vec(c.in + 9)) > 0);
-    FixedArray<Vec, 6> throughputs;
-    FixedArray<float, 6> pdfs;
-    BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, c.random_state, &throughputs, &pdfs);
+    float density = 0;
+    const Vec f = BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, c.random_state, 63u, &density);
     const float pdf = 0.5f + c.in[17];
-    float balance[3] = {}, power[3] = {};
-    for (int i = 0; i < 6; i++) {
-        if (!(pdfs[i] > 0)) continue;
-        const float ratio = pdfs[i] / pdf;
-        const float t[] = {throughputs[i].x * pdfs[i], throughputs[i].y * pdfs[i], throughputs[i].z * pdfs[i]};
-        for (int k = 0; k < 3; k++) {
-            balance[k] += t[k] / (pdfs[i] + pdf);
-            power[k] += t[k] / (pdf * (1 + ratio * ratio));
-        }
-    }
-    r.nee_balance = vec(balance);
-    r.nee_power = vec(power);
+    const float ratio = density / pdf;
+    const float balance = 1 / (density + pdf), power = 1 / (pdf * (1 + ratio * ratio));
+    const float balanced[] = {f.x * balance, f.y * balance, f.z * balance};
+    const float powered[] = {f.x * power, f.y * power, f.z * power};
+    r.nee_balance = vec(balanced);
+    r.nee_power = vec(powered);
     r.straight_through = straightThrough(in_dir, n, material);
     float low_first[3], high_first[3], low_second[3], high_second[3];
     float light_point[3], facing[3], normal_scaled[3], toward[3];
@@ -248,8 +243,8 @@ int main() {
         const Weights& l = r.lobes;
         printf(" %.9g", r.g1); print(r.normal_map);
         printf(" %.9g %.9g", l.v_dot_h, r.n_dot_h); print(l.refracted); print(l.F);
-        printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g", rgb_to_greyscale(l.F), l.reflect_weight, l.diffuse_weight.x,
-            l.refract_weight.x, l.p_diffuse, l.p_reflect, l.p_refract);
+        printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g", l.F.x * 0.299f + l.F.y * 0.587f + l.F.z * 0.114f,
+            l.reflect_weight, l.diffuse_weight.x, l.refract_weight.x, l.p_diffuse, l.p_reflect, l.p_refract);
         for (unsigned lobe = 0; lobe < 3; lobe++) { print(r.lobe_throughput[lobe]); printf(" %.9g", r.lobe_density[lobe]); }
         print(r.sample.unit_direction); print(r.sample.throughput);
         printf(" %u %u %u %.9g", r.sample.random_state, r.sample.refracted, r.sample.lobe, r.sample.pdf);

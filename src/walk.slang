@@ -1297,26 +1297,17 @@ func hairLight<S: IScene>(scene: S, surface: Surface, in_dir: float3, light: Tre
 #endif
 
 // radiance = L / PDF_light
-// Per lobe: w_power = PDF_light^2 / (PDF_light^2 + PDF_lobe^2)
-// => throughput * PDF_lobe / PDF_light * w_power = throughput * PDF_lobe / (PDF_light * (1 + (PDF_lobe / PDF_light)^2))
+// w_power = PDF_light^2 / (PDF_light^2 + pdfSum^2) = 1 / (1 + (pdfSum / PDF_light)^2)
 // Delta lights or no competing BSDF sample: w_power = 1
 func lightBSDF(in_dir: float3, light: TreeSample, smooth_n: float3, geometry_n: float3, material: Material, eta_i: float, eta_o: float, competing: bool, random_state: uint) -> float3 {
     let refracted: bool = dot(geometry_n, - in_dir) * dot(geometry_n, light.dir) <= 0.0f;
-    var throughputs: float3[6];
-    var pdfs: float[6];
-    let f: float3 = BSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, random_state, throughputs,
-        pdfs);
+    var pdf: float = 0.0f;
+    let f: float3 = BSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, random_state, 63u, pdf);
     if (!competing || light.density == 0.0f) {
         return f * light.radiance;
     }
-    var weighted: float3 = float3(0.0f);
-    for (var i: uint = 0u; i < 6u; i++) {
-        if (pdfs[i] > 0.0f) {
-            let ratio: float = pdfs[i] / light.density;
-            weighted += throughputs[i] * pdfs[i] / (light.density * (1.0f + ratio * ratio));
-        }
-    }
-    return weighted * light.radiance * light.density;
+    let ratio: float = pdf / light.density;
+    return f * light.radiance / (1.0f + ratio * ratio);
 }
 
 // Power heuristic of BSDF sampling at the vertex the ray left against light sampling of the point met
@@ -1450,54 +1441,38 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, wavelength: floa
 #endif
 }
 
-// Per lobe against the BSDF sampled escape of PDF pdf: w_balance = pdf / (pdf + PDF_lobe)
-// => throughput * PDF_lobe / pdf * w_balance = throughput * PDF_lobe / (PDF_lobe + pdf)
-// Each lobe reached toward dir by its term in terms, their sum returned
-func skyLobes(in_dir: float3, dir: float3, surface: Surface, material: Material, eta: float2, is_inside: bool,
-    pdf: float, random_state: uint, out terms: float3[6], out pdfs: float[6]) -> float3 {
-    let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
-    BSDF(in_dir, dir, surface.smooth_n, material, eta.x, eta.y, refracted, random_state, terms, pdfs);
-    var f: float3 = float3(0.0f);
-    for (var i: uint = 0u; i < 6u; i++) {
-        if (pdfs[i] > 0.0f) {
-            terms[i] = terms[i] * pdfs[i] / (pdfs[i] + pdf);
-            f += terms[i];
-        }
-    }
-    return f;
-}
-
-// skyLobes' sum
+// w_balance = pdfSum / (pdfSum + PDF_env)
+// => throughputSum / (pdfSum + PDF_env)
 [CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, material: Material, eta: float2,
     is_inside: bool, pdf: float, random_state: uint) -> float3 {
-    var terms: float3[6];
-    var pdfs: float[6];
-    return skyLobes(in_dir, dir, surface, material, eta, is_inside, pdf, random_state, terms, pdfs);
+    let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
+    var density: float = 0.0f;
+    let f: float3 = BSDF(in_dir, dir, surface.smooth_n, material, eta.x, eta.y, refracted, random_state, 63u,
+        density);
+    return f / (density + pdf);
 }
 
 #ifdef FK_FCPT_WALK
-// skyBSDF with the world toward dir as the ray leaving by each lobe at depth sees it; a call of its own on every
-// target, as skyBSDF is, so the sky sample's own code stays main's
+// The world toward dir as each lobe's ray sees it, with the same summed-density balance weight
 [noinline] func skyColor<S: IScene>(scene: S, in_dir: float3, dir: float3, surface: Surface, wavelength: float,
     eta: float2, is_inside: bool, pdf: float, random_state: uint, depth: uint) -> float3 {
-    // skyBSDF's balance heuristic, lobe by lobe, at the path's wavelength
     let material: Material = pathMaterial(surface.material, wavelength);
-    var terms: float3[6];
-    var pdfs: float[6];
-    skyLobes(in_dir, dir, surface, material, eta, is_inside, pdf, random_state, terms, pdfs);
-    // The world toward dir as the ray leaving by each lobe reached at depth sees it, the same for every lobe where the
-    // world doesn't read Light Path
+    let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
+    if (!scene.worldReadsPath()) {
+        var density: float = 0.0f;
+        let f: float3 = BSDF(in_dir, dir, surface.smooth_n, material, eta.x, eta.y, refracted, random_state, 63u,
+            density);
+        return f * scene.env_map_sample(dir, depth, LOBE_DIFFUSE) / (density + pdf);
+    }
     var color: float3 = float3(0.0f);
-    var world: float3 = float3(0.0f);
-    var shaded: bool = false;
     for (var i: uint = 0u; i < 6u; i++) {
-        if (pdfs[i] > 0.0f) {
-            if (scene.worldReadsPath() || !shaded) {
-                world = scene.env_map_sample(dir, depth, i == 3u ? LOBE_SHEEN_VELVET : i == 4u ? LOBE_TOON
-                    : i == 5u ? LOBE_COAT : i);
-                shaded = true;
-            }
-            color += terms[i] * world;
+        var density: float = 0.0f;
+        let term: float3 = BSDF(in_dir, dir, surface.smooth_n, material, eta.x, eta.y, refracted, random_state,
+            1u << i, density);
+        if (dot(term, term) > 0.0f) {
+            let world: float3 = scene.env_map_sample(dir, depth, i == 3u ? LOBE_SHEEN_VELVET : i == 4u ? LOBE_TOON
+                : i == 5u ? LOBE_COAT : i);
+            color += term * world / (density + pdf);
         }
     }
     return color;
@@ -2120,67 +2095,21 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 } else
 #endif
                 {
-                    // The stored lobe toward dir by its half vector's weights, those of sampleBSDF where drawn
-                    let in_dir: float3 = ray.unit_direction;
-                    let v: float3 = negate(in_dir);
-                    let n_i: float3 = surface.smooth_n * sign(n_dot_v);
-                    let n_i_dot_l: float = dot(n_i, dir);
-                    let alpha: float = material.roughness * material.roughness;
-                    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
-                    let sheen_profile: SheenProfile = sheenProfile(v, n_i, material);
-                    let coat_frame: CoatFrame = coatFrame(material, n_i);
-                    let coat_series: float3 = coatSeries(coat_frame, material);
-                    var ggx_n: float3 = reflectedHalf(in_dir, dir);
-                    if (lobe_index == LOBE_REFRACT) {
-                        ggx_n = refractedHalf(in_dir, dir, surface.smooth_n, eta.x, eta.y);
-                    }
-                    // The coat lobe's microfacet the reflective one over sampleBSDF's, the base lobes'
-                    // sampleBSDF's coat's
-                    let coat_h: float3 = select(coatHalf(v, coat_frame, surface.random_state), ggx_n,
+                    let connect_roughness: float = select(material.roughness, material.coat_roughness,
                         lobe_index == LOBE_COAT);
-                    if (lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_TOON || lobe_index == LOBE_COAT) {
-                        ggx_n = sampledHalf(v, n_i, alpha, frame, surface.random_state);
-                    }
-                    let w: Weights = lobeWeights(in_dir, v, n_i, ggx_n, coat_h, frame, sheen_profile, coat_frame,
-                        coat_series, material, eta.x, eta.y);
-                    // The VNDF's density of the half vector, the refraction's and the reflection's
-                    let pdf_h: float = vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, w.v_dot_h);
-                    var pdf: float = 0.0f;
-                    var lobe_throughput: float3 = float3(0.0f);
-                    switch (lobe_index) {
-                    case LOBE_DIFFUSE:
-                        pdf = diffusePDF(n_i_dot_l, abs(n_dot_v), material, w);
-                        lobe_throughput = diffuseBSDF(dir, n_i, material, w);
-                        break;
-                    case LOBE_REFRACT:
-                        pdf = refractPDF(dot(dir, ggx_n), pdf_h, w, eta.x, eta.y);
-                        lobe_throughput = refractBSDF(dir, n_i, alpha, frame, material, w);
-                        break;
-                    case LOBE_SHEEN_VELVET:
-                        pdf = sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), w);
-                        lobe_throughput = sheenVelvetBSDF(dir, v, n_i, material, w);
-                        break;
-                    case LOBE_COAT:
-                        pdf = coatPDF(v, coat_h, coat_frame, w);
-                        lobe_throughput = coatBSDF(w);
-                        break;
-#ifdef FK_TOON
-                    case LOBE_TOON: {
-                        let profile: ToonProfile = toonProfile(v, n_i, material);
-                        pdf = toonPDF(dir, n_i, profile, w);
-                        lobe_throughput = toonBSDF(dir, n_i, profile, w);
-                        break;
-                    }
-#endif
-                    default:
-                        pdf = reflectPDF(pdf_h, w);
-                        lobe_throughput = reflectBSDF(dir, n_i, alpha, frame, w);
-                        break;
-                    }
-                    // Directions the lobe can't sample carry no throughput
-                    if (pdf > 0.0f) {
-                        lobe = SampleBSDF(dir, lobe_throughput, surface.random_state, lobe_index == LOBE_REFRACT,
-                            lobe_index, pdf);
+                    let connect_spread: bool = lobe_index == LOBE_DIFFUSE || lobe_index == LOBE_SHEEN_VELVET
+                        || lobe_index == LOBE_TOON;
+                    let connect_delta: bool = !connect_spread && (connect_roughness == 0.0f
+                        || (lobe_index == LOBE_REFRACT && eta.x == eta.y));
+                    if (!connect_delta) {
+                        var pdf: float = 0.0f;
+                        let f: float3 = BSDF(ray.unit_direction, dir, surface.smooth_n, material, eta.x, eta.y,
+                            refracted, surface.random_state, 64u | 1u << (lobe_index == LOBE_SHEEN_VELVET ? 3u
+                                : lobe_index == LOBE_TOON ? 4u : lobe_index), pdf);
+                        if (pdf > 0.0f) {
+                            lobe = SampleBSDF(dir, f, surface.random_state, lobe_index == LOBE_REFRACT,
+                                lobe_index, pdf);
+                        }
                     }
                 }
             }

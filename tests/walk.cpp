@@ -224,8 +224,9 @@ static bool resampled = false;
 static double furnace_se = 0;
 // Channel the furnace reads
 static int furnace_channel = 0;
-// The digest of the walk drawing by noise address, no tensor bound, for two diffuse spheres under a sky of 0.7
-static const uint64_t UNMARKED_DIGEST = 0x4c66b20f61d8da8full;
+// The digest of the walk drawing by noise address, no tensor bound, for two diffuse spheres under a sky of 0.7,
+// with each sample's summed BSDF density
+static const uint64_t UNMARKED_DIGEST = 0x38f3d9520c52274cull;
 // FNV-1a over each path's colour, kept sample and stored radiance, bit for bit
 static uint64_t digest = 0;
 static void digested(float x) {
@@ -297,8 +298,8 @@ int main() {
         const bool alike = fabs(sampled - escaped) < 4 * hypot(sampled_se, furnace_se);
         failed += !alike;
         printf("world by ray kind: sampled and escaped %s%s\n", alike ? "agree" : "differ", alike ? "" : "  FAILED");
-        // A world reading no Light Path keeps main's walk bit for bit, its stored sky radiance the world times the
-        // transmittance: two diffuse spheres side by side under a sky of 0.7, sampled
+        // A world reading no Light Path keeps the summed-density walk bit for bit, its stored sky radiance the world
+        // times the transmittance: two diffuse spheres side by side under a sky of 0.7, sampled
         cdf = true, lobe_world = false, sky = 0.7f, digest = 1469598103934665603ull;
         scene[0].layer[0] = lambert(0.8f, 0);
         scene.push_back({V(1.5f, 0, 0), 0.6f, false, {lambert(0.8f, 0)}, 1, 1, false, none});

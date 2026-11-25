@@ -86,57 +86,21 @@ fn parity_density(n_i_dot_l: f32, l_dot_h: f32, n_i_dot_v: f32, alpha: f32, lobe
     if (lobe == 1u) { return refractPDF(l_dot_h, pdf_h, lobes, eta_i, eta_o); }
     return reflectPDF(pdf_h, lobes);
 }
-fn parity_toward(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: Material, eta_i: f32, eta_o: f32,
-    lobe: u32, random_state: u32) -> SampleBSDF {
-    let v = - in_dir;
-    let n_dot_v = dot(n, v);
-    let n_i = n * sign(n_dot_v);
-    let alpha = material.roughness * material.roughness;
-    let frame = anisotropicFrame(material, n_i);
-    var l_dot_h = 0.0;
-    var ggx_n = reflectedHalf(in_dir, out_dir);
-    if (lobe == 0u) {
-        ggx_n = sampledHalf(v, n_i, alpha, frame, random_state);
-    } else if (lobe == 1u) {
-        ggx_n = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
-        l_dot_h = dot(out_dir, ggx_n);
-    }
-    let lobes = lobeWeights(in_dir, v, n_i, ggx_n, vec3<f32>(0.0), frame, sheenProfile(v, n_i, material),
-        CoatFrame(vec3<f32>(0.0), 0.0, 0.0), vec3<f32>(0.0), material, eta_i, eta_o);
-    let pdf = parity_density(dot(n_i, out_dir), l_dot_h, abs(n_dot_v), alpha, lobes, eta_i, eta_o, lobe, v, ggx_n, n_i,
-        material);
-    if (!(pdf > 0.0)) {
-        return SampleBSDF();
-    }
-    return SampleBSDF(out_dir, parity_throughput(out_dir, n_i, alpha, material, lobes, lobe), random_state,
-        lobe == 1u, lobe, pdf);
-}
 // BSDF toward out_dir, across the face where in_dir and out_dir lie on opposite sides of g_n
 fn parity_face(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, g_n: vec3<f32>, material: Material, eta_i: f32,
     eta_o: f32, random_state: u32) -> vec3<f32> {
-    var throughputs: array<vec3<f32>, 6>;
-    var pdfs: array<f32, 6>;
+    var density = 0.0;
     return BSDF(in_dir, out_dir, n, material, eta_i, eta_o, dot(g_n, - in_dir) * dot(g_n, out_dir) <= 0.0,
-        random_state, &throughputs, &pdfs);
+        random_state, 63u, &density);
 }
 // BSDF's lobes by the sky's balance or the light's power heuristic against a sample of PDF pdf
 fn parity_nee(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: Material, eta_i: f32, eta_o: f32,
     refracted: bool, pdf: f32, power: bool, random_state: u32) -> vec3<f32> {
-    var throughputs: array<vec3<f32>, 6>;
-    var pdfs: array<f32, 6>;
-    BSDF(in_dir, out_dir, n, material, eta_i, eta_o, refracted, random_state, &throughputs, &pdfs);
-    var f = vec3<f32>(0.0);
-    for (var i = 0u; i < 6u; i++) {
-        if (pdfs[i] > 0.0) {
-            let ratio = pdfs[i] / pdf;
-            if (power) {
-                f += throughputs[i] * pdfs[i] / (pdf * (1.0 + ratio * ratio));
-            } else {
-                f += throughputs[i] * pdfs[i] / (pdfs[i] + pdf);
-            }
-        }
-    }
-    return f;
+    var density = 0.0;
+    let f = BSDF(in_dir, out_dir, n, material, eta_i, eta_o, refracted, random_state, 63u, &density);
+    let ratio = density / pdf;
+    if (power) { return f / (pdf * (1.0 + ratio * ratio)); }
+    return f / (density + pdf);
 }
 `;
 const THROUGHPUT = FLEXLIGHT ? "lobeThroughput" : "parity_throughput";
@@ -233,10 +197,15 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[76] = sample.lobe;
     r[77] = bitcast<u32>(sample.pdf);
     for (var lobe = 0u; lobe < 3u; lobe++) {
-        let connected = ${FLEXLIGHT ? "lobeBSDF" : "parity_toward"}(in_dir, out_dir, n, material, v[18], v[19], lobe,
-            random_state);
+        ${FLEXLIGHT ? `let connected = lobeBSDF(in_dir, out_dir, n, material, v[18], v[19], lobe, random_state);
         parity_put(&r, 78u + 4u * lobe, connected.throughput * connected.pdf);
-        r[81u + 4u * lobe] = bitcast<u32>(connected.pdf);
+        r[81u + 4u * lobe] = bitcast<u32>(connected.pdf);` : `let connected_refracted = lobe == 1u || (lobe == 0u && translucentShare(material) > 0.0
+            && dot(n, out_dir) * dot(n, - in_dir) < 0.0);
+        var density = 0.0;
+        let connected = BSDF(in_dir, out_dir, n, material, v[18], v[19], connected_refracted, random_state,
+            1u << lobe, &density);
+        parity_put(&r, 78u + 4u * lobe, connected);
+        r[81u + 4u * lobe] = r[59u + 4u * lobe];`}
     }
     parity_put(&r, 90u, ${FLEXLIGHT ? "BSDF" : "parity_face"}(in_dir, out_dir, n, vec3<f32>(v[9], v[10], v[11]),
         material, v[18], v[19], random_state));
