@@ -116,8 +116,15 @@ fn parity_face(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, g_n: vec3<f3
     eta_o: f32, random_state: u32) -> vec3<f32> {
     var throughputs: array<vec3<f32>, 6>;
     var pdfs: array<f32, 6>;
-    return BSDF(in_dir, out_dir, n, material, eta_i, eta_o, dot(g_n, - in_dir) * dot(g_n, out_dir) <= 0.0,
+    BSDF(in_dir, out_dir, n, material, eta_i, eta_o, dot(g_n, - in_dir) * dot(g_n, out_dir) <= 0.0,
         random_state, &throughputs, &pdfs);
+    var f = vec3<f32>(0.0);
+    for (var i = 0u; i < 6u; i++) {
+        if (pdfs[i] > 0.0) {
+            f += throughputs[i] * pdfs[i];
+        }
+    }
+    return f;
 }
 // BSDF's lobes by the sky's balance or the light's power heuristic against a sample of PDF pdf
 fn parity_nee(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: Material, eta_i: f32, eta_o: f32,

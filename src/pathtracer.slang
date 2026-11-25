@@ -412,7 +412,7 @@ __extern_cpp public struct RandomSphere {
 // as throughput = BSDF_lobe * n_dot_l / PDF_lobe
 // => BSDF * n_dot_l = sum throughput * PDF_lobe
 [CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, material: Material, eta_i: float,
-    eta_o: float, refracted: bool, random_state: uint, out throughputs: float3[6], out pdfs: float[6]) -> float3 {
+    eta_o: float, refracted: bool, random_state: uint, out throughputs: float3[6], out pdfs: float[6]) {
     let v: float3 = negate(in_dir);
     let n_dot_v: float = dot(n, v);
     let n_i: float3 = n * sign(n_dot_v);
@@ -430,10 +430,19 @@ __extern_cpp public struct RandomSphere {
     let toon: bool = false;
 #endif
     let coated: bool = coat_frame.ior > 0.0f;
-    for (var i: uint = 0u; i < 6u; i++) {
-        throughputs[i] = float3(0.0f);
-        pdfs[i] = 0.0f;
-    }
+    // Directions a lobe can't sample carry no throughput
+    throughputs[0] = float3(0.0f);
+    throughputs[1] = float3(0.0f);
+    throughputs[2] = float3(0.0f);
+    throughputs[3] = float3(0.0f);
+    throughputs[4] = float3(0.0f);
+    throughputs[5] = float3(0.0f);
+    pdfs[0] = 0.0f;
+    pdfs[1] = 0.0f;
+    pdfs[2] = 0.0f;
+    pdfs[3] = 0.0f;
+    pdfs[4] = 0.0f;
+    pdfs[5] = 0.0f;
     // The lobes reaching out_dir
     let diffuse_on: bool = (translucent && through) == refracted;
     let toon_on: bool = !refracted && toon;
@@ -488,14 +497,6 @@ __extern_cpp public struct RandomSphere {
             throughputs[5] = coatBSDF(coat_w);
         }
     }
-    // Directions a lobe can't sample carry no throughput
-    var f: float3 = float3(0.0f);
-    for (var i: uint = 0u; i < 6u; i++) {
-        if (pdfs[i] > 0.0f) {
-            f += throughputs[i] * pdfs[i];
-        }
-    }
-    return f;
 }
 
 __extern_cpp public struct SampleBSDF {

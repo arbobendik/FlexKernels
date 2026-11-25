@@ -44,7 +44,7 @@ build/cuda/pathtracer.cuh build/cuda-restir/pathtracer.cuh: $(SOURCE) $(SLANGC)
 	sed -i -E 's/^__device__ (float (toonP|toonIntegral|coatFresnel))\(/__device__ __forceinline__ \1(/' $@
 	sed -i -E 's/^__device__ (float3  (diffuse|refract|reflect|sheenVelvet|toon|coat)BSDF)\(/__device__ __forceinline__ \1(/' $@
 	sed -i -E 's/^__device__ (SampleBSDF [a-zA-Z]+Sample|float [a-zA-Z]+PDF)\(/__device__ __forceinline__ \1(/' $@
-	sed -i -E 's/^__device__ (float3  BSDF|SampleBSDF sampleBSDF)\(/__device__ __forceinline__ \1(/' $@
+	sed -i -E 's/^__device__ (void BSDF|SampleBSDF sampleBSDF)\(/__device__ __forceinline__ \1(/' $@
 	sed -i -E 's/^__device__ (float3  sampleHalfVector)\(/__device__ __forceinline__ \1(/' $@
 	sed -i '/ skyColor_0(/!s/^static __device__ __noinline__ /static __device__ /' $@
 	sed -i -E 's/^static __device__ (TreeSample sampleLightTree_0|float3  lightBSDF_0|float3  skyLobes_0)\(/static __device__ __forceinline__ \1(/' $@
