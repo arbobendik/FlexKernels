@@ -1304,19 +1304,20 @@ func lightBSDF(in_dir: float3, light: TreeSample, smooth_n: float3, geometry_n: 
     let refracted: bool = dot(geometry_n, - in_dir) * dot(geometry_n, light.dir) <= 0.0f;
     var throughputs: float3[6];
     var pdfs: float[6];
-    let f: float3 = BSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, random_state, throughputs,
-        pdfs);
-    if (!competing || light.density == 0.0f) {
-        return f * light.radiance;
-    }
-    var weighted: float3 = float3(0.0f);
+    BSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, random_state, throughputs, pdfs);
+    let weigh: bool = competing && light.density != 0.0f;
+    var f: float3 = float3(0.0f);
     for (var i: uint = 0u; i < 6u; i++) {
         if (pdfs[i] > 0.0f) {
-            let ratio: float = pdfs[i] / light.density;
-            weighted += throughputs[i] * pdfs[i] / (light.density * (1.0f + ratio * ratio));
+            if (weigh) {
+                let ratio: float = pdfs[i] / light.density;
+                f += throughputs[i] * pdfs[i] / (light.density * (1.0f + ratio * ratio));
+            } else {
+                f += throughputs[i] * pdfs[i];
+            }
         }
     }
-    return weighted * light.radiance * light.density;
+    return weigh ? f * light.radiance * light.density : f * light.radiance;
 }
 
 // Power heuristic of BSDF sampling at the vertex the ray left against light sampling of the point met
@@ -1423,7 +1424,9 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, wavelength: floa
     let pdf: float = environmentPdf(scene, dir);
     // The material at the path's wavelength, before the shadow ray
     let material: Material = pathMaterial(surface.material, wavelength);
-    let f: float3 = skyBSDF(ray.unit_direction, dir, surface, material, eta, is_inside, pdf, lobe_state);
+    var terms: float3[6];
+    var pdfs: float[6];
+    let f: float3 = skyLobes(ray.unit_direction, dir, surface, material, eta, is_inside, pdf, lobe_state, terms, pdfs);
     // Only trace toward directions that contribute
     if (!(pdf > 0.0f) || all(f == float3(0.0f))) {
         return SkySample(dir, float3(0.0f), float3(0.0f), random_3.state);
@@ -1433,8 +1436,7 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, wavelength: floa
     // next; taken before the shadow ray, so nothing of the surface stays live across its trace
     var seen: float3 = f;
     if (scene.worldReadsPath()) {
-        seen = skyColor(scene, ray.unit_direction, dir, surface, wavelength, eta, is_inside, pdf, lobe_state,
-            context.depth + 1u);
+        seen = skyColor(scene, dir, terms, pdfs, context.depth + 1u);
     }
 #endif
     let radiance: float3 = skyRadiance(scene, ray.origin, surface, is_inside, dir
@@ -1478,13 +1480,8 @@ func skyLobes(in_dir: float3, dir: float3, surface: Surface, material: Material,
 #ifdef FK_FCPT_WALK
 // skyBSDF with the world toward dir as the ray leaving by each lobe at depth sees it; a call of its own on every
 // target, as skyBSDF is, so the sky sample's own code stays main's
-[noinline] func skyColor<S: IScene>(scene: S, in_dir: float3, dir: float3, surface: Surface, wavelength: float,
-    eta: float2, is_inside: bool, pdf: float, random_state: uint, depth: uint) -> float3 {
+[noinline] func skyColor<S: IScene>(scene: S, dir: float3, terms: float3[6], pdfs: float[6], depth: uint) -> float3 {
     // skyBSDF's balance heuristic, lobe by lobe, at the path's wavelength
-    let material: Material = pathMaterial(surface.material, wavelength);
-    var terms: float3[6];
-    var pdfs: float[6];
-    skyLobes(in_dir, dir, surface, material, eta, is_inside, pdf, random_state, terms, pdfs);
     // The world toward dir as the ray leaving by each lobe reached at depth sees it, the same for every lobe where the
     // world doesn't read Light Path
     var color: float3 = float3(0.0f);
@@ -1955,8 +1952,12 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 }
 #ifdef FK_FCPT_WALK
                 if (scene.worldReadsPath()) {
-                    return Shift(pathColor(throughput * (skyColor(scene, ray.unit_direction, r.dir, surface, wavelength,
-                        eta, is_inside, environmentPdf(scene, r.dir), surface.random_state, b + 1u) * r.radiance),
+                    let pdf: float = environmentPdf(scene, r.dir);
+                    var terms: float3[6];
+                    var pdfs: float[6];
+                    skyLobes(ray.unit_direction, r.dir, surface, material, eta, is_inside, pdf, surface.random_state,
+                        terms, pdfs);
+                    return Shift(pathColor(throughput * (skyColor(scene, r.dir, terms, pdfs, b + 1u) * r.radiance),
                         spectral_weight, wavelength) / r.jac, density / r.jac);
                 }
 #endif

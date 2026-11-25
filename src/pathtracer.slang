@@ -295,7 +295,8 @@ __extern_cpp public struct RandomSphere {
     // Total internal reflection
     var kr: float = 1.0f;
     if (sin_psi < 1.0f) {
-        let cos_psi = sqrt(max(0.0f, 1.0f - sin_psi * sin_psi));
+        // Index-matched: no bend, so cos_psi is cos_theta exactly, lest rounding near grazing reflect
+        let cos_psi = select(sqrt(max(0.0f, 1.0f - sin_psi * sin_psi)), cos_theta, eta_i == eta_o);
         // cos = abs(cosi);
         let Rs = ((eta_o * cos_theta) - (eta_i * cos_psi)) / ((eta_o * cos_theta) + (eta_i * cos_psi));
         let Rp = ((eta_i * cos_theta) - (eta_o * cos_psi)) / ((eta_i * cos_theta) + (eta_o * cos_psi));
@@ -412,7 +413,7 @@ __extern_cpp public struct RandomSphere {
 // as throughput = BSDF_lobe * n_dot_l / PDF_lobe
 // => BSDF * n_dot_l = sum throughput * PDF_lobe
 [CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, material: Material, eta_i: float,
-    eta_o: float, refracted: bool, random_state: uint, out throughputs: float3[6], out pdfs: float[6]) -> float3 {
+    eta_o: float, refracted: bool, random_state: uint, out throughputs: float3[6], out pdfs: float[6]) {
     let v: float3 = negate(in_dir);
     let n_dot_v: float = dot(n, v);
     let n_i: float3 = n * sign(n_dot_v);
@@ -430,72 +431,62 @@ __extern_cpp public struct RandomSphere {
     let toon: bool = false;
 #endif
     let coated: bool = coat_frame.ior > 0.0f;
-    for (var i: uint = 0u; i < 6u; i++) {
-        throughputs[i] = float3(0.0f);
-        pdfs[i] = 0.0f;
-    }
+    // Directions a lobe can't sample carry no throughput
+    throughputs[0] = float3(0.0f);
+    throughputs[1] = float3(0.0f);
+    throughputs[2] = float3(0.0f);
+    throughputs[3] = float3(0.0f);
+    throughputs[4] = float3(0.0f);
+    throughputs[5] = float3(0.0f);
+    pdfs[0] = 0.0f;
+    pdfs[1] = 0.0f;
+    pdfs[2] = 0.0f;
+    pdfs[3] = 0.0f;
+    pdfs[4] = 0.0f;
+    pdfs[5] = 0.0f;
     // The lobes reaching out_dir
     let diffuse_on: bool = (translucent && through) == refracted;
     let toon_on: bool = !refracted && toon;
     let coat_on: bool = !refracted && coated;
-    // Coat: sampleBSDF's coat microfacet over the base lobes
-    let coat_h: float3 = coatHalf(v, coat_frame, random_state);
-    // sampleBSDF's half vector: the diffuse, toon and coat lobes'
-    var sampled_n: float3 = float3(0.0f);
-    if (diffuse_on || toon_on || coat_on) {
-        sampled_n = sampledHalf(v, n_i, alpha, frame, random_state);
-    }
+    // out_dir's half vector, facing n_i: refractive half-vector (eq. 16) refracted, else reflective half-vector
+    let h_t: float3 = normalize(negate(eta_i * v + eta_o * out_dir));
+    let ggx_n: float3 = select(normalize(v + out_dir), h_t * sign(dot(h_t, n_i)), refracted);
+    // Coat: its own microfacet out_dir's reflective one
+    let coat_h: float3 = select(float3(0.0f), ggx_n, coated);
+    let w: Weights = lobeWeights(in_dir, v, n_i, ggx_n, coat_h, frame, sheen_profile, coat_frame, coat_series,
+        material, eta_i, eta_o);
     // Diffuse
-    if (diffuse_on || toon_on) {
-        let w: Weights = lobeWeights(in_dir, v, n_i, sampled_n, coat_h, frame, sheen_profile, coat_frame, coat_series,
-            material, eta_i, eta_o);
-        if (diffuse_on) {
-            pdfs[0] = diffusePDF(n_i_dot_l, abs(n_dot_v), material, w);
-            throughputs[0] = diffuseBSDF(out_dir, n_i, material, w);
-        }
-#ifdef FK_TOON
-        // Toon
-        if (toon_on) {
-            let profile: ToonProfile = toonProfile(v, n_i, material);
-            pdfs[4] = toonPDF(out_dir, n_i, profile, w);
-            throughputs[4] = toonBSDF(out_dir, n_i, profile, w);
-        }
-#endif
+    if (diffuse_on) {
+        pdfs[0] = diffusePDF(n_i_dot_l, abs(n_dot_v), material, w);
+        throughputs[0] = diffuseBSDF(out_dir, n_i, material, w);
     }
+#ifdef FK_TOON
+    // Toon
+    if (toon_on) {
+        let profile: ToonProfile = toonProfile(v, n_i, material);
+        pdfs[4] = toonPDF(out_dir, n_i, profile, w);
+        throughputs[4] = toonBSDF(out_dir, n_i, profile, w);
+    }
+#endif
     // The VNDF's density of the half vector for the refraction and the reflection alone
+    // Refraction
     if (refracted) {
-        // Refraction
-        let ggx_n: float3 = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
-        let w: Weights = lobeWeights(in_dir, v, n_i, ggx_n, coat_h, frame, sheen_profile, coat_frame, coat_series,
-            material, eta_i, eta_o);
         pdfs[1] = refractPDF(dot(out_dir, ggx_n), vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, w.v_dot_h), w,
             eta_i, eta_o);
         throughputs[1] = refractBSDF(out_dir, n_i, alpha, frame, material, w);
-    } else {
-        // Reflection and sheen at out_dir's reflective half vector
-        let ggx_n: float3 = reflectedHalf(in_dir, out_dir);
-        let w: Weights = lobeWeights(in_dir, v, n_i, ggx_n, coat_h, frame, sheen_profile, coat_frame, coat_series,
-            material, eta_i, eta_o);
+    }
+    // Reflection and sheen at out_dir's reflective half vector
+    if (!refracted) {
         pdfs[2] = reflectPDF(vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, w.v_dot_h), w);
         throughputs[2] = reflectBSDF(out_dir, n_i, alpha, frame, w);
         pdfs[3] = sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), w);
         throughputs[3] = sheenVelvetBSDF(out_dir, v, n_i, material, w);
-        // Coat: its own microfacet out_dir's reflective one, over sampleBSDF's half vector
-        if (coat_on) {
-            let coat_w: Weights = lobeWeights(in_dir, v, n_i, sampled_n, ggx_n, frame, sheen_profile, coat_frame,
-                coat_series, material, eta_i, eta_o);
-            pdfs[5] = coatPDF(v, ggx_n, coat_frame, coat_w);
-            throughputs[5] = coatBSDF(coat_w);
-        }
     }
-    // Directions a lobe can't sample carry no throughput
-    var f: float3 = float3(0.0f);
-    for (var i: uint = 0u; i < 6u; i++) {
-        if (pdfs[i] > 0.0f) {
-            f += throughputs[i] * pdfs[i];
-        }
+    // Coat
+    if (coat_on) {
+        pdfs[5] = coatPDF(v, coat_h, coat_frame, w);
+        throughputs[5] = coatBSDF(w);
     }
-    return f;
 }
 
 __extern_cpp public struct SampleBSDF {
