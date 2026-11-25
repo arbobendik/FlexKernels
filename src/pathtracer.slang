@@ -413,7 +413,7 @@ __extern_cpp public struct RandomSphere {
 // as throughput = BSDF_lobe * n_dot_l / PDF_lobe
 // => BSDF * n_dot_l = sum throughput * PDF_lobe
 [CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, material: Material, eta_i: float,
-    eta_o: float, refracted: bool, random_state: uint, out throughputs: float3[6], out pdfs: float[6]) {
+    eta_o: float, refracted: bool, out throughputs: float3[6], out pdfs: float[6]) {
     let v: float3 = negate(in_dir);
     let n_dot_v: float = dot(n, v);
     let n_i: float3 = n * sign(n_dot_v);

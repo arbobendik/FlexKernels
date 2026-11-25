@@ -123,7 +123,7 @@ __device__ Result evaluate(const Case& c) {
     const bool refracted = (dot3(in_dir, vec(c.in + 9)) <= 0) != (dot3(out_dir, vec(c.in + 9)) > 0);
     FixedArray<Vec, 6> throughputs;
     FixedArray<float, 6> pdfs;
-    BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, c.random_state, &throughputs, &pdfs);
+    BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, &throughputs, &pdfs);
     const float pdf = 0.5f + c.in[17];
     float balance[3] = {}, power[3] = {};
     for (int i = 0; i < 6; i++) {

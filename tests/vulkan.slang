@@ -189,7 +189,7 @@ void main(uint3 id: SV_DispatchThreadID, uint local: SV_GroupIndex, uint3 group:
     float3 throughputs[6];
     float pdfs[6];
     BSDF(r.dir, sampled.unit_direction, n, material, 1.0f, 1.5f,
-        dot(n, -r.dir) * dot(n, sampled.unit_direction) <= 0.0f, pcg(hash(r.path)).state, throughputs, pdfs);
+        dot(n, -r.dir) * dot(n, sampled.unit_direction) <= 0.0f, throughputs, pdfs);
     var connected: float3 = float3(0.0f);
     for (var i: uint = 0u; i < 6u; i++) {
         if (pdfs[i] > 0.0f) {

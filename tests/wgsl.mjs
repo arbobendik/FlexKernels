@@ -116,8 +116,8 @@ fn parity_face(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, g_n: vec3<f3
     eta_o: f32, random_state: u32) -> vec3<f32> {
     var throughputs: array<vec3<f32>, 6>;
     var pdfs: array<f32, 6>;
-    BSDF(in_dir, out_dir, n, material, eta_i, eta_o, dot(g_n, - in_dir) * dot(g_n, out_dir) <= 0.0,
-        random_state, &throughputs, &pdfs);
+    BSDF(in_dir, out_dir, n, material, eta_i, eta_o, dot(g_n, - in_dir) * dot(g_n, out_dir) <= 0.0, &throughputs,
+        &pdfs);
     var f = vec3<f32>(0.0);
     for (var i = 0u; i < 6u; i++) {
         if (pdfs[i] > 0.0) {
@@ -131,7 +131,7 @@ fn parity_nee(in_dir: vec3<f32>, out_dir: vec3<f32>, n: vec3<f32>, material: Mat
     refracted: bool, pdf: f32, power: bool, random_state: u32) -> vec3<f32> {
     var throughputs: array<vec3<f32>, 6>;
     var pdfs: array<f32, 6>;
-    BSDF(in_dir, out_dir, n, material, eta_i, eta_o, refracted, random_state, &throughputs, &pdfs);
+    BSDF(in_dir, out_dir, n, material, eta_i, eta_o, refracted, &throughputs, &pdfs);
     var f = vec3<f32>(0.0);
     for (var i = 0u; i < 6u; i++) {
         if (pdfs[i] > 0.0) {
@@ -278,7 +278,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     let refracted = (dot(in_dir, g_n) <= 0.0) != (dot(out_dir, g_n) > 0.0);
     let pdf = 0.5 + v[17];
     ${FLEXLIGHT ? `parity_put(&r, 113u, skyBSDF(in_dir, out_dir, Surface(n, g_n, 0.0, material, false, 0u),
-        vec2<f32>(v[18], v[19]), dot(in_dir, g_n) > 0.0, pdf, random_state));
+        vec2<f32>(v[18], v[19]), dot(in_dir, g_n) > 0.0, pdf));
     var power = vec3<f32>(0.0);
     for (var lobe = 0u; lobe < 3u; lobe++) {
         if ((lobe == 1u) == refracted) {

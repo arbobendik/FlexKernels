@@ -1300,11 +1300,11 @@ func hairLight<S: IScene>(scene: S, surface: Surface, in_dir: float3, light: Tre
 // Per lobe: w_power = PDF_light^2 / (PDF_light^2 + PDF_lobe^2)
 // => throughput * PDF_lobe / PDF_light * w_power = throughput * PDF_lobe / (PDF_light * (1 + (PDF_lobe / PDF_light)^2))
 // Delta lights or no competing BSDF sample: w_power = 1
-func lightBSDF(in_dir: float3, light: TreeSample, smooth_n: float3, geometry_n: float3, material: Material, eta_i: float, eta_o: float, competing: bool, random_state: uint) -> float3 {
+func lightBSDF(in_dir: float3, light: TreeSample, smooth_n: float3, geometry_n: float3, material: Material, eta_i: float, eta_o: float, competing: bool) -> float3 {
     let refracted: bool = dot(geometry_n, - in_dir) * dot(geometry_n, light.dir) <= 0.0f;
     var throughputs: float3[6];
     var pdfs: float[6];
-    BSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, random_state, throughputs, pdfs);
+    BSDF(in_dir, light.dir, smooth_n, material, eta_i, eta_o, refracted, throughputs, pdfs);
     let weigh: bool = competing && light.density != 0.0f;
     var f: float3 = float3(0.0f);
     for (var i: uint = 0u; i < 6u; i++) {
@@ -1401,7 +1401,7 @@ func searchCDF<S: IScene>(scene: S, start: uint2, step: uint2, count: uint, u: f
 
 // Next event estimation toward the environment map, drawing a direction by its luminance
 func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, wavelength: float, eta: float2, is_inside: bool,
-    init_random_state: uint, lobe_state: uint
+    init_random_state: uint
 #ifdef FK_FCPT_WALK
     , context: ShadowContext
 #endif
@@ -1426,7 +1426,7 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, wavelength: floa
     let material: Material = pathMaterial(surface.material, wavelength);
     var terms: float3[6];
     var pdfs: float[6];
-    let f: float3 = skyLobes(ray.unit_direction, dir, surface, material, eta, is_inside, pdf, lobe_state, terms, pdfs);
+    let f: float3 = skyLobes(ray.unit_direction, dir, surface, material, eta, is_inside, pdf, terms, pdfs);
     // Only trace toward directions that contribute
     if (!(pdf > 0.0f) || all(f == float3(0.0f))) {
         return SkySample(dir, float3(0.0f), float3(0.0f), random_3.state);
@@ -1456,9 +1456,9 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, wavelength: floa
 // => throughput * PDF_lobe / pdf * w_balance = throughput * PDF_lobe / (PDF_lobe + pdf)
 // Each lobe reached toward dir by its term in terms, their sum returned
 func skyLobes(in_dir: float3, dir: float3, surface: Surface, material: Material, eta: float2, is_inside: bool,
-    pdf: float, random_state: uint, out terms: float3[6], out pdfs: float[6]) -> float3 {
+    pdf: float, out terms: float3[6], out pdfs: float[6]) -> float3 {
     let refracted: bool = wrongSide(is_inside, false, dir, surface.geometry_n);
-    BSDF(in_dir, dir, surface.smooth_n, material, eta.x, eta.y, refracted, random_state, terms, pdfs);
+    BSDF(in_dir, dir, surface.smooth_n, material, eta.x, eta.y, refracted, terms, pdfs);
     var f: float3 = float3(0.0f);
     for (var i: uint = 0u; i < 6u; i++) {
         if (pdfs[i] > 0.0f) {
@@ -1471,10 +1471,10 @@ func skyLobes(in_dir: float3, dir: float3, surface: Surface, material: Material,
 
 // skyLobes' sum
 [CudaDeviceExport] public func skyBSDF(in_dir: float3, dir: float3, surface: Surface, material: Material, eta: float2,
-    is_inside: bool, pdf: float, random_state: uint) -> float3 {
+    is_inside: bool, pdf: float) -> float3 {
     var terms: float3[6];
     var pdfs: float[6];
-    return skyLobes(in_dir, dir, surface, material, eta, is_inside, pdf, random_state, terms, pdfs);
+    return skyLobes(in_dir, dir, surface, material, eta, is_inside, pdf, terms, pdfs);
 }
 
 #ifdef FK_FCPT_WALK
@@ -1922,7 +1922,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
 #endif
             // BSDF only for samples bringing light
             if (any(light.radiance != float3(0.0f))) {
-                lit = AT_HAIR(hairLight(scene, surface, ray.unit_direction, light, b < scene.maxBounces()), lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), surface.random_state));
+                lit = AT_HAIR(hairLight(scene, surface, ray.unit_direction, light, b < scene.maxBounces()), lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces()));
             }
         }
         if (arrived) {
@@ -1955,14 +1955,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     let pdf: float = environmentPdf(scene, r.dir);
                     var terms: float3[6];
                     var pdfs: float[6];
-                    skyLobes(ray.unit_direction, r.dir, surface, material, eta, is_inside, pdf, surface.random_state,
-                        terms, pdfs);
+                    skyLobes(ray.unit_direction, r.dir, surface, material, eta, is_inside, pdf, terms, pdfs);
                     return Shift(pathColor(throughput * (skyColor(scene, r.dir, terms, pdfs, b + 1u) * r.radiance),
                         spectral_weight, wavelength) / r.jac, density / r.jac);
                 }
 #endif
                 return Shift(pathColor(throughput * skyBSDF(ray.unit_direction, r.dir, surface, material, eta,
-                    is_inside, environmentPdf(scene, r.dir), surface.random_state) * r.radiance, spectral_weight,
+                    is_inside, environmentPdf(scene, r.dir)) * r.radiance, spectral_weight,
                     wavelength) / r.jac, density / r.jac);
             }
             if (nee != (extractBits(r.path, PATH_NEE, 1u) == 1u)) {
@@ -1977,8 +1976,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 }
 #endif
                 // Forced reconnection to the environment direction, drawn independently of the vertex (unit Jacobian)
-                let sky: SkySample = sampleSky(scene, ray, surface, wavelength, eta, is_inside, noiseAddress(r.seed, b),
-                    surface.random_state
+                let sky: SkySample = sampleSky(scene, ray, surface, wavelength, eta, is_inside, noiseAddress(r.seed, b)
 #ifdef FK_FCPT_WALK
                     , context
 #endif
@@ -2037,8 +2035,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             }
             // No sky sample at hair
             if (nee && AT_HAIR(false, environmentMapped(scene)) && b < scene.maxBounces()) {
-                let sky: SkySample = sampleSky(scene, ray, surface, wavelength, eta, is_inside, noiseAddress(r.seed, b),
-                    surface.random_state
+                let sky: SkySample = sampleSky(scene, ray, surface, wavelength, eta, is_inside, noiseAddress(r.seed, b)
 #ifdef FK_FCPT_WALK
                     , context
 #endif

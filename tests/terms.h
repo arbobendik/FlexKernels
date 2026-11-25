@@ -62,8 +62,8 @@ TERMS TermsV faceBSDF(TermsV in_dir, TermsV out_dir, TermsV n, TermsV g_n, Terms
     unsigned random_state) {
     FixedArray<TermsV, 6> throughputs;
     FixedArray<float, 6> pdfs;
-    BSDF(in_dir, out_dir, n, m, eta_i, eta_o, dot_0(g_n, negate_0(in_dir)) * dot_0(g_n, out_dir) <= 0,
-        random_state, &throughputs, &pdfs);
+    BSDF(in_dir, out_dir, n, m, eta_i, eta_o, dot_0(g_n, negate_0(in_dir)) * dot_0(g_n, out_dir) <= 0, &throughputs,
+        &pdfs);
     TermsV f = {};
     for (unsigned i = 0; i < 6; i++) {
         if (pdfs[i] > 0) f = f + throughputs[i] * TermsV(pdfs[i]);
