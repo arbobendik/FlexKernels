@@ -327,9 +327,6 @@ func mediumSides(surface: Surface, medium: Medium, filling: uint, dir: float3, o
 #endif
     return sides;
 }
-func leavesInFront(face: float3, dir: float3, g: float3) -> bool {
-    return (dot(dir, g) > 0.0f) == (dot(g, face) > 0.0f);
-}
 
 #ifdef FK_FCPT_WALK
 func shadowContext(surface: Surface, turned: bool, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint, length: float, width: float, own: Hit, fiber: bool, outside: Medium) -> ShadowContext {
@@ -349,12 +346,6 @@ func shadowContext(surface: Surface, turned: bool, extinction: float3, filling: 
 }
 #endif
 
-// PDF(t) = sigma * exp(-sigma * t)
-// CDF(t) = 1 - exp(-sigma * t) = u
-// => t = -ln(1 - u) / sigma
-func freeFlight(u: float, sigma: float) -> float {
-    return - log(1.0f - u) / sigma;
-}
 // T(d) = exp(-extinction * d), free flight sampled by sigma
 // Unscattered: T(d) / P(t > d) = exp(-extinction * d) / exp(-sigma * d) = exp((sigma - extinction) * d)
 // Scattered at d: scatter * T(d) / PDF(d) = scatter * exp(-extinction * d) / (sigma * exp(-sigma * d))
@@ -362,14 +353,6 @@ func freeFlight(u: float, sigma: float) -> float {
 func flightWeight(scatter: float3, extinction: float3, sigma: float, distance: float, scatters: bool) -> float3 {
     let passed: float3 = exp((float3(sigma) - extinction) * distance);
     return select(passed, scatter * passed / sigma, scatters);
-}
-// Scattering vertex: never reconnected, PDF 0 against the sky
-func scatteredVertex(is_inside: bool) -> Vertex {
-    return Vertex(false, LOBE_DIFFUSE, 0.0f, 1.0f, is_inside);
-}
-// Light sampled at a scattering vertex generating, or replaying at the stop in a homogeneous medium
-func scatterSampled(replay: bool, b: uint, stop: uint, varying: bool) -> bool {
-    return !replay || (b == stop && !varying);
 }
 // z = 1 - 2 * u uniform in [-1, 1], phi = 2 * PI * v
 // => uniform on the sphere, PDF = 1 / (4 * PI)
@@ -422,11 +405,6 @@ func samplePhase(g: float, dir: float3, random_state: uint, out pdf: float) -> f
     }
 }
 
-// Other layer met: refracting into it, or reflecting between the layers
-func passesLayer(layers: uint, refracting: bool, passed: bool) -> bool {
-    return layers > 1u && refracting != passed;
-}
-
 // Inside a layer passed on to when arriving behind its face
 func arrivesBehind(dir: float3, n: float3) -> bool {
     return dot(dir, n) > 0.0f;
@@ -437,12 +415,6 @@ func emitting(surface: Surface, top: bool) -> Surface {
     var lower: Surface = surface;
     lower.material.emissive = select(surface.material.emissive, float3(0.0f), !top);
     return lower;
-}
-
-// Omega = 1 / PDF ~= PI * theta^2
-// => spread += 2 * theta = 2 * sqrt(1 / (PI * PDF)), at most PI; delta lobes keep it
-func widened(spread: float, pdf: float, delta: bool) -> float {
-    return spread + select(0.0f, min(2.0f * sqrt(1.0f / (PI * pdf)), PI), !delta);
 }
 #endif
 
@@ -506,32 +478,6 @@ func widened(spread: float, pdf: float, delta: bool) -> float {
     return transmission > 0.0f || dot(face, direction) < 0.0f ? 1.0f : -1.0f;
 }
 
-// PDF_area = PDF_solid_angle * |cos_theta| / distance^2
-// => PDF_area / PDF_solid_angle = |dot(geometry_n, direction)| / distance^2
-[CudaDeviceExport] public func geometryDensity(geometry_n: float3, direction: float3, distance: float) -> float {
-    return abs(dot(geometry_n, direction)) / (distance * distance);
-}
-
-// Primary ray footprint (Eq. 5) of the camera's hit
-[CudaDeviceExport] public func footprintThreshold(geometry_density: float) -> float {
-    return RESTIR_FOOTPRINT / geometry_density;
-}
-
-// Ray footprint criterion for reconnecting from the previous vertex to this one (Eq. 5)
-[CudaDeviceExport] public func withinFootprint(open: bool, prev_rough: bool, prev_pdf: float, geometry_density: float, threshold: float) -> bool {
-    return open && prev_rough && prev_pdf * geometry_density * threshold <= 1.0f;
-}
-
-// Eq. 5 from this vertex along the sampled lobe
-[CudaDeviceExport] public func withinInverseFootprint(pdf: float, diffuse: bool, prev_cos: float, distance: float, threshold: float) -> bool {
-    return pdf > 0.0f && (diffuse || pdf * prev_cos / (distance * distance) * threshold <= 1.0f);
-}
-
-// Whether a sampled lobe is rough enough to reconnect through (Sec. 4.2)
-[CudaDeviceExport] public func roughLobe(pdf: float, diffuse: bool, roughness: float) -> bool {
-    return pdf > 0.0f && (diffuse || roughness >= RESTIR_ROUGHNESS);
-}
-
 // Russian roulette: q = min(max(throughput) / density, 1)
 [CudaDeviceExport] public func survivalProbability(throughput: float3, density: float) -> float {
     __target_switch {
@@ -543,10 +489,6 @@ func widened(spread: float, pdf: float, delta: bool) -> float {
     }
 }
 
-// Temporal confidence cap (Sec. 5)
-[CudaDeviceExport] public func confidenceCap(duplicated: float) -> float {
-    return interpolate(RESTIR_CAP, RESTIR_CAP_MIN, pow(duplicated, RESTIR_DUPLICATION_ALPHA));
-}
 float interpolate(float a, float b, float t) {
     __target_switch {
     case wgsl: __intrinsic_asm "mix($0, $1, $2)";
@@ -554,35 +496,10 @@ float interpolate(float a, float b, float t) {
     }
 }
 
-// Temporal MIS weights, p_t->c = g_previous the previous sample shifted here, p_c->t = g_current
-// m_c = c * p_c / (c * p_c + c_t * p_t->c)
-// m_t = c_t * p_t / (c_t * p_t + c * p_c->t)
-[CudaDeviceExport] public func temporalWeights(c: float, p_c: float, c_t: float, p_t: float, g_previous: float, g_current: float) -> float2 {
-    return float2(c * p_c / (c * p_c + c_t * g_previous), c_t * p_t / (c_t * p_t + c * g_current));
-}
-
-// Pair's share of all confidence (Sec. 3.2)
-[CudaDeviceExport] public func pairShare(c_n: float, c_pair: float, c_sum: float) -> float {
-    return (c_n + c_pair) / c_sum;
-}
-
-// Pairwise MIS weight of the neighbor's sample, g_here its target shifted to the current pixel
-[CudaDeviceExport] public func neighborWeight(share: float, c_n: float, p_n: float, c_pair: float, g_here: float) -> float {
-    return share * c_n * p_n / (c_n * p_n + c_pair * g_here);
-}
-
-// Pairwise MIS weight of the canonical sample, g_there its target shifted to the neighbor
-[CudaDeviceExport] public func canonicalWeight(share: float, c_pair: float, p_c: float, c_n: float, g_there: float) -> float {
-    return share * c_pair * p_c / (c_pair * p_c + c_n * g_there);
-}
-
 
 // cos(max(0, a - b)) = cos_a * cos_b + sin_a * sin_b, 1 for a < b
 [CudaDeviceExport] public func cosSubClamped(sin_a: float, cos_a: float, sin_b: float, cos_b: float) -> float {
     return select(cos_a * cos_b + sin_a * sin_b, 1.0f, cos_a > cos_b);
-}
-[CudaDeviceExport] public func sinSubClamped(sin_a: float, cos_a: float, sin_b: float, cos_b: float) -> float {
-    return select(sin_a * cos_b - cos_a * sin_b, 0.0f, cos_a > cos_b);
 }
 // sin = sqrt(1 - cos^2) on [0, PI]
 [CudaDeviceExport] public func sine(c: float) -> float {
@@ -604,7 +521,7 @@ float interpolate(float a, float b, float t) {
     let cos_theta_b: float = select(sqrt(max(1.0f - r2 / d2, 0.0f)), -1.0f, d2 < r2);
     let sin_theta_b: float = sine(cos_theta_b);
     let cos_theta_x: float = cosSubClamped(sine(cos_theta_w), cos_theta_w, sin_theta_o, node.cos_theta_o);
-    let sin_theta_x: float = sinSubClamped(sine(cos_theta_w), cos_theta_w, sin_theta_o, node.cos_theta_o);
+    let sin_theta_x: float = select(sine(cos_theta_w) * node.cos_theta_o - cos_theta_w * sin_theta_o, 0.0f, cos_theta_w > node.cos_theta_o);
     let cos_theta_p: float = cosSubClamped(sin_theta_x, cos_theta_x, sin_theta_b, cos_theta_b);
     // theta_p >= theta_e = PI / 2 => no light
     if (cos_theta_p <= 0.0f) {
@@ -1573,7 +1490,10 @@ uint extractBits(uint e, uint offset, uint count) {
     weight = float3(1.0f);
     glowed = float3(0.0f);
     while (hit.instance_index != UINT_MAX) {
-        var along: float = freeFlight(draw(noiseAddress(r.seed, b), NOISE_FLIGHT).value, sigma);
+        // PDF(t) = sigma * exp(-sigma * t)
+        // CDF(t) = 1 - exp(-sigma * t) = u
+        // => t = -ln(1 - u) / sigma
+        var along: float = - log(1.0f - draw(noiseAddress(r.seed, b), NOISE_FLIGHT).value) / sigma;
         if (varying) {
             along = scene.trackMedium(filling, ray.origin, ray.unit_direction, hit.distance, tracking, weight, glowed,
                 scatter_in, extinction_in, g_in, select(b, 0u, b == UINT_MAX),
@@ -1597,7 +1517,8 @@ uint extractBits(uint e, uint offset, uint count) {
             spread += PI;
         }
         // Light sampled at the scattering vertex, all around
-        let sampled: bool = scatterSampled(replay, b, stop, varying);
+        // Light sampled at a scattering vertex generating, or replaying at the stop in a homogeneous medium
+        let sampled: bool = !replay || (b == stop && !varying);
         var light: TreeSample = TreeSample(float3(0.0f), float3(0.0f), 0.0f, 0u);
         if (sampled) {
             light = sampleLightTree(scene, ray.origin, ray.unit_direction, ray.unit_direction, 0.0f, true, noiseAddress(r.seed, b)
@@ -1642,7 +1563,8 @@ uint extractBits(uint e, uint offset, uint count) {
         ray.unit_direction = samplePhase(g_in, ray.unit_direction, noiseAddress(r.seed, b), phase_pdf);
         // Emission met next is weighed against the light sampled here
         nee_vertex = NEEVertex(false, phase_pdf, ray.origin, float3(0.0f), ray.origin);
-        prev = scatteredVertex(is_inside);
+        // Scattering vertex: never reconnected, PDF 0 against the sky
+        prev = Vertex(false, LOBE_DIFFUSE, 0.0f, 1.0f, is_inside);
         sky_pdf = prev.pdf;
         hit = scene.traverseInstanceBVH(ray, true, POW32, false, noHit(), false);
     }
@@ -1839,18 +1761,20 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     float3(upsample(surface.material.absorption, wavelength)), wavelength > 0.0f));
             }
             scatter = !surface.skip;
-            geometry_density = geometryDensity(surface.geometry_n, ray.unit_direction, hit.distance);
+            // PDF_area = PDF_solid_angle * |cos_theta| / distance^2
+            // => PDF_area / PDF_solid_angle = |dot(geometry_n, direction)| / distance^2
+            geometry_density = abs(dot(surface.geometry_n, ray.unit_direction)) / (hit.distance * hit.distance);
 #ifdef FK_FCPT_WALK
             if (b == camera_b + 1u) {
 #else
             if (b == 0u) {
 #endif
-                // Primary ray footprint (Eq. 5)
-                threshold = footprintThreshold(geometry_density);
+                // Primary ray footprint (Eq. 5) of the camera's hit
+                threshold = RESTIR_FOOTPRINT / geometry_density;
             }
         }
         // Ray footprint criterion for reconnecting from the previous vertex to this one (Eq. 5)
-        let footprint: bool = withinFootprint(scatter, prev.rough, prev.pdf, geometry_density, threshold);
+        let footprint: bool = scatter && prev.rough && prev.pdf * geometry_density * threshold <= 1.0f;
         let n_dot_v: float = dot(surface.smooth_n, - ray.unit_direction);
         // First dispersive hit: λ from the seed and the path's stratum, which every replay draws again
         // f_c = integral w_c(λ) f(λ) dλ ≈ w_c(λ) / p(λ) * f(λ)
@@ -2223,8 +2147,10 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 nee_vertex.none = true;
             }
             // Inverse ray footprint criterion for the density of the direction leaving this vertex (Eq. 5)
-            let inverse_footprint: bool = withinInverseFootprint(lobe.pdf, spread_out, prev.cos, hit.distance, threshold);
-            let rough: bool = roughLobe(lobe.pdf, spread_out, roughness);
+            // Eq. 5 from this vertex along the sampled lobe
+            let inverse_footprint: bool = lobe.pdf > 0.0f && (spread_out || lobe.pdf * prev.cos / (hit.distance * hit.distance) * threshold <= 1.0f);
+            // Whether a sampled lobe is rough enough to reconnect through (Sec. 4.2)
+            let rough: bool = lobe.pdf > 0.0f && (spread_out || roughness >= RESTIR_ROUGHNESS);
             if (arrived) {
                 if (!inverse_footprint) {
                     return fail;
@@ -2239,7 +2165,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 density *= lobe.pdf;
             }
             if (layersUsed()) {
-                passes = passesLayer(scene.layers(hit), lobe_index == LOBE_REFRACT, passed);
+                // Other layer met: refracting into it, or reflecting between the layers
+                passes = scene.layers(hit) > 1u && (lobe_index == LOBE_REFRACT) != passed;
             }
             // A connection meeting another layer is not in the image of the shift
             if (layersUsed() && connect && passes) {
@@ -2269,7 +2196,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             sky_pdf = select(sky_pdf, 0.0f, hair);  // Hair's sky is unsampled
 #endif
             if (coneUsed()) {
-                spread = widened(spread, lobe.pdf, delta);
+                // Omega = 1 / PDF ~= PI * theta^2
+                // => spread += 2 * theta = 2 * sqrt(1 / (PI * PDF)), at most PI; delta lobes keep it
+                spread += select(0.0f, min(2.0f * sqrt(1.0f / (PI * lobe.pdf)), PI), !delta);
             }
             if (refracted && !through) {
                 is_inside = !is_inside;
@@ -2280,7 +2209,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 faced.geometry_n = select(surface.geometry_n, - surface.geometry_n, turned);
                 let sides: MediumSides = mediumSides(faced, Medium(scatter_in, extinction_in, g_in), filling,
                     ray.unit_direction, scene.outsideMedium(hit));
-                let front: bool = leavesInFront(faced.geometry_n, dir, surface.geometry_n);
+                let front: bool = (dot(dir, surface.geometry_n) > 0.0f) == (dot(surface.geometry_n, faced.geometry_n) > 0.0f);
                 // A spectral path's medium at λ, grey in all three channels
                 scatter_in = select(sides.behind.scatter, sides.front.scatter, front);
                 scatter_in = select(scatter_in, float3(upsample(scatter_in, wavelength)), wavelength > 0.0f);
@@ -2870,7 +2799,8 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
         let temporal: Reservoir = scene.loadReservoirPrevious(q);
         // Optionally lower the confidence cap where the previous frame duplicated samples (Sec. 5), this biases the estimate
         let duplicated: float = select(0.0f, asfloat(scene.duplication(q).x), scene.restirDecorrelation() == 1u);
-        let c_t: float = min(temporal.c, confidenceCap(duplicated));
+        // Temporal confidence cap (Sec. 5)
+        let c_t: float = min(temporal.c, interpolate(RESTIR_CAP, RESTIR_CAP_MIN, pow(duplicated, RESTIR_DUPLICATION_ALPHA)));
 #ifdef FK_FCPT_WALK
         // Both samples keep their domains in an unchanged view; else the shifts the round ran, zero where none ran,
         // from its queue's slots or made here
@@ -2907,7 +2837,10 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
         var sel: Selection = {};
 #endif
         sel.random_state = stream(stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y), STREAM_SELECT + 1u);
-        let weights: float2 = temporalWeights(r.c, p_c, c_t, p_t, resamplingTarget(to_previous.xyz), resamplingTarget(to_current.xyz));
+        // Temporal MIS weights, p_t->c = g_previous the previous sample shifted here, p_c->t = g_current
+        // m_c = c * p_c / (c * p_c + c_t * p_t->c)
+        // m_t = c_t * p_t / (c_t * p_t + c * p_c->t)
+        let weights: float2 = float2(r.c * p_c / (r.c * p_c + c_t * resamplingTarget(to_previous.xyz)), c_t * p_t / (c_t * p_t + r.c * resamplingTarget(to_current.xyz)));
         offerShifted(sel, r, Shift(r.f, 1.0f), weights.x);
         offerShifted(sel, temporal, Shift(to_current.xyz, to_current.w), weights.y);
         r = finalize(sel, r.c + c_t);
@@ -3045,11 +2978,14 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
             let neighbor: Reservoir = scene.loadReservoirTemporal(q);
             let to_here: float4 = asfloat(scene.shiftData(q, t));
             let to_there: float4 = asfloat(scene.shiftData(p, t));
-            let share: float = pairShare(neighbor.c, c_pair, c_sum);
+            let share: float = (neighbor.c + c_pair) / c_sum;  // Pair's share of all confidence (Sec. 3.2)
             if (p_c > 0.0f) {
-                canonical_mis += canonicalWeight(share, c_pair, p_c, neighbor.c, resamplingTarget(to_there.xyz));
+                // Pairwise MIS weight of the canonical sample, g_there its target shifted to the neighbor
+                canonical_mis += share * c_pair * p_c / (c_pair * p_c + neighbor.c * resamplingTarget(to_there.xyz));
             }
-            offerShifted(sel, neighbor, Shift(to_here.xyz, to_here.w), neighborWeight(share, neighbor.c, resamplingTarget(neighbor.f), c_pair, resamplingTarget(to_here.xyz)));
+            // Pairwise MIS weight of the neighbor's sample, g_here its target shifted to the current pixel
+            let p_n: float = resamplingTarget(neighbor.f);
+            offerShifted(sel, neighbor, Shift(to_here.xyz, to_here.w), share * neighbor.c * p_n / (neighbor.c * p_n + c_pair * resamplingTarget(to_here.xyz)));
         }
     }
     offerShifted(sel, r, Shift(r.f, 1.0f), canonical_mis);
@@ -3127,7 +3063,6 @@ public func restir_duplicates<S: IScene>(scene: S, global_invocation_id: uint3, 
     HookScene scene;
     return walk(scene, dom, r, replay, scale, sel);
 }
-[CudaDeviceExport] public func shift_hook(dom: Domain, r: Reservoir) -> Shift { HookScene scene; return shift(scene, dom, r); }
 #ifdef FK_RESTIR_PASSES
 [CudaDeviceExport] public func restir_initial_hook(global_invocation_id: uint3) { HookScene scene; restir_initial(scene, global_invocation_id); }
 [CudaDeviceExport] public func restir_temporal_hook(global_invocation_id: uint3) { HookScene scene; restir_temporal(scene, global_invocation_id); }

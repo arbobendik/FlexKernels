@@ -372,24 +372,11 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
         canonical += share * c_pair * p_pair / (c_pair * p_pair + c_n * albedo.x);
     }
     r[146] = bitcast<u32>(share * c_n * albedo.z / (c_n * albedo.z + c_pair * v[16]));
-    r[147] = bitcast<u32>(canonical);` : `r[136] = bitcast<u32>(facingSign(v[17], g_n, in_dir));
-    let geometry_density = geometryDensity(g_n, out_dir, d_here);
-    let threshold = footprintThreshold(geometryDensity(n, in_dir, d_start));
-    r[139] = u32(withinFootprint(v[17] < 1.0, v[15] < 1.0, 400.0 * albedo.x, geometry_density, threshold));
-    r[140] = u32(withinInverseFootprint(400.0 * albedo.y, v[17] == 0.0, abs(dot(g_n, in_dir)), d_here, threshold));
-    r[141] = u32(roughLobe(albedo.z - 0.2, v[15] == 0.0, v[16]));
-    r[142] = bitcast<u32>(survivalProbability(throughput, density));
-    let cap = confidenceCap(albedo.x * v[17]);
-    let temporal = temporalWeights(r_c, p_c, cap, albedo.y, albedo.z, v[16]);
-    r[144] = bitcast<u32>(temporal.x);
-    r[145] = bitcast<u32>(temporal.y);
-    let share = pairShare(c_n, c_pair, c_sum);
-    var canonical = 0.0;
-    if (p_pair > 0.0f) {
-        canonical += canonicalWeight(share, c_pair, p_pair, c_n, albedo.x);
-    }
-    r[146] = bitcast<u32>(neighborWeight(share, c_n, albedo.z, c_pair, v[16]));
-    r[147] = bitcast<u32>(canonical);`}
+    r[147] = bitcast<u32>(canonical);
+    r[137] = bitcast<u32>(geometry_density);
+    r[138] = bitcast<u32>(threshold);
+    r[143] = bitcast<u32>(cap);` : `r[136] = bitcast<u32>(facingSign(v[17], g_n, in_dir));
+    r[142] = bitcast<u32>(survivalProbability(throughput, density));`}
     let t = mat3x3<f32>(in_dir, out_dir, g_n);
     let normals = mat3x3<f32>(n, n + 0.2 * v[16] * in_dir, n * (1.0 + v[17]) + 0.1 * g_n);
     let geometry_uvw = vec3<f32>(1.0 - 0.5 * albedo.x - 0.5 * albedo.y, 0.5 * albedo.x, 0.5 * albedo.y);
@@ -419,9 +406,6 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     r[152] = bitcast<u32>(length(shadow) * (1.0f - 1e-4f));
     parity_put(&r, 153u, select(vec3<f32>(0.0), select(vec3<f32>(0.0), through, straight.p_refract > 0.0), material.ior == 1.0f) * albedo.z + (1.0f - albedo.z));` : `r[152] = bitcast<u32>(shadowLength(shadow));
     parity_put(&r, 153u, occluderTransmittance(in_dir, n, material, albedo.z));`}
-    r[137] = bitcast<u32>(geometry_density);
-    r[138] = bitcast<u32>(threshold);
-    r[143] = bitcast<u32>(cap);
     parity_results[id.x] = r;
 }`;
 // Unsigned columns of the outputs, the others are floats

@@ -59,7 +59,7 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `beerLambert` | cu:510 | wgsl:1348 | 2, FlexLight | **Shared** | FlexLight's on an absorption color, which FlexLight's `Material` gained, where it took the instance's albedo from `instance_material`; flex-cuda-pt's goes; each consumer reads it at its call site |
 | `faceNormal`, `smoothNormal`, `hitPosition` | cu:605-623 | inline in `surfaceAt`, wgsl:1881 | 3 | Local | Data access: flat pointers vs instanced textures |
 | `geometryOffset` | cu:813-826 (94f161f) | inline in `surfaceAt` (54964fb) | 2, FlexLight | **Shared** | At the user's direction FlexLight's tangents, `tan(acos(c))`, where flex-cuda-pt took `sqrt(1 - c^2) / c`, and its order of terms; each consumer passes the triangle, its normals and the point it reads |
-| `LightBounds`, `importance`, `cosSubClamped`, `sinSubClamped`, `sine`, `solidAngle`, `pickChild`, `childShare`, `powerHeuristic` | h:38, cu:867-899, 995 and the steps of `sampleLight` and `lightPdf` (`bd5216f`) | – | 1 | **Shared** | renderer.cu's light tree, transpiled, for FlexLight's to come; `LightBounds` holds a node's emitters alone, each consumer keeps its tree, and is `__target_intrinsic(cuda)` renderer.h's `LightNode`. Each consumer loops down its own nodes one `pickChild` or `childShare` step at a time |
+| `LightBounds`, `importance` (its clamped sine inline), `cosSubClamped`, `sine`, `solidAngle`, `pickChild`, `childShare`, `powerHeuristic` | h:38, cu:867-899, 995 and the steps of `sampleLight` and `lightPdf` (`bd5216f`) | – | 1 | **Shared** | renderer.cu's light tree, transpiled, for FlexLight's to come; `LightBounds` holds a node's emitters alone, each consumer keeps its tree, and is `__target_intrinsic(cuda)` renderer.h's `LightNode`. Each consumer loops down its own nodes one `pickChild` or `childShare` step at a time |
 | `sphereDensity`, `sampleSphere` | – | – | 1 | **Shared** | Cone sampling toward FlexLight's point lights as spheres and its density in solid angle, so that hits on them can be weighted against light sampling (pbrt-v4's Sphere::Sample) |
 | `sampleLight`, `lightPdf` | cu:915, 980 (`bd5216f`) | `Light`, `sampleLight`, `occluded` wgsl:113, 1054, 1154 | 3 | Local | The visibility test traverses, the nodes are read from each consumer's own data |
 | `pointLightRadiance` | – | wgsl:1238 | 1 | **Shared** | The math of `calculatePointLightContrib`, `color * intensity / (PI * radius * radius)`: corrected from 754e9a0's extra factor of four at the user's direction so light hits agree with direct lighting; the light lookup stays in FlexLight |
@@ -75,8 +75,8 @@ is a deletion and the composition; flex-cuda-pt's adapts its call sites.
 | `Camera`, `Settings`, `Scene`, `Transform`, uniforms | h:5, 44, 51 | wgsl:34-52, shift:7-22 | 3 | Local | Bindings |
 | `Reservoir`, `Shift`, `Selection` | h:27, 41, cu:565 | wgsl:1810, 1842, 1847 | 1 | **Shared** | FlexLight's; `Reservoir` and `Shift` `__target_intrinsic(cuda)`, as the host sizes its buffers by `renderer.h`'s, whose `rc` is a `Hit`: the shared code only copies `rc` and never constructs a `Reservoir` |
 | `offer`, `offerShifted`, `finalize`, `withEnd` | cu:753-782 | wgsl:1949-1980 | 1 | **Shared** | FlexLight's: `offer` draws through `pcg`, renderer.cu's `random` on CUDA, `withEnd` inserts its bits, which every candidate leaves clear for CUDA's OR |
-| `temporalWeights`, `pairShare`, `neighborWeight`, `canonicalWeight`, `confidenceCap` | inline in `__raygen__temporal`, `__raygen__spatial` (e102f38) | inline in `restir_temporal`, `restir_spatial` (a4acf92) | 1 | **Shared** | The MIS weights of temporal and paired spatial reuse, at the user's direction: identical but the confidence cap, `mix` for WGSL and `a + (b - a) * t` for every other target |
-| `facingSign`, `geometryDensity`, `footprintThreshold`, `withinFootprint`, `withinInverseFootprint`, `roughLobe`, `survivalProbability` | inline in `walk` (e102f38) | inline in `facingRay` and `walk` (a4acf92) | 1 | **Shared** | Identical, with `RESTIR_ROUGHNESS` and `RESTIR_FOOTPRINT`; Russian roulette's ratio is FlexLight's clamp of the largest ratio for WGSL and flex-cuda-pt's ratio of the largest for every other target, equal for positive densities |
+| The temporal and pairwise MIS weights, the confidence cap, inline in `restir_temporal`, `restir_spatial` | inline in `__raygen__temporal`, `__raygen__spatial` (e102f38) | inline in `restir_temporal`, `restir_spatial` (a4acf92) | 1 | **Shared** | The MIS weights of temporal and paired spatial reuse, at the user's direction: identical but the confidence cap, `mix` for WGSL and `a + (b - a) * t` for every other target |
+| `facingSign`, the footprint criteria and the rough lobe test inline in `walk`, `survivalProbability` | inline in `walk` (e102f38) | inline in `facingRay` and `walk` (a4acf92) | 1 | **Shared** | Identical, with `RESTIR_ROUGHNESS` and `RESTIR_FOOTPRINT`; Russian roulette's ratio is FlexLight's clamp of the largest ratio for WGSL and flex-cuda-pt's ratio of the largest for every other target, equal for positive densities |
 | `Domain`, `Vertex` | cu:569-579 | wgsl:1827-1840 | 3 | Local | Hold `Hit`; WGSL's `Vertex` adds `inside` |
 | `extractBits` | cu:590 | builtin | 1 | Local | WGSL builtin |
 | `wrongSide` | cu:639 | wgsl:1988 | 3 | Local | The incoming direction's side of the face vs FlexLight's `inside` state of the path |
@@ -182,7 +182,7 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
   The light tree's are renderer.cu's (`bd5216f`), transcribed into the kernel, whose generated CUDA returned the same
   words as renderer.cu's own on a million random nodes, points and picks, with and without `--use_fast_math`.
   The sphere's are pbrt-v4's formulas written out in the kernel, `1 - cos` of the cone by its square root.
-  ReSTIR's decisions, `facingSign` to `canonicalWeight`, are FlexLight's expressions of a4acf92 written out in the
+  ReSTIR's decisions, `facingSign` to the canonical MIS weight, are FlexLight's expressions of a4acf92 written out in the
   kernel with 754e9a0's constants, which a4acf92 keeps, on lavapipe every word of the generated code's, and on NVIDIA.
   On Intel Mesa the first temporal weight is 1 or 2 ulps off in 39 cases, also with FlexLight's text as the
   function's: its driver fuses the multiply-adds of the inlined call otherwise.
@@ -318,7 +318,7 @@ Shift walk<T : ITracer, S : IScene>(T tracer, S scene, Domain dom, Reservoir r, 
 
 ## Next candidates
 
-Done since this list was ranked: the ReSTIR decision maths (`temporalWeights` to `survivalProbability`, Plan A) and
+Done since this list was ranked: the ReSTIR decision maths (the temporal MIS weights to `survivalProbability`, Plan A) and
 the shared shadow segment in both consumers' shadow rays (above). Line numbers below are of the mains the plans were
 drawn on and move with them.
 

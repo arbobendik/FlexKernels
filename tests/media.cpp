@@ -20,7 +20,7 @@ int main() {
                             encloses, volume, FILLS};
                         Medium medium = carried;
                         const MediumSides sides = mediumSides_0(&surface, &medium, AIR, in, &outside);
-                        const bool front = leavesInFront_0(sides.face, dir, g);
+                        const bool front = (dot_0(dir, g) > 0.0f) == (dot_0(g, sides.face) > 0.0f);
                         const Medium left = front ? sides.front : sides.behind;
                         const unsigned filling = front ? sides.fillings.y : sides.fillings.x;
                         // sides[0] behind g, sides[1] in front of it

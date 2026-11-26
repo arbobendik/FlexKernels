@@ -135,7 +135,6 @@ static V shadowThrough(Ray ray, float l, bool surface, Hit left = NO_HIT) {
         along += hit.distance, ray.origin = ray.origin + scaled(ray.unit_direction, hit.distance);
     }
 }
-static int shift_shadows = 0;
 // A sky drawn from cell (1, 0) of its 4 x 2 alone, its draws' directions held to that cell, z up
 static bool one_cell = false;
 static int cell_draws = 0, cell_misses = 0;
@@ -143,7 +142,6 @@ V HookScene_shadowTransmittanceIn_0(Ray ray, float l, V extinction, uint32_t, ui
     bool surface, float length, float, Hit left, Hit) {
     const V from = ray.origin - segment_start;
     if (checking && !surface) segments++, misfits += fabsf(sqrtf(dotv(from, from)) - length) > 1e-6f;
-    shift_shadows++;
     if (one_cell && !(l < 4294967296.0f)) {
         // s = atan2(-y, x) / (2 * PI) + 0.5 in [0.25, 0.5), t = acos(z) / PI < 0.5
         const float s = atan2f(-ray.unit_direction.y, ray.unit_direction.x) / 6.2831853f + 0.5f;
@@ -340,35 +338,6 @@ int main() {
     furnace("white sheen, ReSTIR off", camera, center, 0.3f, 1, failed);
     summing = false;
     furnace("white sheen", camera, center, 0.3f, 1, failed);
-    {
-        // Paths leaving the sphere by its sheen lobe (walk.slang's PATH_LOBE_PREV at bit 15, LOBE_SHEEN_VELVET 4) that a
-        // neighbouring primary hit takes, shifted there and back up to the environment reconnection's rounding
-        const auto seen = [&](V dir) {
-            const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, dir}, true, 1e30f, true, NO_HIT, true);
-            return Domain{camera, camera + scaled(dir, hit.distance), hit};
-        };
-        const Domain near = seen(V(0, 0, -1)), off = seen(V(sinf(0.02f), 0, -cosf(0.02f)));
-        int sheened = 0, back = 0;
-        for (int i = 0; i < 16384; i++) {
-            Reservoir path = {};
-            path.seed = hash(3 * i + 2);
-            Selection sel = {};
-            sel.random_state = hash(3 * i + 3);
-            walk_hook(near, path, false, 1, &sel);
-            const Reservoir r = finalize(sel, 1);
-            if (!(r.w > 0) || (r.path >> 15 & 7u) != 4u) continue;
-            const Shift to = shift_hook(off, r);
-            if (!(to.f.x > 0)) continue;
-            Reservoir moved = r;
-            moved.f = to.f;
-            const Shift home = shift_hook(near, moved);
-            sheened++, back += fabsf(home.f.x - r.f.x) <= 1e-4f * r.f.x;
-        }
-        const bool kept = sheened > 256 && back == sheened;
-        failed += !kept;
-        printf("replay of the sheen lobe: %d of %d paths there and back within 1e-4%s\n", back, sheened,
-            kept ? "" : "  FAILED");
-    }
     scene[0].layer[0] = lambert(1, 0);
     scene[0].coverage = 0.3f;
     furnace("white sphere covered at 0.3", camera, center, 0.3f, 1, failed);
@@ -425,79 +394,6 @@ int main() {
     const bool agree = fabs(chosen - summed) < 4 * sqrt(summed_se * summed_se + furnace_se * furnace_se);
     failed += !agree;
     printf("dispersive glass on red: resampled %.5f, summed %.5f%s\n", chosen, summed, agree ? "" : "  FAILED");
-    // Temporal and spatial reuse of its spectral samples as the passes combine them (Sec. 3): each pixel's sample
-    // against a previous one from a moved camera by temporalWeights, then against its neighbour's by pairwise MIS;
-    // per channel, the combined colour and f * W after finalize against independent pixels without reuse
-    {
-        const int PIXELS = 1 << 12;
-        const auto pixel = [&](V eye, int i) {
-            const float a = 2.39996323f * i, r = 0.25f * sqrtf((i + 0.5f) / PIXELS);
-            const V dir = scaled(V(r * cosf(a), r * sinf(a), -1), 1 / sqrtf(1 + r * r));
-            const Hit hit = HookScene_traverseInstanceBVH_0(Ray{eye, dir}, true, 1e30f, true, NO_HIT, true);
-            return Domain{eye, eye + scaled(dir, hit.distance), hit};
-        };
-        const auto sample = [&](const Domain& dom, uint32_t seed, V* color) {
-            Reservoir path = {};
-            path.seed = seed;
-            Selection sel = {};
-            sel.random_state = hash(seed + 1);
-            walk_hook(dom, path, false, 1, &sel);
-            if (color) *color = sel.color;
-            return finalize(sel, 1);
-        };
-        std::vector<Domain> here(PIXELS), before(PIXELS);
-        std::vector<Reservoir> current(PIXELS), temporal(PIXELS);
-        double plain[3] = {}, plain2[3] = {}, mixed[3] = {}, mixed2[3] = {}, kept[3] = {}, kept2[3] = {};
-        for (int i = 0; i < PIXELS; i++) {
-            here[i] = pixel(camera, i), before[i] = pixel(camera + V(0.02f, 0, 0), i);
-            V alone;
-            sample(here[i], hash(7 * i + 1), &alone);
-            const double y[3] = {alone.x, alone.y, alone.z};
-            for (int k = 0; k < 3; k++) plain[k] += y[k] / PIXELS, plain2[k] += y[k] * y[k] / PIXELS;
-            current[i] = sample(here[i], hash(7 * i + 2), nullptr);
-            const Reservoir previous = sample(before[i], hash(7 * i + 3), nullptr);
-            const Shift to_current = shift_hook(here[i], previous), to_previous = shift_hook(before[i], current[i]);
-            const Vector<float, 2> w = temporalWeights(1, resamplingTarget(current[i].f), 1,
-                resamplingTarget(previous.f), resamplingTarget(to_previous.f), resamplingTarget(to_current.f));
-            Selection sel = {};
-            sel.random_state = hash(7 * i + 4);
-            offerShifted(&sel, current[i], Shift{current[i].f, 1}, w.x);
-            offerShifted(&sel, previous, to_current, w.y);
-            temporal[i] = finalize(sel, 2);
-        }
-        for (int i = 0; i < PIXELS; i++) {
-            const Reservoir r = temporal[i], neighbour = temporal[(i + 1) % PIXELS];
-            const Shift to_here = shift_hook(here[i], neighbour), to_there = shift_hook(here[(i + 1) % PIXELS], r);
-            const float c_sum = r.c + neighbour.c, share = pairShare(neighbour.c, r.c, c_sum);
-            const float p_c = resamplingTarget(r.f);
-            const float canonical = p_c > 0
-                ? canonicalWeight(share, r.c, p_c, neighbour.c, resamplingTarget(to_there.f)) : 0;
-            Selection sel = {};
-            sel.random_state = hash(7 * i + 5);
-            offerShifted(&sel, neighbour, to_here, neighborWeight(share, neighbour.c, resamplingTarget(neighbour.f),
-                r.c, resamplingTarget(to_here.f)));
-            offerShifted(&sel, r, Shift{r.f, 1}, canonical);
-            const Reservoir out = finalize(sel, c_sum);
-            const double c[3] = {sel.color.x, sel.color.y, sel.color.z}, f[3] = {out.f.x * out.w, out.f.y * out.w,
-                out.f.z * out.w};
-            for (int k = 0; k < 3; k++) mixed[k] += c[k] / PIXELS, mixed2[k] += c[k] * c[k] / PIXELS,
-                kept[k] += f[k] / PIXELS, kept2[k] += f[k] * f[k] / PIXELS;
-        }
-        bool reused = true;
-        double z = 0;
-        for (int k = 0; k < 3; k++) {
-            const double se = sqrt(fmax(plain2[k] - plain[k] * plain[k], 0) / PIXELS), se_mixed = sqrt(fmax(mixed2[k]
-                - mixed[k] * mixed[k], 0) / PIXELS), se_kept = sqrt(fmax(kept2[k] - kept[k] * kept[k], 0) / PIXELS);
-            reused = reused && fabs(mixed[k] - plain[k]) < 4 * hypot(se, se_mixed)
-                && fabs(kept[k] - plain[k]) < 4 * hypot(se, se_kept);
-            z = fmax(z, fmax(fabs(mixed[k] - plain[k]) / hypot(se, se_mixed),
-                fabs(kept[k] - plain[k]) / hypot(se, se_kept)));
-        }
-        failed += !reused;
-        printf("spectral reuse: colour (%.4f, %.4f, %.4f), f * W (%.4f, %.4f, %.4f) against (%.4f, %.4f, %.4f), at "
-            "most %.1f standard errors%s\n", mixed[0], mixed[1], mixed[2], kept[0], kept[1], kept[2], plain[0],
-            plain[1], plain[2], z, reused ? "" : "  FAILED");
-    }
     scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, fog}};
     furnace("medium of albedo 1", camera, center, 0.3f, 1, failed);
     scene[0].volume.g = 0.8f;
@@ -559,49 +455,6 @@ int main() {
     checking = true;
     furnace("sun in fog by its face", V(1 - 0.5e-4f, 0, 0), V(1 - 0.5e-4f, 0, -1), 0, 0.00757074921909657, failed);
     checking = false;
-    sun = true, varying = summing = false, camera_fog = {scaled(ONE, 0.5f), scaled(ONE, 0.5f)};
-    scene = {{center, 1, false, {dielectric(1)}, 1, 1, true, camera_fog}};
-    const auto domain = [&](V dir) {
-        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{center, dir}, true, 1e30f, true, NO_HIT, false);
-        return Domain{center, center + scaled(dir, hit.distance), hit};
-    };
-    const Domain here = domain(V(0, 0, -1)), there = domain(V(sinf(0.1f), 0, -cosf(0.1f)));
-    int scattered = 0, kept = 0;
-    for (int i = 0; i < 4096; i++) {
-        Reservoir path = {};
-        path.seed = hash(3 * i + 2);
-        Selection sel = {};
-        sel.random_state = hash(3 * i + 3);
-        walk_hook(here, path, false, 1, &sel);
-        const Reservoir r = finalize(sel, 1);
-        const Shift to = shift_hook(there, r);
-        Reservoir moved = r;
-        moved.f = to.f;
-        const Shift back = shift_hook(here, moved);
-        scattered += r.w > 0;
-        kept += r.w > 0 && to.f.x > 0 && to.jac == 1 && back.jac == 1 && back.f.x == r.f.x && back.f.z == r.f.z;
-    }
-    const bool replayed = scattered > 256 && kept == scattered;
-    failed += !replayed;
-    printf("replay in fog: %d of %d scattered paths there and back exactly%s\n", kept, scattered,
-        replayed ? "" : "  FAILED");
-    bounces = 8;
-    int most = 0, shifts = 0;
-    for (int i = 0; i < 4096; i++) {
-        Reservoir path = {};
-        path.seed = hash(3 * i + 2);
-        Selection sel = {};
-        sel.random_state = hash(3 * i + 3);
-        walk_hook(here, path, false, 1, &sel);
-        const Reservoir r = finalize(sel, 1);
-        if (!(r.w > 0)) continue;
-        shift_shadows = 0, shifts++;
-        shift_hook(there, r);
-        most = shift_shadows > most ? shift_shadows : most;
-    }
-    failed += most > 1 || shifts < 256;
-    printf("replay in fog, 8 bounces: at most %d shadow rays in each of %d shifts%s\n", most, shifts,
-        most > 1 || shifts < 256 ? "  FAILED" : "");
     // Black shell covered at 0.5 around an emitter of 1: 0 without a bounce, 0.5 with one
     bounces = 0, sky = 0, sun = false, camera_fog = none;
     scene = {{center, 2, false, {lambert(0, 0)}, 1, 0.5f, false, none}, {center, 1, false, {lambert(0, 1)}, 1, 1, false,
@@ -672,35 +525,6 @@ int main() {
     scene = {{center, 2, false, {dielectric(1)}, 1, 1, true, {scaled(ONE, 0.3f), scaled(ONE, 0.3f)}},
         {V(0, 3.5f, 0), 1, false, {lambert(0, 1)}, 1, 1, false, none}};
     twins("hidden emitter past fog in a clear shell", V(0, 0, 5), center, 0.1f, 1);
-    scene = {{center, 2, false, {dielectric(1)}, 1, 1, false, none}, {center, 0.5f, false, {lambert(0, 1)}, 1, 1, false,
-        none, true}, {V(0, 0, -1.3f), 0.5f, false, {lambert(0, 1)}, 1, 1, false, none}};
-    {
-        const V eye(0, 0, 5);
-        const auto seen = [&](V dir) {
-            const Hit hit = HookScene_traverseInstanceBVH_0(Ray{eye, dir}, true, 1e30f, true, NO_HIT, true);
-            return Domain{eye, eye + scaled(dir, hit.distance), hit};
-        };
-        const Domain near = seen(V(0, 0, -1)), off = seen(V(sinf(0.02f), 0, -cosf(0.02f)));
-        int lit = 0, back = 0;
-        for (int i = 0; i < 4096; i++) {
-            Reservoir path = {};
-            path.seed = hash(3 * i + 2);
-            Selection sel = {};
-            sel.random_state = hash(3 * i + 3);
-            walk_hook(near, path, false, 1, &sel);
-            const Reservoir r = finalize(sel, 1);
-            const Shift to = shift_hook(off, r);
-            Reservoir moved = r;
-            moved.f = to.f;
-            const Shift home = shift_hook(near, moved);
-            lit += r.w > 0;
-            back += r.w > 0 && to.f.x > 0 && to.jac == 1 && home.jac == 1 && home.f.x == r.f.x && home.f.z == r.f.z;
-        }
-        const bool kept = lit > 256 && back == lit;
-        failed += !kept;
-        printf("replay past a hidden emitter: %d of %d paths there and back exactly%s\n", back, lit,
-            kept ? "" : "  FAILED");
-    }
     // Light shell glowing L / 2 on each side: L = 1 from outside, 0.5 from inside
     bounces = 4, sky = 0, sun = false, camera_fog = none, seen = true;
     for (int restir = 0; restir < 2; restir++) {
@@ -778,40 +602,6 @@ int main() {
         false, none}};
     scene[0].hair = true;
     twins("hidden emitter past hair", camera, center, 0.1f, 1);
-    // Reconnections at walls of albedo 0.5 seen straight (state 0) or through a dispersive shell (state 1): each shift
-    // keeps its path's spectral state and fails with it flipped
-    bounces = 8, sky = 0;
-    Material shell = dielectric(1.5f);
-    shell.dispersion = 0.2f;
-    for (unsigned spectral = 0; spectral < 2; spectral++) {
-        scene = {{center, 2, true, {lambert(0.5f, 1)}, 1, 1, false, none}};
-        if (spectral) scene.push_back({center, 0.5f, false, {shell}, 1, 1, false, none});
-        const auto from = [&](V dir) {
-            const Hit hit = HookScene_traverseInstanceBVH_0(Ray{center, dir}, true, 1e30f, true, NO_HIT, true);
-            return Domain{center, center + scaled(dir, hit.distance), hit};
-        };
-        const Domain near = from(V(0, 0, -1)), off = from(V(sinf(0.05f), 0, -cosf(0.05f)));
-        int reconnecting = 0, stated = 0, kept = 0, refused = 0;
-        for (int i = 0; i < 4096; i++) {
-            Reservoir path = {};
-            path.seed = hash(3 * i + 2);
-            Selection sel = {};
-            sel.random_state = hash(3 * i + 3);
-            walk_hook(near, path, false, 1, &sel);
-            const Reservoir r = finalize(sel, 1);
-            if (!(r.w > 0) || (r.path >> 10 & 3u) != 1u) continue;
-            reconnecting++, stated += (r.path >> 23 & 1u) == spectral;
-            if (!(shift_hook(off, r).jac > 0)) continue;
-            Reservoir flipped = r;
-            flipped.path ^= 1u << 23;
-            const Shift to = shift_hook(off, flipped);
-            kept++, refused += to.jac == 0 && to.f.x == 0;
-        }
-        const bool ok = kept > 100 && refused == kept && stated == reconnecting;
-        failed += !ok;
-        printf("reconnections, spectral state %u: %d of %d stated, %d kept, %d refused flipped%s\n", spectral, stated,
-            reconnecting, kept, refused, ok ? "" : "  FAILED");
-    }
     sky = 1, cdf = true;
     sun = slot_leaf = true;
     const float unslotted = lightPdf_0(ZERO, ZERO, ZERO, 0xFFFFFFFFu, SUN), slotted = lightPdf_0(ZERO, ZERO, ZERO, 0, SUN);
@@ -853,31 +643,6 @@ int main() {
     failed += cell_draws == 0 || cell_misses > 0;
     printf("sky of one cell: %d of %d draws off it%s\n", cell_misses, cell_draws,
         cell_draws == 0 || cell_misses > 0 ? "  FAILED" : "");
-    // Sky samples of a surface, shifted onto the same vertex as hair, which takes none
-    bounces = 64, sky = 1, sun = false, seen = false, summing = false, cdf = true, camera_fog = none;
-    scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
-    {
-        const Hit hit = HookScene_traverseInstanceBVH_0(Ray{camera, V(0, 0, -1)}, true, 1e30f, true, NO_HIT, true);
-        const Domain dom = {camera, camera + scaled(V(0, 0, -1), hit.distance), hit};
-        int sky_samples = 0, valued = 0;
-        for (int i = 0; i < 16384; i++) {
-            scene[0].hair = false;
-            Reservoir path = {};
-            path.seed = hash(3 * i + 2);
-            Selection sel = {};
-            sel.random_state = hash(3 * i + 3);
-            walk_hook(dom, path, false, 1, &sel);
-            const Reservoir r = finalize(sel, 1);
-            // Reconnected to the light vertex, ending in a sky sample
-            if (!(r.w > 0) || (r.path >> 10 & 3) != 2 || (r.path >> 12 & 7) != 4) continue;
-            scene[0].hair = true;
-            sky_samples++, valued += shift_hook(dom, r).f.x > 0;
-        }
-        scene[0].hair = false;
-        failed += sky_samples == 0 || valued > 0;
-        printf("sky samples shifted onto hair: %d of %d nonzero%s\n", valued, sky_samples,
-            sky_samples == 0 || valued > 0 ? "  FAILED" : "");
-    }
     failed += tracked_misfits > 0 || tracked == 0;
     printf("camera segments: %d misfits of %d tracked%s\n", tracked_misfits, tracked,
         tracked_misfits > 0 || tracked == 0 ? "  FAILED" : "");

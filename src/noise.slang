@@ -50,8 +50,6 @@ __extern_cpp public struct Random {
     __extern_cpp public float value;
 };
 
-float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f; }
-
 [CudaDeviceExport] public Random pcg(uint state) {
     __target_switch {
     case wgsl:
@@ -59,7 +57,7 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
     // PCG random number generator
     return Random(state * 747796405u + 2891336453u, float(hash(state)) / float(UINT_MAX));
     default:
-        const float value = random(state);
+        const float value = ((state = hash(state)) >> 8) * 0x1p-24f;
         return Random(state, value);
     }
 }

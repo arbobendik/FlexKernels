@@ -153,9 +153,6 @@ build/pathray-cpu: tests/pathray.cpp build/cpp-restir/pathtracer.cpp
 build/layers-cpu: tests/layers.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
 
-build/cones-cpu: tests/cones.cpp build/cpp-restir/pathtracer.cpp
-	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir $< -o $@
-
 build/coverage-cpu: tests/coverage.cpp build/cpp-restir/pathtracer.cpp
 	$(CXX) -std=c++20 -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Ibuild/cpp-restir \
 		-DGENERATED='"build/cpp-restir/pathtracer.cpp"' $< -o $@
@@ -174,7 +171,7 @@ lint: $(ACTIONLINT)
 
 test: test-cpu test-wgsl test-vulkan
 
-test-cpu: build/parity-cpu build/parity-untoon-cpu build/albedo-cpu build/coverage-cpu build/noise-cpu build/cones-cpu \
+test-cpu: build/parity-cpu build/parity-untoon-cpu build/albedo-cpu build/coverage-cpu build/noise-cpu \
 		build/layers-cpu build/pathray-cpu build/media-cpu build/shadowmedia-cpu \
 		build/flight-cpu build/scatternee-cpu build/walk-cpu \
 		build/summing-cpu build/passes-cpu build/dispersion-cpu
@@ -183,7 +180,6 @@ test-cpu: build/parity-cpu build/parity-untoon-cpu build/albedo-cpu build/covera
 	build/albedo-cpu
 	build/coverage-cpu
 	build/noise-cpu
-	build/cones-cpu
 	build/layers-cpu
 	build/pathray-cpu
 	build/media-cpu

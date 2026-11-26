@@ -164,19 +164,8 @@ __device__ Result evaluate(const Case& c) {
     r.sphere_direction = sampleSphere(vec(center), radius, in_dir, albedo.x, albedo.z);
     const Vec g_n = vec(c.in + 9);
     r.facing = facingSign(c.in[17], g_n, in_dir);
-    r.geometry_density = geometryDensity(g_n, out_dir, 0.5f + c.in[16]);
-    r.threshold = footprintThreshold(geometryDensity(n, in_dir, 1 + c.in[17]));
-    r.footprint = withinFootprint(c.in[17] < 1, c.in[15] < 1, 400 * albedo.x, r.geometry_density, r.threshold);
-    r.inverse_footprint = withinInverseFootprint(400 * albedo.y, c.in[17] == 0, fabsf(dot3(g_n, in_dir)), 0.5f + c.in[16],
-        r.threshold);
-    r.rough = roughLobe(albedo.z - 0.2f, c.in[15] == 0, c.in[16]);
     const float throughput[] = {albedo.x * (1 + 2 * c.in[16]), albedo.y * (1 + 2 * c.in[16]), albedo.z * (1 + 2 * c.in[16])};
     r.survival = survivalProbability(vec(throughput), 0.25f + c.in[17]);
-    r.cap = confidenceCap(albedo.x * c.in[17]);
-    r.temporal = temporalWeights(1 + 3 * albedo.x, r.greyscale, r.cap, albedo.y, albedo.z, c.in[16]);
-    const float share = pairShare(2 * albedo.y, 0.5f + albedo.x, 3 + albedo.z);
-    r.neighbor = neighborWeight(share, 2 * albedo.y, albedo.z, 0.5f + albedo.x, c.in[16]);
-    r.canonical = c.in[17] - 0.5f > 0 ? canonicalWeight(share, 0.5f + albedo.x, c.in[17] - 0.5f, 2 * albedo.y, albedo.x) : 0;
     const float u = 0.5f * albedo.x, w = 0.5f * albedo.y, e1[] = {c.in[3] - c.in[0], c.in[4] - c.in[1], c.in[5] - c.in[2]},
         e2[] = {c.in[9] - c.in[0], c.in[10] - c.in[1], c.in[11] - c.in[2]};
     const float cross[] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]},

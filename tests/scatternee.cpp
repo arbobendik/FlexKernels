@@ -106,7 +106,7 @@ int main() {
     double least = 1, split = 1;
     for (int k = 0; k < 16; k++) {
         const V dir(cosf(0.4f * k) * 0.8f, 0.6f, sinf(0.4f * k) * 0.8f);
-        least = fmin(least, escapeWeight_0(scatteredVertex_0(false).pdf, dir));
+        least = fmin(least, escapeWeight_0(0.0f, dir));
         split = fmin(split, escapeWeight_0(0.25f / 3.14159265f, dir));
     }
     const bool whole = least == 1 && split < 1;

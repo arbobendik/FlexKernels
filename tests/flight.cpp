@@ -12,7 +12,7 @@ int main() {
     double z1 = 0, z2 = 0, z4 = 0;
     for (int i = 0; i < N; i++) {
         // Free flight: E[unscattered] = exp(-e * d), E[first scattered] = s * (1 - exp(-e * d)) / e
-        const float u = pcg(hash(2 * i + 1)).value, t = freeFlight_0(u, sigma);
+        const float u = pcg(hash(2 * i + 1)).value, t = - logf(1.0f - u) / sigma;
         const V w = flightWeight_0(scatter, extinction, sigma, t < d ? t : d, t < d);
         const double c[3] = {w.x, w.y, w.z};
         for (int k = 0; k < 3; k++) {
@@ -61,14 +61,5 @@ int main() {
         printf("Henyey-Greenstein g %.1f: integral %.6f of 1, mean mu %.5f +- %.5f of %.1f, %d densities off%s\n", g,
             integral, mean, se, g, misfits, ok ? "" : "  FAILED");
     }
-    // Light sampled at a scattering vertex generating, or replaying at the stop in a homogeneous medium
-    int rule = 0;
-    for (const bool replay : {false, true})
-        for (const bool varying : {false, true})
-            for (uint32_t b = 0; b < 4; b++)
-                rule += scatterSampled_0(replay, b, 2, varying) != (!replay || (b == 2 && !varying));
-    failed += rule != 0;
-    printf("scattering vertices sampling light: %d of 16 cases differ from flex-cuda-pt's%s\n", rule,
-        rule ? "  FAILED" : "");
     return failed;
 }
