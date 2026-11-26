@@ -1490,14 +1490,17 @@ uint extractBits(uint e, uint offset, uint count) {
     weight = float3(1.0f);
     glowed = float3(0.0f);
     while (hit.instance_index != UINT_MAX) {
-        // PDF(t) = sigma * exp(-sigma * t)
-        // CDF(t) = 1 - exp(-sigma * t) = u
-        // => t = -ln(1 - u) / sigma
-        var along: float = - log(1.0f - draw(noiseAddress(r.seed, b), NOISE_FLIGHT).value) / sigma;
+        // Nothing to scatter at: no flight
+        var along: float = hit.distance;
         if (varying) {
             along = scene.trackMedium(filling, ray.origin, ray.unit_direction, hit.distance, tracking, weight, glowed,
                 scatter_in, extinction_in, g_in, select(b, 0u, b == UINT_MAX),
                 select(prev.lobe, LOBE_NONE, b == UINT_MAX), b == UINT_MAX);
+        } else if (sigma > 0.0f) {
+            // PDF(t) = sigma * exp(-sigma * t)
+            // CDF(t) = 1 - exp(-sigma * t) = u
+            // => t = -ln(1 - u) / sigma
+            along = - log(1.0f - draw(noiseAddress(r.seed, b), NOISE_FLIGHT).value) / sigma;
         }
         if (!(along < hit.distance)) {
             break;
@@ -1554,7 +1557,7 @@ uint extractBits(uint e, uint offset, uint count) {
             }
             offer(sel, withEnd(candidate, END_NEE, b, f), f * scale / density);
             let survival_probability: float = survivalProbability(abs(throughput), density);
-            if (survival_probability < draw(noiseAddress(r.seed, b), NOISE_RR).value || b >= scene.maxBounces()) {
+            if (b >= scene.maxBounces() || (survival_probability < 1.0f && survival_probability < draw(noiseAddress(r.seed, b), NOISE_RR).value)) {
                 return true;
             }
             density *= survival_probability;
@@ -2242,7 +2245,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             if (point_light_lighting || scatter) {
                 survival_probability = survivalProbability(abs(throughput), density);
             }
-            if (survival_probability < draw(noiseAddress(r.seed, b), NOISE_RR).value || b >= scene.maxBounces()) {
+            if (b >= scene.maxBounces() || (survival_probability < 1.0f && survival_probability < draw(noiseAddress(r.seed, b), NOISE_RR).value)) {
                 break;
             }
             density *= survival_probability;
