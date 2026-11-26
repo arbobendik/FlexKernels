@@ -82,8 +82,8 @@ __device__ Result evaluate(const Case& c) {
     const float ggx_n[] = {h[0] * scale, h[1] * scale, h[2] * scale};
     const Vec v = vec(minus_in);
     const AnisotropicFrame frame = anisotropicFrame(material, vec(n_i));
-    r.lobes = lobeWeights(in_dir, v, vec(n_i), vec(ggx_n), vec(zero), frame, sheenProfile(v, vec(n_i), material),
-        CoatFrame{}, vec(zero), material, c.in[18], c.in[19]);
+    r.lobes = lobeWeights(in_dir, v, vec(n_i), vec(ggx_n), vec(zero), vec(ggx_n), vec(zero), frame,
+        sheenProfile(v, vec(n_i), material), CoatFrame{}, vec(zero), material, c.in[18], c.in[19]);
     r.n_dot_h = dot3(vec(n_i), vec(ggx_n));
     const float p_lobe[] = {r.lobes.p_diffuse, r.lobes.p_refract, r.lobes.p_reflect};
     for (unsigned lobe = 0; lobe < 3; lobe++) {
@@ -123,7 +123,8 @@ __device__ Result evaluate(const Case& c) {
     const bool refracted = (dot3(in_dir, vec(c.in + 9)) <= 0) != (dot3(out_dir, vec(c.in + 9)) > 0);
     FixedArray<Vec, 6> throughputs;
     FixedArray<float, 6> pdfs;
-    BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, c.random_state, &throughputs, &pdfs);
+    BSDF(in_dir, out_dir, n, material, c.in[18], c.in[19], refracted, drawFacets(in_dir, n, material, c.random_state),
+        &throughputs, &pdfs);
     const float pdf = 0.5f + c.in[17];
     float balance[3] = {}, power[3] = {};
     for (int i = 0; i < 6; i++) {
