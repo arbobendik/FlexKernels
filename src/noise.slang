@@ -5,6 +5,46 @@ module noise;
 
 public static const uint UINT_MAX = 4294967295u;
 
+// Blue noise: a fixed S x S x NOISE_LAYERS tensor of texels of two 16-bit ranks, toroidal in all three dimensions,
+// texel (x, y) of layer t at (t * S + y) * S + x, its ranks as channel 0 | channel 1 << 16
+// Layers of the tensor
+public static const uint NOISE_LAYERS = 32u;
+// The consumer's texel where no tensor is bound
+public static const uint NOISE_UNBOUND = 0xFFFFFFFFu;
+
+// Random variables of a vertex, each its own texel offset, a pair's second member channel 1 of its first's texel
+public static const uint NOISE_SECOND = 0x80000000u;
+public static const uint NOISE_HALF_1 = 0u;
+public static const uint NOISE_HALF_2 = NOISE_HALF_1 | NOISE_SECOND;
+public static const uint NOISE_COAT_1 = 1u;
+public static const uint NOISE_COAT_2 = NOISE_COAT_1 | NOISE_SECOND;
+public static const uint NOISE_LOBE = 2u;
+public static const uint NOISE_DIR_1 = 3u;
+public static const uint NOISE_DIR_2 = NOISE_DIR_1 | NOISE_SECOND;
+public static const uint NOISE_LIGHT_PICK = 4u;
+public static const uint NOISE_LIGHT_U = 5u;
+public static const uint NOISE_LIGHT_V = NOISE_LIGHT_U | NOISE_SECOND;
+public static const uint NOISE_SKY_ROW = 6u;
+public static const uint NOISE_SKY_COLUMN = NOISE_SKY_ROW | NOISE_SECOND;
+public static const uint NOISE_SKY_U = 7u;
+public static const uint NOISE_SKY_V = NOISE_SKY_U | NOISE_SECOND;
+public static const uint NOISE_RR = 8u;
+public static const uint NOISE_COVERAGE = 9u;
+public static const uint NOISE_FLIGHT = 10u;
+public static const uint NOISE_PHASE_1 = 11u;
+public static const uint NOISE_PHASE_2 = NOISE_PHASE_1 | NOISE_SECOND;
+public static const uint NOISE_HAIR_1 = 12u;
+public static const uint NOISE_HAIR_2 = NOISE_HAIR_1 | NOISE_SECOND;
+public static const uint NOISE_HAIR_LOBE = 13u;
+// Random variables of a path, read at bounce 0 past the vertex's
+public static const uint NOISE_CAMERA_X = 14u;
+public static const uint NOISE_CAMERA_Y = NOISE_CAMERA_X | NOISE_SECOND;
+public static const uint NOISE_LENS_X = 15u;
+public static const uint NOISE_LENS_Y = NOISE_LENS_X | NOISE_SECOND;
+public static const uint NOISE_SELECT = 16u;
+// Texels per vertex, the stride of noiseAddress's steps
+public static const uint NOISE_VARIABLES = 17u;
+
 __extern_cpp public struct Random {
     __extern_cpp public uint state;
     __extern_cpp public float value;
@@ -33,13 +73,6 @@ float random(inout uint state) { return ((state = hash(state)) >> 8) * 0x1p-24f;
 [CudaDeviceExport] public func stream(seed: uint, index: uint) -> uint {
     return hash(seed ^ hash(index));
 }
-
-// Blue noise: a fixed S x S x NOISE_LAYERS tensor of texels of two 16-bit ranks, toroidal in all three dimensions,
-// texel (x, y) of layer t at (t * S + y) * S + x, its ranks as channel 0 | channel 1 << 16
-// Layers of the tensor
-public static const uint NOISE_LAYERS = 32u;
-// The consumer's texel where no tensor is bound
-public static const uint NOISE_UNBOUND = 0xFFFFFFFFu;
 
 // The start: texel (x, y) of layer t takes its index's place in a permutation of the layer's S^2 texels per channel c,
 // a Feistel network of four rounds over (x, y) keyed by t and c, scaled to 16 bits, so every channel of every layer is
@@ -225,39 +258,6 @@ public func noiseSize() -> uint {
     default: return 512u;
     }
 }
-
-// Random variables of a vertex, each its own texel offset, a pair's second member channel 1 of its first's texel
-public static const uint NOISE_SECOND = 0x80000000u;
-public static const uint NOISE_HALF_1 = 0u;
-public static const uint NOISE_HALF_2 = NOISE_HALF_1 | NOISE_SECOND;
-public static const uint NOISE_COAT_1 = 1u;
-public static const uint NOISE_COAT_2 = NOISE_COAT_1 | NOISE_SECOND;
-public static const uint NOISE_LOBE = 2u;
-public static const uint NOISE_DIR_1 = 3u;
-public static const uint NOISE_DIR_2 = NOISE_DIR_1 | NOISE_SECOND;
-public static const uint NOISE_LIGHT_PICK = 4u;
-public static const uint NOISE_LIGHT_U = 5u;
-public static const uint NOISE_LIGHT_V = NOISE_LIGHT_U | NOISE_SECOND;
-public static const uint NOISE_SKY_ROW = 6u;
-public static const uint NOISE_SKY_COLUMN = NOISE_SKY_ROW | NOISE_SECOND;
-public static const uint NOISE_SKY_U = 7u;
-public static const uint NOISE_SKY_V = NOISE_SKY_U | NOISE_SECOND;
-public static const uint NOISE_RR = 8u;
-public static const uint NOISE_COVERAGE = 9u;
-public static const uint NOISE_FLIGHT = 10u;
-public static const uint NOISE_PHASE_1 = 11u;
-public static const uint NOISE_PHASE_2 = NOISE_PHASE_1 | NOISE_SECOND;
-public static const uint NOISE_HAIR_1 = 12u;
-public static const uint NOISE_HAIR_2 = NOISE_HAIR_1 | NOISE_SECOND;
-public static const uint NOISE_HAIR_LOBE = 13u;
-// Random variables of a path, read at bounce 0 past the vertex's
-public static const uint NOISE_CAMERA_X = 14u;
-public static const uint NOISE_CAMERA_Y = NOISE_CAMERA_X | NOISE_SECOND;
-public static const uint NOISE_LENS_X = 15u;
-public static const uint NOISE_LENS_Y = NOISE_LENS_X | NOISE_SECOND;
-public static const uint NOISE_SELECT = 16u;
-// Texels per vertex, the stride of noiseAddress's steps
-public static const uint NOISE_VARIABLES = 17u;
 
 // Texel offset of step k: the R2 sequence's k * (1 / g, 1 / g^2) of S, g the plastic number, in 32-bit fixed point
 // => O(k) = floor(fract(k * (0.7548777, 0.5698403)) * S), the fraction's high 16 bits times S, exact for S <= 2^16

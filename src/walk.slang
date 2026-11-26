@@ -42,7 +42,25 @@ public static const uint STREAM_MEDIUM = 320u;
 public static const uint STREAM_CAMERA = 384u;
 // Wavelength at the first dispersive hit
 public static const uint STREAM_WAVELENGTH = 512u;
+
+// No lobe: camera rays
+public static const uint LOBE_NONE = 3u;
+
+// Stream compaction of the temporal and paired spatial shifts (Sec. 6.2.2), sorted into bins of equal reconnection type and replay depth
+public static const uint SHIFT_DEPTHS = 8u;
+public static const uint SHIFT_BINS = 40u;
+
+public static const float POW32 = 4294967296.0;
 #endif
+
+// Single-vertex roughness threshold (Sec. 4.2)
+static const float RESTIR_ROUGHNESS = 0.2;
+// Dual ray footprint constant c / 100 * 4 PI of Eq. 5 with c = 0.02
+static const float RESTIR_FOOTPRINT = 0.0025132741228718345;
+// Temporal confidence cap and its duplication-driven reduction (Sec. 5)
+static const float RESTIR_CAP = 20.0;
+static const float RESTIR_CAP_MIN = 1.0;
+static const float RESTIR_DUPLICATION_ALPHA = 0.1;
 
 __target_intrinsic(cuda, "Reservoir")
 __extern_cpp public struct Reservoir {
@@ -80,6 +98,153 @@ __extern_cpp public struct Selection {
     __extern_cpp public bool sums = false;
 #endif
 }
+
+// Bounds, normal cone (w, cos_theta_o) and power phi of a node's emitters
+__target_intrinsic(cuda, "LightNode")
+__extern_cpp public struct LightBounds {
+    __extern_cpp public float3 low;
+    __extern_cpp public float3 high;
+    __extern_cpp public float3 w;
+    __extern_cpp public float phi;
+    __extern_cpp public float cos_theta_o;
+};
+
+#ifdef FK_RESTIR
+__target_intrinsic(wgsl, "Ray")
+__target_intrinsic(cuda, "FKRay")
+__extern_cpp public struct Ray {
+    __extern_cpp public float3 origin;
+    __extern_cpp public float3 unit_direction;
+}
+
+__target_intrinsic(wgsl, "Hit")
+__target_intrinsic(cuda, "FKHit")
+__extern_cpp public struct Hit {
+    __extern_cpp public float2 uv;
+    __extern_cpp public uint instance_index;
+    __extern_cpp public uint triangle_index;
+    __extern_cpp public uint is_point_light;
+    __extern_cpp public float distance;
+}
+
+__extern_cpp public struct Domain {
+    __extern_cpp public float3 x0;
+    __extern_cpp public float3 x1;
+    __extern_cpp public Hit hit;
+#ifdef FK_FCPT_WALK
+    // Pixel cone: width at x0 and spread angle
+    __extern_cpp public float width;
+    __extern_cpp public float spread;
+#endif
+}
+
+// Sampling record of the previous path vertex for the reconnection criteria (Sec. 4)
+__extern_cpp public struct Vertex {
+    __extern_cpp public bool rough;
+    __extern_cpp public uint lobe;
+    __extern_cpp public float pdf;
+    __extern_cpp public float cos;
+    __extern_cpp public bool inside;
+}
+
+// Homogeneous medium: scattering, extinction, Henyey-Greenstein g
+__target_intrinsic(cuda, "FKMedium")
+__extern_cpp public struct Medium {
+    __extern_cpp public float3 scatter = float3(0.0f);
+    __extern_cpp public float3 extinction = float3(0.0f);
+    __extern_cpp public float g = 0.0f;
+}
+
+// Media behind and in front of a hit's face
+__extern_cpp public struct MediumSides {
+    __extern_cpp public Medium behind;
+    __extern_cpp public Medium front;
+    __extern_cpp public uint2 fillings;
+    __extern_cpp public float3 face;
+}
+
+__target_intrinsic(wgsl, "Surface")
+__target_intrinsic(cuda, "FKSurface")
+__extern_cpp public struct Surface {
+    __extern_cpp public float3 smooth_n;
+    __extern_cpp public float3 geometry_n;
+    __extern_cpp public float geometry_offset;
+    __extern_cpp public Material material;
+    __extern_cpp public bool skip;
+    __extern_cpp public uint random_state;
+#ifdef FK_FCPT_WALK
+    // Share of rays the surface stops, the rest pass straight through
+    __extern_cpp public float coverage = 1.0f;
+    // Volume behind the face: its medium and a varying one's material key, else UINT_MAX
+    __extern_cpp public bool encloses = false;
+    __extern_cpp public Medium volume;
+    __extern_cpp public uint fills = UINT_MAX;
+    // Fiber tangent, its length the table level + 1, 0 off hair
+    __extern_cpp public float3 hair = float3(0.0f);
+#endif
+}
+
+#ifdef FK_FCPT_WALK
+// Media on either side of the vertex and the segment reaching it, for its shadow rays
+__extern_cpp public struct ShadowContext {
+    __extern_cpp public float3 extinction_behind;
+    __extern_cpp public float3 extinction_front;
+    __extern_cpp public uint2 fillings;
+    __extern_cpp public float3 side;
+    __extern_cpp public uint depth;
+    __extern_cpp public uint lobe;
+    __extern_cpp public bool surface;
+    __extern_cpp public float length;
+    __extern_cpp public float width;
+    // Hit the shadow ray starts on, skipped by its traversal
+    __extern_cpp public Hit own;
+    __extern_cpp public bool fiber;
+}
+#endif
+
+__target_intrinsic(wgsl, "Light")
+__target_intrinsic(cuda, "FKLight")
+__extern_cpp public struct Light {
+    __extern_cpp public float3 position;
+    __extern_cpp public float is_area_light;
+    __extern_cpp public float3 color;
+    __extern_cpp public float intensity;
+    __extern_cpp public float variance;
+}
+
+__extern_cpp public struct TreeSample {
+    // Direction to the light point, radiance / PDF and PDF, 0 for point lights of no radius
+    __extern_cpp public float3 dir;
+    __extern_cpp public float3 radiance;
+    __extern_cpp public float density;
+    __extern_cpp public uint random_state;
+}
+
+// Light sampling at the vertex the ray left, for MIS of the emission the ray meets
+__extern_cpp public struct NEEVertex {
+    __extern_cpp public bool none;
+    __extern_cpp public float pdf;
+    __extern_cpp public float3 origin;
+    __extern_cpp public float3 smooth_n;
+    __extern_cpp public float3 start;
+}
+
+__extern_cpp public struct SkySample {
+    __extern_cpp public float3 dir;
+    __extern_cpp public float3 radiance;
+    // Radiance times the weighted BSDF of skyBSDF
+    __extern_cpp public float3 color;
+    __extern_cpp public uint random_state;
+}
+#endif
+
+#ifdef FK_RESTIR_PASSES
+__extern_cpp public struct ShiftJob {
+    __extern_cpp public Domain dom;
+    __extern_cpp public Reservoir r;
+}
+#endif
+
 [ForceInline] func addGlow(inout sel: Selection, glow: float3) {
 #ifdef FK_FCPT_WALK
     sel.glow += glow;
@@ -93,19 +258,6 @@ __extern_cpp public struct Selection {
 }
 
 #ifdef FK_RESTIR
-// Stream compaction of the temporal and paired spatial shifts (Sec. 6.2.2), sorted into bins of equal reconnection type and replay depth
-public static const uint SHIFT_DEPTHS = 8u;
-public static const uint SHIFT_BINS = 40u;
-
-__target_intrinsic(wgsl, "Hit")
-__target_intrinsic(cuda, "FKHit")
-__extern_cpp public struct Hit {
-    __extern_cpp public float2 uv;
-    __extern_cpp public uint instance_index;
-    __extern_cpp public uint triangle_index;
-    __extern_cpp public uint is_point_light;
-    __extern_cpp public float distance;
-}
 [ForceInline] Hit noHit() { return Hit(float2(0.0f), UINT_MAX, 0u, 0u, 0.0f); }
 
 [ForceInline] public Hit reservoirHit(Reservoir r) {
@@ -127,17 +279,6 @@ __extern_cpp public struct Hit {
     }
 }
 
-__extern_cpp public struct Domain {
-    __extern_cpp public float3 x0;
-    __extern_cpp public float3 x1;
-    __extern_cpp public Hit hit;
-#ifdef FK_FCPT_WALK
-    // Pixel cone: width at x0 and spread angle
-    __extern_cpp public float width;
-    __extern_cpp public float spread;
-#endif
-}
-
 [ForceInline] public bool coneUsed() {
     __target_switch {
     case wgsl: case glsl: return false;
@@ -152,9 +293,6 @@ __extern_cpp public struct Domain {
 #endif
 }
 
-// No lobe: camera rays
-public static const uint LOBE_NONE = 3u;
-
 // Lobe the ray arriving at vertex b left by, LOBE_NONE for camera rays
 func arrivalLobe(b: uint, prev_lobe: uint) -> uint {
     return select(LOBE_NONE, prev_lobe, b > 0u);
@@ -167,13 +305,6 @@ func arrivalLobe(b: uint, prev_lobe: uint) -> uint {
     }
 }
 
-// Media behind and in front of a hit's face
-__extern_cpp public struct MediumSides {
-    __extern_cpp public Medium behind;
-    __extern_cpp public Medium front;
-    __extern_cpp public uint2 fillings;
-    __extern_cpp public float3 face;
-}
 func boundsVolume(surface: Surface) -> bool {
 #ifdef FK_FCPT_WALK
     return surface.encloses;
@@ -201,21 +332,6 @@ func leavesInFront(face: float3, dir: float3, g: float3) -> bool {
 }
 
 #ifdef FK_FCPT_WALK
-// Media on either side of the vertex and the segment reaching it, for its shadow rays
-__extern_cpp public struct ShadowContext {
-    __extern_cpp public float3 extinction_behind;
-    __extern_cpp public float3 extinction_front;
-    __extern_cpp public uint2 fillings;
-    __extern_cpp public float3 side;
-    __extern_cpp public uint depth;
-    __extern_cpp public uint lobe;
-    __extern_cpp public bool surface;
-    __extern_cpp public float length;
-    __extern_cpp public float width;
-    // Hit the shadow ray starts on, skipped by its traversal
-    __extern_cpp public Hit own;
-    __extern_cpp public bool fiber;
-}
 func shadowContext(surface: Surface, turned: bool, extinction: float3, filling: uint, dir: float3, depth: uint, lobe: uint, length: float, width: float, own: Hit, fiber: bool, outside: Medium) -> ShadowContext {
     // A face bounding no volume: the same medium on both sides
     var context: ShadowContext = ShadowContext(extinction, extinction, uint2(filling), surface.geometry_n, depth, lobe, true, length, width, own, fiber);
@@ -328,15 +444,6 @@ func emitting(surface: Surface, top: bool) -> Surface {
 func widened(spread: float, pdf: float, delta: bool) -> float {
     return spread + select(0.0f, min(2.0f * sqrt(1.0f / (PI * pdf)), PI), !delta);
 }
-
-// Sampling record of the previous path vertex for the reconnection criteria (Sec. 4)
-__extern_cpp public struct Vertex {
-    __extern_cpp public bool rough;
-    __extern_cpp public uint lobe;
-    __extern_cpp public float pdf;
-    __extern_cpp public float cos;
-    __extern_cpp public bool inside;
-}
 #endif
 
 [CudaDeviceExport] public func safeDivide(a: float3, b: float3) -> float3 {
@@ -393,15 +500,6 @@ __extern_cpp public struct Vertex {
     return candidate;
 }
 
-
-// Single-vertex roughness threshold (Sec. 4.2)
-static const float RESTIR_ROUGHNESS = 0.2;
-// Dual ray footprint constant c / 100 * 4 PI of Eq. 5 with c = 0.02
-static const float RESTIR_FOOTPRINT = 0.0025132741228718345;
-// Temporal confidence cap and its duplication-driven reduction (Sec. 5)
-static const float RESTIR_CAP = 20.0;
-static const float RESTIR_CAP_MIN = 1.0;
-static const float RESTIR_DUPLICATION_ALPHA = 0.1;
 
 // Sign turning the normals toward the arriving ray, kept for transmitting surfaces
 [CudaDeviceExport] public func facingSign(transmission: float, face: float3, direction: float3) -> float {
@@ -478,16 +576,6 @@ float interpolate(float a, float b, float t) {
     return share * c_pair * p_c / (c_pair * p_c + c_n * g_there);
 }
 
-
-// Bounds, normal cone (w, cos_theta_o) and power phi of a node's emitters
-__target_intrinsic(cuda, "LightNode")
-__extern_cpp public struct LightBounds {
-    __extern_cpp public float3 low;
-    __extern_cpp public float3 high;
-    __extern_cpp public float3 w;
-    __extern_cpp public float phi;
-    __extern_cpp public float cos_theta_o;
-};
 
 // cos(max(0, a - b)) = cos_a * cos_b + sin_a * sin_b, 1 for a < b
 [CudaDeviceExport] public func cosSubClamped(sin_a: float, cos_a: float, sin_b: float, cos_b: float) -> float {
@@ -581,15 +669,6 @@ __extern_cpp public struct LightBounds {
 }
 
 #ifdef FK_RESTIR
-public static const float POW32 = 4294967296.0;
-
-__target_intrinsic(wgsl, "Ray")
-__target_intrinsic(cuda, "FKRay")
-__extern_cpp public struct Ray {
-    __extern_cpp public float3 origin;
-    __extern_cpp public float3 unit_direction;
-}
-
 // Ray sphere intersection test.
 func raySphere(center: float3, radius: float, ray: Ray, max_len: float) -> float {
     let L: float3 = center - ray.origin;
@@ -615,55 +694,9 @@ func raySphere(center: float3, radius: float, ray: Ray, max_len: float) -> float
     return POW32;
 }
 
-__extern_cpp public struct TreeSample {
-    // Direction to the light point, radiance / PDF and PDF, 0 for point lights of no radius
-    __extern_cpp public float3 dir;
-    __extern_cpp public float3 radiance;
-    __extern_cpp public float density;
-    __extern_cpp public uint random_state;
-}
-
 // Whether the material is a thin surface transmitting diffusely
 func isTranslucent(material: Material) -> bool {
     return rgb_to_greyscale(material.translucent) > 0.0f;
-}
-
-// Light sampling at the vertex the ray left, for MIS of the emission the ray meets
-__extern_cpp public struct NEEVertex {
-    __extern_cpp public bool none;
-    __extern_cpp public float pdf;
-    __extern_cpp public float3 origin;
-    __extern_cpp public float3 smooth_n;
-    __extern_cpp public float3 start;
-}
-
-// Homogeneous medium: scattering, extinction, Henyey-Greenstein g
-__target_intrinsic(cuda, "FKMedium")
-__extern_cpp public struct Medium {
-    __extern_cpp public float3 scatter = float3(0.0f);
-    __extern_cpp public float3 extinction = float3(0.0f);
-    __extern_cpp public float g = 0.0f;
-}
-
-__target_intrinsic(wgsl, "Surface")
-__target_intrinsic(cuda, "FKSurface")
-__extern_cpp public struct Surface {
-    __extern_cpp public float3 smooth_n;
-    __extern_cpp public float3 geometry_n;
-    __extern_cpp public float geometry_offset;
-    __extern_cpp public Material material;
-    __extern_cpp public bool skip;
-    __extern_cpp public uint random_state;
-#ifdef FK_FCPT_WALK
-    // Share of rays the surface stops, the rest pass straight through
-    __extern_cpp public float coverage = 1.0f;
-    // Volume behind the face: its medium and a varying one's material key, else UINT_MAX
-    __extern_cpp public bool encloses = false;
-    __extern_cpp public Medium volume;
-    __extern_cpp public uint fills = UINT_MAX;
-    // Fiber tangent, its length the table level + 1, 0 off hair
-    __extern_cpp public float3 hair = float3(0.0f);
-#endif
 }
 
 [ForceInline] public bool coverageUsed() {
@@ -709,14 +742,6 @@ func facingRay(surface: Surface, dir: float3) -> Surface {
 #endif
 }
 
-__extern_cpp public struct SkySample {
-    __extern_cpp public float3 dir;
-    __extern_cpp public float3 radiance;
-    // Radiance times the weighted BSDF of skyBSDF
-    __extern_cpp public float3 color;
-    __extern_cpp public uint random_state;
-}
-
 // Whether the path tracer considers dir to point towards the incorrect side of the surface
 func wrongSide(is_inside: bool, refracted: bool, dir: float3, geometry_n: float3) -> bool {
     return (is_inside == refracted) != (dot(dir, geometry_n) > 0.0f);
@@ -724,16 +749,6 @@ func wrongSide(is_inside: bool, refracted: bool, dir: float3, geometry_n: float3
 #endif
 
 #ifdef FK_RESTIR
-__target_intrinsic(wgsl, "Light")
-__target_intrinsic(cuda, "FKLight")
-__extern_cpp public struct Light {
-    __extern_cpp public float3 position;
-    __extern_cpp public float is_area_light;
-    __extern_cpp public float3 color;
-    __extern_cpp public float intensity;
-    __extern_cpp public float variance;
-}
-
 public interface IScene {
     public Hit traverseInstanceBVH(Ray ray, bool consider_point_lights, float max_len, bool surface, Hit left, bool viewed);
 #ifndef FK_FCPT_WALK
@@ -2519,10 +2534,6 @@ public func sameDomain(a: Domain, b: Domain) -> bool {
 #endif
 
 #ifdef FK_RESTIR_PASSES
-__extern_cpp public struct ShiftJob {
-    __extern_cpp public Domain dom;
-    __extern_cpp public Reservoir r;
-}
 #ifdef FK_FCPT_WALK
 // On cuda the consumer's own Reservoir, empty by value initialization
 [ForceInline] ShiftJob emptyShiftJob() {
