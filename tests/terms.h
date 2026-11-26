@@ -12,6 +12,11 @@ using TermsV = Vector<float, 3>;
 using TermsV2 = Vector<float, 2>;
 using TermsM = Material;
 #endif
+// sampleBSDF with its facets drawn from random_init, as the walk draws a vertex's
+TERMS SampleBSDF sampleBSDF(TermsV in_dir, TermsV n, TermsM m, float eta_i, float eta_o, unsigned random_init,
+    TermsV2 screen_space) {
+    return sampleBSDF(in_dir, n, m, eta_i, eta_o, drawFacets(in_dir, n, m, random_init), random_init, screen_space);
+}
 TERMS SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, TermsM m, float eta_i, float eta_o,
     unsigned lobe, unsigned random_init) {
     const TermsV v = negate_0(in_dir);
@@ -24,11 +29,11 @@ TERMS SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, TermsM m, f
     const TermsV coat_series = coatSeries(coat_frame, m);
     TermsV h = reflectedHalf(in_dir, out_dir);
     if (lobe == 1) h = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
-    // The coat lobe's microfacet the reflective one over sampleBSDF's, the base lobes' sampleBSDF's coat's
-    const TermsV coat_h = lobe == 5 ? h : coatHalf(v, coat_frame, random_init);
-    if (lobe == 0 || lobe == 5 || lobe == 6) h = sampledHalf(v, n_i, alpha, frame, random_init);
-    const Weights w = lobeWeights(in_dir, v, n_i, h, coat_h, frame, sheen_profile, coat_frame, coat_series, m,
-        eta_i, eta_o);
+    const Facets facets = drawFacets(in_dir, n, m, random_init);
+    // The coat's own microfacet out_dir's reflective one, over the vertex's half vector
+    const TermsV coat_n = dot_0(facets.coat_h, facets.coat_h) > 0 ? reflectedHalf(in_dir, out_dir) : TermsV{};
+    const Weights w = lobeWeights(in_dir, v, n_i, facets.h, facets.coat_h, h, coat_n, frame, sheen_profile, coat_frame,
+        coat_series, m, eta_i, eta_o);
     float pdf;
     TermsV throughput;
     if (lobe == 0) {
@@ -38,7 +43,7 @@ TERMS SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, TermsM m, f
         pdf = refractPDF(dot_0(out_dir, h), vndfPDF(v, h, n_i, n_i_dot_v, alpha, frame, w.v_dot_h), w, eta_i, eta_o);
         throughput = refractBSDF(out_dir, n_i, alpha, frame, m, w);
     } else if (lobe == 5) {
-        pdf = coatPDF(v, coat_h, coat_frame, w);
+        pdf = coatPDF(v, coat_n, coat_frame, w);
         throughput = coatBSDF(w);
     } else if (lobe == 4) {
         pdf = sheenVelvetPDF(n_i_dot_l, n_i_dot_v, w);
@@ -62,6 +67,11 @@ TERMS TermsV faceBSDF(TermsV in_dir, TermsV out_dir, TermsV n, TermsV g_n, Terms
     unsigned random_state) {
     FixedArray<TermsV, 6> throughputs;
     FixedArray<float, 6> pdfs;
-    return BSDF(in_dir, out_dir, n, m, eta_i, eta_o, dot_0(g_n, negate_0(in_dir)) * dot_0(g_n, out_dir) <= 0,
-        random_state, &throughputs, &pdfs);
+    BSDF(in_dir, out_dir, n, m, eta_i, eta_o, dot_0(g_n, negate_0(in_dir)) * dot_0(g_n, out_dir) <= 0,
+        drawFacets(in_dir, n, m, random_state), &throughputs, &pdfs);
+    TermsV f = {};
+    for (unsigned i = 0; i < 6; i++) {
+        if (pdfs[i] > 0) f = f + throughputs[i] * TermsV(pdfs[i]);
+    }
+    return f;
 }

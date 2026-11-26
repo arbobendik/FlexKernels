@@ -185,11 +185,18 @@ void main(uint3 id: SV_DispatchThreadID, uint local: SV_GroupIndex, uint3 group:
     const Reservoir r = reservoirs[id.x];
     const float3 n = normalize(mix(r.dir, r.radiance, sign(r.w)));
     const Material material = Material(r.f, r.radiance, r.w, r.c, r.jac, 1.5f, r.dir);
-    const SampleBSDF sampled = sampleBSDF(r.dir, n, material, 1.0f, 1.5f, stream(r.seed, id.x), float2(0.0f));
+    const Facets facets = drawFacets(r.dir, n, material, stream(r.seed, id.x));
+    const SampleBSDF sampled = sampleBSDF(r.dir, n, material, 1.0f, 1.5f, facets, stream(r.seed, id.x), float2(0.0f));
     float3 throughputs[6];
     float pdfs[6];
-    const float3 connected = BSDF(r.dir, sampled.unit_direction, n, material, 1.0f, 1.5f,
-        dot(n, -r.dir) * dot(n, sampled.unit_direction) <= 0.0f, pcg(hash(r.path)).state, throughputs, pdfs);
+    BSDF(r.dir, sampled.unit_direction, n, material, 1.0f, 1.5f,
+        dot(n, -r.dir) * dot(n, sampled.unit_direction) <= 0.0f, facets, throughputs, pdfs);
+    var connected: float3 = float3(0.0f);
+    for (var i: uint = 0u; i < 6u; i++) {
+        if (pdfs[i] > 0.0f) {
+            connected += throughputs[i] * pdfs[i];
+        }
+    }
     Selection sel = {};
     offer(sel, withEnd(r, 1u, 2u, connected * smithG1(r.w, fresnel(r.c, 1.0f, 1.5f))),
         safeDivide(r.f, tangentToWorldNormalMap(r.radiance, float3x3(r.dir, r.f, n))));

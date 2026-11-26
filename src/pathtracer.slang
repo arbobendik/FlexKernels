@@ -5,10 +5,130 @@ public static const float PI = 3.141592653589793;
 public static const float MAX_SAFE_INTEGER_FOR_F32 = 8388607.0;
 public static const float BIAS = 0.0000152587890625;
 public static const float INV_PI = 0.3183098861837907;
+public static const float LEAST_NORMAL = 1.17549435e-38f;
+
+public static const uint LOBE_DIFFUSE = 0u;
+public static const uint LOBE_REFRACT = 1u;
+public static const uint LOBE_REFLECT = 2u;
+// 3 is the walk's LOBE_NONE of camera rays
+public static const uint LOBE_SHEEN_VELVET = 4u;
+public static const uint LOBE_COAT = 5u;
+public static const uint LOBE_TOON = 6u;
+
+__target_intrinsic(wgsl, "Material")
+__target_intrinsic(glsl, "Material")
+__target_intrinsic(cuda, "BSDFMaterial")
+__extern_cpp public struct Material {
+    __extern_cpp public float3 albedo;
+    __extern_cpp public float3 emissive;
+    __extern_cpp public float roughness;
+    __extern_cpp public float metallic;
+    __extern_cpp public float transmission;
+    __extern_cpp public float ior;
+    __extern_cpp public float3 absorption;
+    __extern_cpp public float3 specular_tint = float3(1.0f);
+    __extern_cpp public float specular_level = 1.0f;
+    __extern_cpp public float3 translucent = float3(0.0f);
+    __extern_cpp public float3 sheen = float3(0.0f);
+    __extern_cpp public float sheen_roughness = 0.5f;
+    __extern_cpp public float anisotropy = 0.0f;
+    __extern_cpp public float anisotropic_rotation = 0.0f;
+    __extern_cpp public float3 tangent = float3(0.0f);
+    // Velvet sheen lobe if 1
+    __extern_cpp public float velvet = 0.0f;
+#ifdef FK_TOON
+    // (w, w * Size, w * Smooth) of a Toon BSDF taking weight |w|, glossy for w < 0
+    __extern_cpp public float3 toon = float3(0.0f);
+#endif
+    // Scale over Abbe number of the spread of the IOR by wavelength, 0 for none
+    __extern_cpp public float dispersion = 0.0f;
+    // Coat weight, roughness, ior and tint
+    __extern_cpp public float coat = 0.0f;
+    __extern_cpp public float coat_roughness = 0.03f;
+    __extern_cpp public float coat_ior = 1.5f;
+    __extern_cpp public float3 coat_tint = float3(1.0f);
+    // Coat normal, the shading normal where 0
+    __extern_cpp public float3 coat_normal = float3(0.0f);
+};
+
+__extern_cpp public struct RandomSphere {
+    __extern_cpp public uint state;
+    __extern_cpp public float3 value;
+};
+
+__extern_cpp public struct SampleBSDF {
+    __extern_cpp public float3 unit_direction;
+    __extern_cpp public float3 throughput;
+    __extern_cpp public uint random_state;
+    __extern_cpp public bool refracted;
+    __extern_cpp public uint lobe;
+    // Solid angle PDF, 0 for delta lobes
+    __extern_cpp public float pdf;
+}
+
+// sampleBSDF's choice among the lobes for one half vector: F, the weights and their shares, and what the leaves reuse
+__extern_cpp public struct Weights {
+    __extern_cpp public float v_dot_h;
+    __extern_cpp public float3 refracted;
+    __extern_cpp public float3 F;
+    __extern_cpp public float reflect_weight;
+    __extern_cpp public float3 diffuse_weight;
+    __extern_cpp public float3 refract_weight;
+    __extern_cpp public float p_diffuse;
+    __extern_cpp public float p_reflect;
+    __extern_cpp public float p_refract;
+    __extern_cpp public float p_sheen_velvet;
+    __extern_cpp public float p_toon;
+    __extern_cpp public float3 sheen;
+    __extern_cpp public float3 toon;
+    __extern_cpp public float3 coat;
+    __extern_cpp public float p_coat;
+}
+
+// A vertex's facets, drawn once from its random_state for sampleBSDF and every BSDF toward its lights: the VNDF's
+// half vector h and the coat's microfacet coat_h
+__extern_cpp public struct Facets {
+    __extern_cpp public float3 h;
+    __extern_cpp public float3 coat_h;
+}
+
+// Tangent and roughness along tangent and bitangent, 0 when isotropic
+__extern_cpp public struct AnisotropicFrame {
+    __extern_cpp public float3 tangent;
+    __extern_cpp public float2 alphas;
+}
+
+// The coat's values at a vertex: its normal on n's side (the shading normal where coat_normal is 0), alpha_c =
+// coat_roughness^2 and its index max(coat_ior, 1.01); zero without coat
+__extern_cpp public struct CoatFrame {
+    __extern_cpp public float3 normal;
+    __extern_cpp public float alpha;
+    __extern_cpp public float ior;
+}
+
+// The sheen's values at a vertex: on, and its albedo by the view, exp(bilinear SHEEN_ALBEDO), bilinear VELVET_ALBEDO
+// for velvet; zero without sheen
+__extern_cpp public struct SheenProfile {
+    __extern_cpp public bool on;
+    __extern_cpp public float albedo;
+}
+
+#ifdef FK_TOON
+// The toon's values at a vertex: glossy, a, s, b, K or W, P(theta_v) and the axis R or n
+__extern_cpp public struct ToonProfile {
+    __extern_cpp public bool glossy;
+    __extern_cpp public float a;
+    __extern_cpp public float s;
+    __extern_cpp public float b;
+    __extern_cpp public float norm;
+    __extern_cpp public float view;
+    __extern_cpp public float3 axis;
+}
+#endif
+
 // SHEEN_ALBEDO nodes per side, least sheen_roughness
 public static const uint SHEEN_NODES = 24u;
 public static const float SHEEN_LEAST = 0.05f;
-public static const float LEAST_NORMAL = 1.17549435e-38f;
 // albedo = integral f * n_dot_l dl over the hemisphere, f of the sheen lobe
 // SHEEN_ALBEDO[i * SHEEN_NODES + j] = ln(albedo) at
 // sqrt(n_dot_v) = i / (SHEEN_NODES - 1)
@@ -65,23 +185,6 @@ public static const float SHEEN_ALBEDO[576] = {
     -2.7388f, -2.6148f, -2.5070f, -2.4127f, -2.3296f, -2.2562f, -2.1909f, -2.1327f, -2.0805f, -2.0335f, -1.9905f, -1.9537f
 };
 
-public float3 normalize(float3 a) {
-    __target_switch {
-    case cuda: __intrinsic_asm "(($0) * make_float3(rnorm3df(($0).x, ($0).y, ($0).z)))";
-    case wgsl: __intrinsic_asm "normalize($0)";
-    default: return a * (1.0f / sqrt(dot(a, a)));
-    }
-}
-public float inverseSqrt(float x) {
-    __target_switch {
-    case cuda: __intrinsic_asm "rsqrtf($0)";
-    case wgsl: __intrinsic_asm "inverseSqrt($0)";
-    default: return 1.0f / sqrt(x);
-    }
-}
-[ForceInline] public float select(float f, float t, bool cond) { return select(cond, t, f); }
-[ForceInline] public float3 select(float3 f, float3 t, bool cond) { return select(cond, t, f); }
-[ForceInline] public float3 select(float3 f, float3 t, bool3 cond) { return select(cond, t, f); }
 // albedo = integral f * n_dot_l dl over the hemisphere, f of the velvet lobe
 // VELVET_ALBEDO[i * SHEEN_NODES + j] = albedo at
 // sqrt(n_dot_v) = i / (SHEEN_NODES - 1)
@@ -154,6 +257,82 @@ public static const float VELVET_ALBEDO[576] = {
     3.13075e-09f, 1.26481e-07f, 2.12952e-06f, 1.90777e-05f, 0.00010754f, 0.000428927f, 0.00131605f, 0.00330014f, 0.00707077f,
     0.0133791f, 0.0229194f, 0.0362238f, 0.0535936f, 0.0750723f, 0.100459f, 0.12935f, 0.161196f, 0.195364f,
 };
+
+// Fraunhofer d, F and C lines in um
+static const float LINE_D = 0.5875618f;
+static const float LINE_F = 0.4861327f;
+static const float LINE_C = 0.6562725f;
+
+// w_c(λ) = M xyz(λ) D65(λ) every 5 nm from 380 to 780 nm: CIE 1931 2 degree observer, illuminant D65 and M from XYZ to
+// linear Rec. 709, in 1 / um with integral w_c(λ) dλ = 1 per channel by trapezoids
+// => a white light, D65, integrates to (1, 1, 1)
+public static const float WAVELENGTH_WEIGHTS[243] = {
+    0.0054747f, -0.0046569f, 0.032575f, 0.0093464f, -0.0079637f, 0.055773f, 0.018461f, -0.015794f, 0.11073f,
+    0.041641f, -0.035775f, 0.25139f, 0.093493f, -0.080718f, 0.56742f, 0.15851f, -0.13765f, 0.97019f,
+    0.30943f, -0.27083f, 1.9174f, 0.55218f, -0.48754f, 3.4689f, 0.95017f, -0.84802f, 6.0944f,
+    1.4211f, -1.2893f, 9.452f, 1.7341f, -1.6063f, 12.128f, 2.0803f, -1.9881f, 15.687f,
+    2.206f, -2.2012f, 18.477f, 2.0304f, -2.177f, 19.927f, 1.6343f, -2.0034f, 20.869f,
+    0.99411f, -1.6263f, 20.578f, 0.20011f, -1.1141f, 19.721f, -0.6796f, -0.45403f, 17.776f,
+    -1.6168f, 0.3786f, 14.715f, -2.5341f, 1.2754f, 11.865f, -3.3908f, 2.2146f, 9.1767f,
+    -4.0375f, 3.0522f, 6.5951f, -4.613f, 3.8978f, 4.6459f, -5.4304f, 5.0121f, 3.3199f,
+    -6.3777f, 6.3381f, 2.297f, -7.4414f, 7.9174f, 1.4539f, -8.3858f, 9.6011f, 0.66466f,
+    -9.0168f, 11.24f, -0.044036f, -9.1775f, 12.632f, -0.58127f, -8.9755f, 13.915f, -0.9573f,
+    -8.2529f, 14.862f, -1.2443f, -6.9213f, 15.039f, -1.4307f, -5.2917f, 14.909f, -1.5515f,
+    -3.4322f, 14.705f, -1.6357f, -1.2719f, 14.244f, -1.6703f, 1.1517f, 13.322f, -1.6362f,
+    3.7389f, 12.212f, -1.5692f, 6.4359f, 10.947f, -1.4773f, 9.1644f, 9.5477f, -1.364f,
+    12.02f, 8.188f, -1.2545f, 14.787f, 6.7443f, -1.1311f, 16.723f, 5.0878f, -0.96561f,
+    18.143f, 3.5702f, -0.80726f, 19.919f, 2.3627f, -0.69273f, 21.055f, 1.3137f, -0.58598f,
+    21.39f, 0.4239f, -0.48298f, 20.993f, -0.23857f, -0.39412f, 19.822f, -0.68663f, -0.31502f,
+    18.12f, -0.94125f, -0.24891f, 15.709f, -1.0202f, -0.19076f, 13.198f, -0.9892f, -0.14401f,
+    11.24f, -0.93347f, -0.11133f, 9.3665f, -0.83821f, -0.085241f, 7.4125f, -0.70064f, -0.062832f,
+    5.7123f, -0.56079f, -0.045867f, 4.4228f, -0.44653f, -0.033966f, 3.3449f, -0.34457f, -0.024825f,
+    2.4931f, -0.26018f, -0.018081f, 1.8224f, -0.19216f, -0.01297f, 1.295f, -0.13767f, -0.0090757f,
+    0.92929f, -0.099564f, -0.0064162f, 0.61836f, -0.066713f, -0.0042115f, 0.40212f, -0.043546f, -0.0027183f,
+    0.28445f, -0.030872f, -0.0019144f, 0.20673f, -0.022461f, -0.0013883f, 0.15044f, -0.016345f, -0.0010103f,
+    0.10942f, -0.011887f, -0.00073479f, 0.070997f, -0.0077135f, -0.00047679f, 0.045395f, -0.0049319f, -0.00030485f,
+    0.034241f, -0.0037201f, -0.00022995f, 0.025576f, -0.0027787f, -0.00017176f, 0.018422f, -0.0020014f, -0.00012371f,
+    0.013169f, -0.0014308f, -8.8439e-5f, 0.0083889f, -0.00091141f, -5.6337e-5f, 0.0053708f, -0.00058351f, -3.6068e-5f,
+    0.0032828f, -0.00035666f, -2.2046e-5f, 0.0019601f, -0.00021296f, -1.3163e-5f, 0.0016894f, -0.00018354f, -1.1345e-5f,
+    0.0014105f, -0.00015325f, -9.4725e-6f, 0.00097124f, -0.00010552f, -6.5224e-6f, 0.00066868f, -7.2649e-5f, -4.4906e-6f
+};
+// CDF of p(λ) at the nodes, p constant per bin with mass the mean of |w_r| + |w_g| + |w_b| at the bin's ends
+public static const float WAVELENGTH_CDF[81] = {
+    0.0f, 6.5109e-5f, 0.00018773f, 0.00045414f, 0.0010561f, 0.0021851f, 0.0043017f, 0.0082413f, 0.015215f,
+    0.026492f, 0.042028f, 0.061835f, 0.085811f, 0.11225f, 0.1396f, 0.16643f, 0.1913f, 0.21376f,
+    0.23379f, 0.252f, 0.26913f, 0.28513f, 0.30023f, 0.31536f, 0.33154f, 0.34944f, 0.36938f,
+    0.39128f, 0.41529f, 0.44129f, 0.4684f, 0.49524f, 0.52063f, 0.54398f, 0.56476f, 0.58348f,
+    0.60239f, 0.62285f, 0.64475f, 0.6681f, 0.69291f, 0.71846f, 0.74394f, 0.76952f, 0.79534f,
+    0.82079f, 0.84549f, 0.86935f, 0.89192f, 0.91229f, 0.92987f, 0.94483f, 0.95753f, 0.96791f,
+    0.97606f, 0.98237f, 0.98722f, 0.99086f, 0.99356f, 0.99551f, 0.99691f, 0.99788f, 0.99852f,
+    0.99895f, 0.99925f, 0.99948f, 0.99964f, 0.99975f, 0.99983f, 0.99988f, 0.99991f, 0.99994f,
+    0.99996f, 0.99998f, 0.99999f, 0.99999f, 0.99999f, 1.0f, 1.0f, 1.0f, 1.0f
+};
+static const float WAVELENGTH_LEAST = 0.38f;
+static const float WAVELENGTH_STEP = 0.005f;
+
+#ifdef FK_HAIR
+// HAIR_WIDTHS and HAIR_TILTS scale the R lobe's width w and the cuticle tilt alpha per lobe
+static const float HAIR_WIDTHS[4] = {1.0f, 0.5f, 2.0f, 2.0f};
+static const float HAIR_TILTS[4] = {-2.0f, 1.0f, 4.0f, 0.0f};
+#endif
+
+public float3 normalize(float3 a) {
+    __target_switch {
+    case cuda: __intrinsic_asm "(($0) * make_float3(rnorm3df(($0).x, ($0).y, ($0).z)))";
+    case wgsl: __intrinsic_asm "normalize($0)";
+    default: return a * (1.0f / sqrt(dot(a, a)));
+    }
+}
+public float inverseSqrt(float x) {
+    __target_switch {
+    case cuda: __intrinsic_asm "rsqrtf($0)";
+    case wgsl: __intrinsic_asm "inverseSqrt($0)";
+    default: return 1.0f / sqrt(x);
+    }
+}
+[ForceInline] public float select(float f, float t, bool cond) { return select(cond, t, f); }
+[ForceInline] public float3 select(float3 f, float3 t, bool cond) { return select(cond, t, f); }
+[ForceInline] public float3 select(float3 f, float3 t, bool3 cond) { return select(cond, t, f); }
 [ForceInline] public bool sheenUsed() {
     __target_switch {
     case glsl: __intrinsic_asm "(SHEEN)";
@@ -209,47 +388,6 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     }
 }
 
-__target_intrinsic(wgsl, "Material")
-__target_intrinsic(glsl, "Material")
-__target_intrinsic(cuda, "BSDFMaterial")
-__extern_cpp public struct Material {
-    __extern_cpp public float3 albedo;
-    __extern_cpp public float3 emissive;
-    __extern_cpp public float roughness;
-    __extern_cpp public float metallic;
-    __extern_cpp public float transmission;
-    __extern_cpp public float ior;
-    __extern_cpp public float3 absorption;
-    __extern_cpp public float3 specular_tint = float3(1.0f);
-    __extern_cpp public float specular_level = 1.0f;
-    __extern_cpp public float3 translucent = float3(0.0f);
-    __extern_cpp public float3 sheen = float3(0.0f);
-    __extern_cpp public float sheen_roughness = 0.5f;
-    __extern_cpp public float anisotropy = 0.0f;
-    __extern_cpp public float anisotropic_rotation = 0.0f;
-    __extern_cpp public float3 tangent = float3(0.0f);
-    // Velvet sheen lobe if 1
-    __extern_cpp public float velvet = 0.0f;
-#ifdef FK_TOON
-    // (w, w * Size, w * Smooth) of a Toon BSDF taking weight |w|, glossy for w < 0
-    __extern_cpp public float3 toon = float3(0.0f);
-#endif
-    // Scale over Abbe number of the spread of the IOR by wavelength, 0 for none
-    __extern_cpp public float dispersion = 0.0f;
-    // Coat weight, roughness, ior and tint
-    __extern_cpp public float coat = 0.0f;
-    __extern_cpp public float coat_roughness = 0.03f;
-    __extern_cpp public float coat_ior = 1.5f;
-    __extern_cpp public float3 coat_tint = float3(1.0f);
-    // Coat normal, the shading normal where 0
-    __extern_cpp public float3 coat_normal = float3(0.0f);
-};
-
-__extern_cpp public struct RandomSphere {
-    __extern_cpp public uint state;
-    __extern_cpp public float3 value;
-};
-
 [CudaDeviceExport] public func rgb_to_greyscale(rgb: float3) -> float {
     return dot(rgb, float3(0.299, 0.587, 0.114));
 }
@@ -295,7 +433,8 @@ __extern_cpp public struct RandomSphere {
     // Total internal reflection
     var kr: float = 1.0f;
     if (sin_psi < 1.0f) {
-        let cos_psi = sqrt(max(0.0f, 1.0f - sin_psi * sin_psi));
+        // Index-matched: no bend, so cos_psi is cos_theta exactly, lest rounding near grazing reflect
+        let cos_psi = select(sqrt(max(0.0f, 1.0f - sin_psi * sin_psi)), cos_theta, eta_i == eta_o);
         // cos = abs(cosi);
         let Rs = ((eta_o * cos_theta) - (eta_i * cos_psi)) / ((eta_o * cos_theta) + (eta_i * cos_psi));
         let Rp = ((eta_i * cos_theta) - (eta_o * cos_psi)) / ((eta_i * cos_theta) + (eta_o * cos_psi));
@@ -412,7 +551,7 @@ __extern_cpp public struct RandomSphere {
 // as throughput = BSDF_lobe * n_dot_l / PDF_lobe
 // => BSDF * n_dot_l = sum throughput * PDF_lobe
 [CudaDeviceExport] public func BSDF(in_dir: float3, out_dir: float3, n: float3, material: Material, eta_i: float,
-    eta_o: float, refracted: bool, random_state: uint, out throughputs: float3[6], out pdfs: float[6]) -> float3 {
+    eta_o: float, refracted: bool, facets: Facets, out throughputs: float3[6], out pdfs: float[6]) {
     let v: float3 = negate(in_dir);
     let n_dot_v: float = dot(n, v);
     let n_i: float3 = n * sign(n_dot_v);
@@ -429,108 +568,46 @@ __extern_cpp public struct RandomSphere {
 #else
     let toon: bool = false;
 #endif
-    let coated: bool = coat_frame.ior > 0.0f;
-    for (var i: uint = 0u; i < 6u; i++) {
-        throughputs[i] = float3(0.0f);
-        pdfs[i] = 0.0f;
-    }
+    // The coat where the vertex drew a microfacet of it
+    let coated: bool = dot(facets.coat_h, facets.coat_h) > 0.0f;
     // The lobes reaching out_dir
     let diffuse_on: bool = (translucent && through) == refracted;
     let toon_on: bool = !refracted && toon;
     let coat_on: bool = !refracted && coated;
-    // Coat: sampleBSDF's coat microfacet over the base lobes
-    let coat_h: float3 = coatHalf(v, coat_frame, random_state);
-    // sampleBSDF's half vector: the diffuse, toon and coat lobes'
-    var sampled_n: float3 = float3(0.0f);
-    if (diffuse_on || toon_on || coat_on) {
-        sampled_n = sampledHalf(v, n_i, alpha, frame, random_state);
-    }
-    // Diffuse
-    if (diffuse_on || toon_on) {
-        let w: Weights = lobeWeights(in_dir, v, n_i, sampled_n, coat_h, frame, sheen_profile, coat_frame, coat_series,
-            material, eta_i, eta_o);
-        if (diffuse_on) {
-            pdfs[0] = diffusePDF(n_i_dot_l, abs(n_dot_v), material, w);
-            throughputs[0] = diffuseBSDF(out_dir, n_i, material, w);
-        }
-#ifdef FK_TOON
-        // Toon
-        if (toon_on) {
-            let profile: ToonProfile = toonProfile(v, n_i, material);
-            pdfs[4] = toonPDF(out_dir, n_i, profile, w);
-            throughputs[4] = toonBSDF(out_dir, n_i, profile, w);
-        }
-#endif
-    }
-    // The VNDF's density of the half vector for the refraction and the reflection alone
-    if (refracted) {
-        // Refraction
-        let ggx_n: float3 = refractedHalf(in_dir, out_dir, n, eta_i, eta_o);
-        let w: Weights = lobeWeights(in_dir, v, n_i, ggx_n, coat_h, frame, sheen_profile, coat_frame, coat_series,
-            material, eta_i, eta_o);
-        pdfs[1] = refractPDF(dot(out_dir, ggx_n), vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, w.v_dot_h), w,
-            eta_i, eta_o);
-        throughputs[1] = refractBSDF(out_dir, n_i, alpha, frame, material, w);
-    } else {
-        // Reflection and sheen at out_dir's reflective half vector
-        let ggx_n: float3 = reflectedHalf(in_dir, out_dir);
-        let w: Weights = lobeWeights(in_dir, v, n_i, ggx_n, coat_h, frame, sheen_profile, coat_frame, coat_series,
-            material, eta_i, eta_o);
-        pdfs[2] = reflectPDF(vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, w.v_dot_h), w);
-        throughputs[2] = reflectBSDF(out_dir, n_i, alpha, frame, w);
-        pdfs[3] = sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), w);
-        throughputs[3] = sheenVelvetBSDF(out_dir, v, n_i, material, w);
-        // Coat: its own microfacet out_dir's reflective one, over sampleBSDF's half vector
-        if (coat_on) {
-            let coat_w: Weights = lobeWeights(in_dir, v, n_i, sampled_n, ggx_n, frame, sheen_profile, coat_frame,
-                coat_series, material, eta_i, eta_o);
-            pdfs[5] = coatPDF(v, ggx_n, coat_frame, coat_w);
-            throughputs[5] = coatBSDF(coat_w);
-        }
-    }
+    // out_dir's half vector, facing n_i: refractive half-vector (eq. 16) refracted, else reflective half-vector
+    let h_t: float3 = normalize(negate(eta_i * v + eta_o * out_dir));
+    let ggx_n: float3 = select(normalize(v + out_dir), h_t * sign(dot(h_t, n_i)), refracted);
+    // Coat: its own microfacet out_dir's reflective one, over the vertex's half vector
+    let coat_n: float3 = select(float3(0.0f), normalize(v + out_dir), coat_on);
+    let w: Weights = lobeWeights(in_dir, v, n_i, facets.h, facets.coat_h, ggx_n, coat_n, frame, sheen_profile,
+        coat_frame, coat_series, material, eta_i, eta_o);
     // Directions a lobe can't sample carry no throughput
-    var f: float3 = float3(0.0f);
-    for (var i: uint = 0u; i < 6u; i++) {
-        if (pdfs[i] > 0.0f) {
-            f += throughputs[i] * pdfs[i];
-        }
-    }
-    return f;
-}
-
-__extern_cpp public struct SampleBSDF {
-    __extern_cpp public float3 unit_direction;
-    __extern_cpp public float3 throughput;
-    __extern_cpp public uint random_state;
-    __extern_cpp public bool refracted;
-    __extern_cpp public uint lobe;
-    // Solid angle PDF, 0 for delta lobes
-    __extern_cpp public float pdf;
-}
-
-// sampleBSDF's choice among the lobes for one half vector: F, the weights and their shares, and what the leaves reuse
-__extern_cpp public struct Weights {
-    __extern_cpp public float v_dot_h;
-    __extern_cpp public float3 refracted;
-    __extern_cpp public float3 F;
-    __extern_cpp public float reflect_weight;
-    __extern_cpp public float3 diffuse_weight;
-    __extern_cpp public float3 refract_weight;
-    __extern_cpp public float p_diffuse;
-    __extern_cpp public float p_reflect;
-    __extern_cpp public float p_refract;
-    __extern_cpp public float p_sheen_velvet;
-    __extern_cpp public float p_toon;
-    __extern_cpp public float3 sheen;
-    __extern_cpp public float3 toon;
-    __extern_cpp public float3 coat;
-    __extern_cpp public float p_coat;
-}
-
-// Tangent and roughness along tangent and bitangent, 0 when isotropic
-__extern_cpp public struct AnisotropicFrame {
-    __extern_cpp public float3 tangent;
-    __extern_cpp public float2 alphas;
+    // Diffuse
+    pdfs[0] = select(0.0f, diffusePDF(n_i_dot_l, abs(n_dot_v), material, w), diffuse_on);
+    throughputs[0] = select(float3(0.0f), diffuseBSDF(out_dir, n_i, material, w), diffuse_on);
+    // The VNDF's density of the half vector for the refraction and the reflection alone
+    let pdf_h: float = vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, w.v_dot_h);
+    // Refraction
+    pdfs[1] = select(0.0f, refractPDF(dot(out_dir, ggx_n), pdf_h, w, eta_i, eta_o), refracted);
+    throughputs[1] = select(float3(0.0f), refractBSDF(out_dir, n_i, alpha, frame, material, w), refracted);
+    // Reflection at out_dir's reflective half vector
+    pdfs[2] = select(0.0f, reflectPDF(pdf_h, w), !refracted);
+    throughputs[2] = select(float3(0.0f), reflectBSDF(out_dir, n_i, alpha, frame, w), !refracted);
+    // Sheen
+    pdfs[3] = select(0.0f, sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), w), !refracted);
+    throughputs[3] = select(float3(0.0f), sheenVelvetBSDF(out_dir, v, n_i, material, w), !refracted);
+    // Toon
+#ifdef FK_TOON
+    let profile: ToonProfile = toonProfile(v, n_i, material);
+    pdfs[4] = select(0.0f, toonPDF(out_dir, n_i, profile, w), toon_on);
+    throughputs[4] = select(float3(0.0f), toonBSDF(out_dir, n_i, profile, w), toon_on);
+#else
+    pdfs[4] = 0.0f;
+    throughputs[4] = float3(0.0f);
+#endif
+    // Coat
+    pdfs[5] = select(0.0f, coatPDF(v, coat_n, coat_frame, w), coat_on);
+    throughputs[5] = select(float3(0.0f), coatBSDF(w), coat_on);
 }
 
 // Half vector from the VNDF, an anisotropic material's in its frame
@@ -555,16 +632,6 @@ __extern_cpp public struct AnisotropicFrame {
 }
 
 #ifdef FK_TOON
-// The toon's values at a vertex: glossy, a, s, b, K or W, P(theta_v) and the axis R or n
-__extern_cpp public struct ToonProfile {
-    __extern_cpp public bool glossy;
-    __extern_cpp public float a;
-    __extern_cpp public float s;
-    __extern_cpp public float b;
-    __extern_cpp public float norm;
-    __extern_cpp public float view;
-    __extern_cpp public float3 axis;
-}
 // Toon of mark (w, w * Size, w * Smooth), glossy for w < 0
 // a = Size * PI / 2, s = Smooth * PI / 2, b = min(a + s, PI / 2)
 // K = 2 * PI * G(b), W = 2 * PI * H(b) glossy, R = 2 * n_dot_v * n - v
@@ -602,13 +669,6 @@ __extern_cpp public struct ToonProfile {
 }
 #endif
 
-// The coat's values at a vertex: its normal on n's side (the shading normal where coat_normal is 0), alpha_c =
-// coat_roughness^2 and its index max(coat_ior, 1.01); zero without coat
-__extern_cpp public struct CoatFrame {
-    __extern_cpp public float3 normal;
-    __extern_cpp public float alpha;
-    __extern_cpp public float ior;
-}
 [CudaDeviceExport] public func coatFrame(material: Material, n: float3) -> CoatFrame {
     var frame: CoatFrame = CoatFrame(float3(0.0f), 0.0f, 0.0f);
     if (material.coat > 0.0f) {
@@ -620,16 +680,78 @@ __extern_cpp public struct CoatFrame {
     return frame;
 }
 
-// The weights and shares of the lobes for one half vector ggx_n at a vertex
-// coat_h: the coat's microfacet over them, 0 without coat
-[CudaDeviceExport] public func lobeWeights(in_dir: float3, v: float3, n_i: float3, ggx_n: float3, coat_h: float3,
-    frame: AnisotropicFrame, sheen_profile: SheenProfile, coat_frame: CoatFrame, coat_series: float3,
-    material: Material, eta_i: float, eta_o: float) -> Weights {
+// The lobes' weights and shares of one half vector ggx_n under one coat microfacet coat_h, over lobeWeights' terms
+// free of both
+[ForceInline] func facetWeights(in_dir: float3, v: float3, ggx_n: float3, coat_h: float3, coat_frame: CoatFrame,
+    coat_series: float3, material: Material, eta_i: float, eta_o: float, f0: float, eta_level: float, scale: float3,
+    sheen_component: float, toon_component: float, rebounce: float3, sheen: float3, toon: float3) -> Weights {
     // Calculate shared half vector dot products
     let v_dot_h: float = dot(ggx_n, v);
     // Try refraction through the properly oriented half vector
     let eta: float = eta_i / eta_o;
     let refracted: float3 = normalize(refract(in_dir, ggx_n, eta));
+    // F_dielectric = specular_tint * F0 + (1 - specular_tint * F0) * (F(eta_level) - F0) / (1 - F0)
+    // F_dielectric = 1 past total internal reflection: eta_i^2 * (1 - v_dot_h^2) >= eta_o^2
+    let F_level: float = fresnel(abs(v_dot_h), eta_i > eta_o ? eta_level : 1.0f, eta_i > eta_o ? 1.0f : eta_level);
+    let total: bool = eta_i * eta_i * (1.0f - v_dot_h * v_dot_h) >= eta_o * eta_o;
+    let F_dielectric: float3 = total ? float3(1.0f) : material.specular_tint * f0 + (1.0f - material.specular_tint * f0)
+        * (F_level - f0) / (1.0f - f0);
+    // Coat: under the sheen, over the base lobes at coat_h
+    // f_c: coatFresnel's, series: coatSeries', 1 behind
+    // => coat = material.coat * f_c, behind * coat_tint^2 crossing the coat in and out
+    // => up = mix(1, (1 - f_c) * series, material.coat) on the lobes leaving upward
+    // => through = mix(1, (1 - f_c) * coat_tint, material.coat) on the refracted lobe crossing the coat once
+    var coat: float3 = float3(0.0f);
+    var up: float3 = float3(1.0f);
+    var through: float3 = float3(1.0f);
+    if (dot(coat_h, coat_h) > 0.0f) {
+        let behind: bool = eta_i > eta_o;
+        let f_c: float = coatFresnel(in_dir, v, coat_h, coat_frame, eta_i, behind);
+        coat = material.coat * f_c * select(float3(1.0f), material.coat_tint * material.coat_tint, behind);
+        up = mix(float3(1.0f), (1.0f - f_c) * select(float3(1.0f), coat_series, !behind), material.coat);
+        through = mix(float3(1.0f), (1.0f - f_c) * material.coat_tint, material.coat);
+    }
+    let coat_weight: float3 = scale * coat;
+    let coat_component: float = rgb_to_greyscale(coat_weight);
+    var F: float3 = mix(F_dielectric, material.albedo * rebounce, material.metallic) * scale * up;
+    let F_greyscale: float = rgb_to_greyscale(F);
+    // BSDF weights (these are artistic choices to balance the lobes)
+    let reflect_weight: float = 1.0f;
+    let diffuse_weight: float3 = (1.0f - material.transmission) * (1.0f - material.metallic) * (1.0f - F_dielectric)
+        * scale * up;
+    let refract_weight: float3 = material.transmission * (1.0f - material.metallic) * (1.0f - F_dielectric) * scale
+        * through;
+    // Add fresnel term for improved sampling performance
+    let reflect_component: float = max(reflect_weight * F_greyscale, 0.0f);
+    let diffuse_component: float = max(rgb_to_greyscale(diffuse_weight), 0.0f);
+    let refract_component: float = max(rgb_to_greyscale(refract_weight) * sign(length(refracted)), 0.0f);
+    // p_sheen_velvet = min(sheen_component, 1), 1 without base lobes
+    // p_lobe = lobe_component / base_component * (1 - p_sheen_velvet)
+#ifdef FK_TOON
+    let base_component: float = reflect_component + diffuse_component + refract_component + toon_component
+        + coat_component;
+#else
+    let base_component: float = reflect_component + diffuse_component + refract_component + coat_component;
+#endif
+    let p_sheen_velvet: float = select(min(sheen_component, 1.0f), 1.0f,
+        sheen_component > 0.0f && !(base_component > 0.0f));
+    let base_component_inv: float = (1.0f - p_sheen_velvet) / max(base_component, BIAS);
+    let p_diffuse: float = diffuse_component * base_component_inv;
+    let p_reflect: float = reflect_component * base_component_inv;
+    let p_refract: float = refract_component * base_component_inv;
+    return Weights(v_dot_h, refracted, F, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect,
+        p_refract, p_sheen_velvet, toon_component * base_component_inv, sheen, toon, coat_weight,
+        coat_component * base_component_inv);
+}
+
+// The weights and shares of the lobes at a vertex, each by the facets reaching out_dir through it
+// h, coat_h: sampleBSDF's half vector and coat microfacet, the diffuse's, the sheen's and the toon's
+// ggx_n: out_dir's half vector under coat_h, the refraction's and the reflection's
+// coat_n: out_dir's coat microfacet over h, the coat's; coat_h and coat_n 0 without coat
+// sampleBSDF, before its lobe: ggx_n = h, coat_n = coat_h
+[CudaDeviceExport] public func lobeWeights(in_dir: float3, v: float3, n_i: float3, h: float3, coat_h: float3,
+    ggx_n: float3, coat_n: float3, frame: AnisotropicFrame, sheen_profile: SheenProfile, coat_frame: CoatFrame,
+    coat_series: float3, material: Material, eta_i: float, eta_o: float) -> Weights {
     // r = sqrt(specular_level) * |eta_i - eta_o| / (eta_i + eta_o)
     // F0 = r^2
     // F0 = ((eta_level - 1) / (eta_level + 1))^2
@@ -637,12 +759,6 @@ __extern_cpp public struct CoatFrame {
     let r: float = min(sqrt(material.specular_level) * abs(eta_i - eta_o) / (eta_i + eta_o), 1.0f - BIAS);
     let f0: float = r * r;
     let eta_level: float = (1.0f + r) / (1.0f - r);
-    // F_dielectric = specular_tint * F0 + (1 - specular_tint * F0) * (F(eta_level) - F0) / (1 - F0)
-    // F_dielectric = 1 past total internal reflection: eta_i^2 * (1 - v_dot_h^2) >= eta_o^2
-    let F_level: float = fresnel(abs(v_dot_h), eta_i > eta_o ? eta_level : 1.0f, eta_i > eta_o ? 1.0f : eta_level);
-    let total: bool = eta_i * eta_i * (1.0f - v_dot_h * v_dot_h) >= eta_o * eta_o;
-    let F_dielectric: float3 = total ? float3(1.0f) : material.specular_tint * f0 + (1.0f - material.specular_tint * f0)
-        * (F_level - f0) / (1.0f - f0);
     // Sheen: albedo, sheen_profile's
     // BSDF = sheen * f
     // sheen = material.sheen / max(albedo, 1)
@@ -694,52 +810,22 @@ __extern_cpp public struct CoatFrame {
             + smoother * smoother * smoother * smoother * 0.272297f, 1.0f);
         rebounce = min(1.0f / (1.0f - material.albedo * lost), float3(1.0f / max(return_up, BIAS)));
     }
-    // Coat: under the sheen, over the base lobes at coat_h
-    // f_c: coatFresnel's, series: coatSeries', 1 behind
-    // => coat = material.coat * f_c, behind * coat_tint^2 crossing the coat in and out
-    // => up = mix(1, (1 - f_c) * series, material.coat) on the lobes leaving upward
-    // => through = mix(1, (1 - f_c) * coat_tint, material.coat) on the refracted lobe crossing the coat once
-    var coat: float3 = float3(0.0f);
-    var up: float3 = float3(1.0f);
-    var through: float3 = float3(1.0f);
-    if (dot(coat_h, coat_h) > 0.0f) {
-        let behind: bool = eta_i > eta_o;
-        let f_c: float = coatFresnel(in_dir, v, coat_h, coat_frame, eta_i, behind);
-        coat = material.coat * f_c * select(float3(1.0f), material.coat_tint * material.coat_tint, behind);
-        up = mix(float3(1.0f), (1.0f - f_c) * select(float3(1.0f), coat_series, !behind), material.coat);
-        through = mix(float3(1.0f), (1.0f - f_c) * material.coat_tint, material.coat);
+    let drawn: Weights = facetWeights(in_dir, v, h, coat_h, coat_frame, coat_series, material, eta_i, eta_o, f0,
+        eta_level, scale, sheen_component, toon_component, rebounce, sheen, toon);
+    // The other pairs where they differ from it: sampleBSDF's all alike, the coat's alike without coat
+    var leaving: Weights = drawn;
+    if (any(ggx_n != h)) {
+        leaving = facetWeights(in_dir, v, ggx_n, coat_h, coat_frame, coat_series, material, eta_i, eta_o, f0, eta_level,
+            scale, sheen_component, toon_component, rebounce, sheen, toon);
     }
-    let coat_weight: float3 = scale * coat;
-    let coat_component: float = rgb_to_greyscale(coat_weight);
-    var F: float3 = mix(F_dielectric, material.albedo * rebounce, material.metallic) * scale * up;
-    let F_greyscale: float = rgb_to_greyscale(F);
-    // BSDF weights (these are artistic choices to balance the lobes)
-    let reflect_weight: float = 1.0f;
-    let diffuse_weight: float3 = (1.0f - material.transmission) * (1.0f - material.metallic) * (1.0f - F_dielectric)
-        * scale * up;
-    let refract_weight: float3 = material.transmission * (1.0f - material.metallic) * (1.0f - F_dielectric) * scale
-        * through;
-    // Add fresnel term for improved sampling performance
-    let reflect_component: float = max(reflect_weight * F_greyscale, 0.0f);
-    let diffuse_component: float = max(rgb_to_greyscale(diffuse_weight), 0.0f);
-    let refract_component: float = max(rgb_to_greyscale(refract_weight) * sign(length(refracted)), 0.0f);
-    // p_sheen_velvet = min(sheen_component, 1), 1 without base lobes
-    // p_lobe = lobe_component / base_component * (1 - p_sheen_velvet)
-#ifdef FK_TOON
-    let base_component: float = reflect_component + diffuse_component + refract_component + toon_component
-        + coat_component;
-#else
-    let base_component: float = reflect_component + diffuse_component + refract_component + coat_component;
-#endif
-    let p_sheen_velvet: float = select(min(sheen_component, 1.0f), 1.0f,
-        sheen_component > 0.0f && !(base_component > 0.0f));
-    let base_component_inv: float = (1.0f - p_sheen_velvet) / max(base_component, BIAS);
-    let p_diffuse: float = diffuse_component * base_component_inv;
-    let p_reflect: float = reflect_component * base_component_inv;
-    let p_refract: float = refract_component * base_component_inv;
-    return Weights(v_dot_h, refracted, F, reflect_weight, diffuse_weight, refract_weight, p_diffuse, p_reflect,
-        p_refract, p_sheen_velvet, toon_component * base_component_inv, sheen, toon, coat_weight,
-        coat_component * base_component_inv);
+    var coated: Weights = drawn;
+    if (any(coat_n != coat_h)) {
+        coated = facetWeights(in_dir, v, h, coat_n, coat_frame, coat_series, material, eta_i, eta_o, f0, eta_level,
+            scale, sheen_component, toon_component, rebounce, sheen, toon);
+    }
+    return Weights(leaving.v_dot_h, leaving.refracted, leaving.F, leaving.reflect_weight, drawn.diffuse_weight,
+        leaving.refract_weight, drawn.p_diffuse, leaving.p_reflect, leaving.p_refract, drawn.p_sheen_velvet, drawn.p_toon,
+        sheen, toon, coated.coat, coated.p_coat);
 }
 
 // translucent_share = greyscale(translucent) / (greyscale(albedo) + greyscale(translucent))
@@ -860,12 +946,6 @@ __extern_cpp public struct CoatFrame {
     return velvetUsed() && material.velvet > 0.0f;
 }
 
-// The sheen's values at a vertex: on, and its albedo by the view, exp(bilinear SHEEN_ALBEDO), bilinear VELVET_ALBEDO
-// for velvet; zero without sheen
-__extern_cpp public struct SheenProfile {
-    __extern_cpp public bool on;
-    __extern_cpp public float albedo;
-}
 [CudaDeviceExport] public func sheenProfile(v: float3, n_i: float3, material: Material) -> SheenProfile {
     var profile: SheenProfile = SheenProfile(false, 0.0f);
     if (sheenUsed() && rgb_to_greyscale(material.sheen) > 0.0f) {
@@ -1180,7 +1260,7 @@ __extern_cpp public struct SheenProfile {
 
 // SampleBSDF takes in incoming direction, surface normal, material and random state and returns an outgoing direction with throughput according to the BSDF for global illumination
 
-[CudaDeviceExport] public func sampleBSDF(in_dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, random_init: uint, screen_space: float2) -> SampleBSDF {
+[CudaDeviceExport] public func sampleBSDF(in_dir: float3, n: float3, material: Material, eta_i: float, eta_o: float, facets: Facets, random_init: uint, screen_space: float2) -> SampleBSDF {
     var random_state: uint = random_init;
     // Basic dot products
     let v: float3 = negate(in_dir);
@@ -1194,12 +1274,12 @@ __extern_cpp public struct SheenProfile {
     let sheen_profile: SheenProfile = sheenProfile(v, n_i, material);
     let coat_frame: CoatFrame = coatFrame(material, n_i);
     let coat_series: float3 = coatSeries(coat_frame, material);
-    let ggx_n: float3 = sampleHalfVector(v, n_i, alpha, frame, random_state, NOISE_HALF_1);
+    let ggx_n: float3 = facets.h;
     // Coat: its microfacet over the base lobes
-    let coat_h: float3 = coatHalf(v, coat_frame, random_init);
+    let coat_h: float3 = facets.coat_h;
     // The lobes' weights of ggx_n
-    let w: Weights = lobeWeights(in_dir, v, n_i, ggx_n, coat_h, frame, sheen_profile, coat_frame, coat_series,
-        material, eta_i, eta_o);
+    let w: Weights = lobeWeights(in_dir, v, n_i, ggx_n, coat_h, ggx_n, coat_h, frame, sheen_profile, coat_frame,
+        coat_series, material, eta_i, eta_o);
 
     let random_p: Random = draw(random_state, NOISE_LOBE);
     random_state = random_p.state;
@@ -1236,12 +1316,12 @@ __extern_cpp public struct SheenProfile {
     return reflectSample(in_dir, ggx_n, n_i, alpha, frame, w, pdf_h, random_state);
 }
 
-// sampleBSDF's half vector, drawn from random_state as sampleBSDF draws it: the diffuse and toon lobes'
-[CudaDeviceExport] public func sampledHalf(v: float3, n_i: float3, alpha: float, frame: AnisotropicFrame,
-    random_state: uint) -> float3 {
+[CudaDeviceExport] public func drawFacets(in_dir: float3, n: float3, material: Material, random_state: uint) -> Facets {
+    let v: float3 = negate(in_dir);
+    let n_i: float3 = n * sign(dot(n, v));
     var state: uint = random_state;
-    // Diffuse half-vector of sampleBSDF
-    return sampleHalfVector(v, n_i, alpha, frame, state, NOISE_HALF_1);
+    return Facets(sampleHalfVector(v, n_i, material.roughness * material.roughness, anisotropicFrame(material, n_i),
+        state, NOISE_HALF_1), coatHalf(v, coatFrame(material, n_i), random_state));
 }
 
 // sampleBSDF's coat microfacet, drawn from random_state as sampleBSDF draws it: the VNDF's of alpha_c about n_c, 0
@@ -1298,11 +1378,6 @@ __extern_cpp public struct SheenProfile {
     return material.dispersion > 0.0f && material.ior != 1.0f;
 }
 
-// Fraunhofer d, F and C lines in um
-static const float LINE_D = 0.5875618f;
-static const float LINE_F = 0.4861327f;
-static const float LINE_C = 0.6562725f;
-
 // Cauchy n(λ) = A + B / λ^2 through n_d = ior with Abbe number V = (n_d - 1) / (n_F - n_C) = 1 / dispersion, λ in um
 // n_F - n_C = B (1 / λ_F^2 - 1 / λ_C^2) = (n_d - 1) dispersion
 // => n(λ) = n_d + (n_d - 1) dispersion (1 / λ^2 - 1 / λ_d^2) / (1 / λ_F^2 - 1 / λ_C^2)
@@ -1310,53 +1385,6 @@ static const float LINE_C = 0.6562725f;
     let b: float = (ior - 1.0f) * dispersion / (1.0f / (LINE_F * LINE_F) - 1.0f / (LINE_C * LINE_C));
     return ior + select(0.0f, b * (1.0f / (wavelength * wavelength) - 1.0f / (LINE_D * LINE_D)), dispersion > 0.0f);
 }
-
-// w_c(λ) = M xyz(λ) D65(λ) every 5 nm from 380 to 780 nm: CIE 1931 2 degree observer, illuminant D65 and M from XYZ to
-// linear Rec. 709, in 1 / um with integral w_c(λ) dλ = 1 per channel by trapezoids
-// => a white light, D65, integrates to (1, 1, 1)
-public static const float WAVELENGTH_WEIGHTS[243] = {
-    0.0054747f, -0.0046569f, 0.032575f, 0.0093464f, -0.0079637f, 0.055773f, 0.018461f, -0.015794f, 0.11073f,
-    0.041641f, -0.035775f, 0.25139f, 0.093493f, -0.080718f, 0.56742f, 0.15851f, -0.13765f, 0.97019f,
-    0.30943f, -0.27083f, 1.9174f, 0.55218f, -0.48754f, 3.4689f, 0.95017f, -0.84802f, 6.0944f,
-    1.4211f, -1.2893f, 9.452f, 1.7341f, -1.6063f, 12.128f, 2.0803f, -1.9881f, 15.687f,
-    2.206f, -2.2012f, 18.477f, 2.0304f, -2.177f, 19.927f, 1.6343f, -2.0034f, 20.869f,
-    0.99411f, -1.6263f, 20.578f, 0.20011f, -1.1141f, 19.721f, -0.6796f, -0.45403f, 17.776f,
-    -1.6168f, 0.3786f, 14.715f, -2.5341f, 1.2754f, 11.865f, -3.3908f, 2.2146f, 9.1767f,
-    -4.0375f, 3.0522f, 6.5951f, -4.613f, 3.8978f, 4.6459f, -5.4304f, 5.0121f, 3.3199f,
-    -6.3777f, 6.3381f, 2.297f, -7.4414f, 7.9174f, 1.4539f, -8.3858f, 9.6011f, 0.66466f,
-    -9.0168f, 11.24f, -0.044036f, -9.1775f, 12.632f, -0.58127f, -8.9755f, 13.915f, -0.9573f,
-    -8.2529f, 14.862f, -1.2443f, -6.9213f, 15.039f, -1.4307f, -5.2917f, 14.909f, -1.5515f,
-    -3.4322f, 14.705f, -1.6357f, -1.2719f, 14.244f, -1.6703f, 1.1517f, 13.322f, -1.6362f,
-    3.7389f, 12.212f, -1.5692f, 6.4359f, 10.947f, -1.4773f, 9.1644f, 9.5477f, -1.364f,
-    12.02f, 8.188f, -1.2545f, 14.787f, 6.7443f, -1.1311f, 16.723f, 5.0878f, -0.96561f,
-    18.143f, 3.5702f, -0.80726f, 19.919f, 2.3627f, -0.69273f, 21.055f, 1.3137f, -0.58598f,
-    21.39f, 0.4239f, -0.48298f, 20.993f, -0.23857f, -0.39412f, 19.822f, -0.68663f, -0.31502f,
-    18.12f, -0.94125f, -0.24891f, 15.709f, -1.0202f, -0.19076f, 13.198f, -0.9892f, -0.14401f,
-    11.24f, -0.93347f, -0.11133f, 9.3665f, -0.83821f, -0.085241f, 7.4125f, -0.70064f, -0.062832f,
-    5.7123f, -0.56079f, -0.045867f, 4.4228f, -0.44653f, -0.033966f, 3.3449f, -0.34457f, -0.024825f,
-    2.4931f, -0.26018f, -0.018081f, 1.8224f, -0.19216f, -0.01297f, 1.295f, -0.13767f, -0.0090757f,
-    0.92929f, -0.099564f, -0.0064162f, 0.61836f, -0.066713f, -0.0042115f, 0.40212f, -0.043546f, -0.0027183f,
-    0.28445f, -0.030872f, -0.0019144f, 0.20673f, -0.022461f, -0.0013883f, 0.15044f, -0.016345f, -0.0010103f,
-    0.10942f, -0.011887f, -0.00073479f, 0.070997f, -0.0077135f, -0.00047679f, 0.045395f, -0.0049319f, -0.00030485f,
-    0.034241f, -0.0037201f, -0.00022995f, 0.025576f, -0.0027787f, -0.00017176f, 0.018422f, -0.0020014f, -0.00012371f,
-    0.013169f, -0.0014308f, -8.8439e-5f, 0.0083889f, -0.00091141f, -5.6337e-5f, 0.0053708f, -0.00058351f, -3.6068e-5f,
-    0.0032828f, -0.00035666f, -2.2046e-5f, 0.0019601f, -0.00021296f, -1.3163e-5f, 0.0016894f, -0.00018354f, -1.1345e-5f,
-    0.0014105f, -0.00015325f, -9.4725e-6f, 0.00097124f, -0.00010552f, -6.5224e-6f, 0.00066868f, -7.2649e-5f, -4.4906e-6f
-};
-// CDF of p(λ) at the nodes, p constant per bin with mass the mean of |w_r| + |w_g| + |w_b| at the bin's ends
-public static const float WAVELENGTH_CDF[81] = {
-    0.0f, 6.5109e-5f, 0.00018773f, 0.00045414f, 0.0010561f, 0.0021851f, 0.0043017f, 0.0082413f, 0.015215f,
-    0.026492f, 0.042028f, 0.061835f, 0.085811f, 0.11225f, 0.1396f, 0.16643f, 0.1913f, 0.21376f,
-    0.23379f, 0.252f, 0.26913f, 0.28513f, 0.30023f, 0.31536f, 0.33154f, 0.34944f, 0.36938f,
-    0.39128f, 0.41529f, 0.44129f, 0.4684f, 0.49524f, 0.52063f, 0.54398f, 0.56476f, 0.58348f,
-    0.60239f, 0.62285f, 0.64475f, 0.6681f, 0.69291f, 0.71846f, 0.74394f, 0.76952f, 0.79534f,
-    0.82079f, 0.84549f, 0.86935f, 0.89192f, 0.91229f, 0.92987f, 0.94483f, 0.95753f, 0.96791f,
-    0.97606f, 0.98237f, 0.98722f, 0.99086f, 0.99356f, 0.99551f, 0.99691f, 0.99788f, 0.99852f,
-    0.99895f, 0.99925f, 0.99948f, 0.99964f, 0.99975f, 0.99983f, 0.99988f, 0.99991f, 0.99994f,
-    0.99996f, 0.99998f, 0.99999f, 0.99999f, 0.99999f, 1.0f, 1.0f, 1.0f, 1.0f
-};
-static const float WAVELENGTH_LEAST = 0.38f;
-static const float WAVELENGTH_STEP = 0.005f;
 
 // w(λ), linear between the nodes
 [CudaDeviceExport] public func wavelengthWeights(wavelength: float) -> float3 {
@@ -1455,9 +1483,6 @@ static const float WAVELENGTH_STEP = 0.005f;
 
 #ifdef FK_HAIR
 // Hair, baked per lobe p (R, TT, TRT, rest) in nt rows of theta and np columns of phi
-// HAIR_WIDTHS and HAIR_TILTS scale the R lobe's width w and the cuticle tilt alpha per lobe
-static const float HAIR_WIDTHS[4] = {1.0f, 0.5f, 2.0f, 2.0f};
-static const float HAIR_TILTS[4] = {-2.0f, 1.0f, 4.0f, 0.0f};
 [CudaDeviceExport] public func hairRow(in_dir: float3, t: float3, out_dir: float3, p: uint, w: float, alpha: float, nt: uint) -> float {
     let width: float = w * HAIR_WIDTHS[p % 4u];
     let cone: float = asin(clamp(dot(out_dir, t), -1.0f, 1.0f)) - asin(clamp(dot(in_dir, t), -1.0f, 1.0f)) - HAIR_TILTS[p % 4u] * alpha;
@@ -1495,13 +1520,5 @@ static const float HAIR_TILTS[4] = {-2.0f, 1.0f, 4.0f, 0.0f};
     }
     return through * coverage + (1.0f - coverage);
 }
-
-public static const uint LOBE_DIFFUSE = 0u;
-public static const uint LOBE_REFRACT = 1u;
-public static const uint LOBE_REFLECT = 2u;
-// 3 is the walk's LOBE_NONE of camera rays
-public static const uint LOBE_SHEEN_VELVET = 4u;
-public static const uint LOBE_COAT = 5u;
-public static const uint LOBE_TOON = 6u;
 
 __include walk;
