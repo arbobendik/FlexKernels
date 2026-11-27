@@ -560,6 +560,9 @@ int main() {
     scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
     scene[0].tilt = 1.2566371f;
     furnace("white sphere, smooth normals tilted 72 deg", camera, center, 0.3f, 1, failed);
+    // Smooth glass over them keeps all it receives
+    scene[0].layer[0] = dielectric(1.5f);
+    furnace("glass sphere, smooth normals tilted 72 deg", camera, center, 0.3f, 1, failed);
     bounces = 64, sky = 1, sun = false, camera_fog = none, seen = false, own_skips = 0, hair_connects = 0, cdf = false;
     scene = {{center, 1, false, {lambert(1, 0)}, 1, 1, false, none}};
     scene[0].hair = true;
