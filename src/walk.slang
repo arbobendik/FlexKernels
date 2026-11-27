@@ -700,6 +700,7 @@ public interface IScene {
     public float3 calculatePointLightContrib(uint index);
     public float3 env_map_sample(float3 dir, uint depth, uint lobe);
     public bool zUp();
+    public bool twoSided();
     public float4 environmentCdf(uint2 cell);
     public uint2 environmentCdfSize();
     public uint2 environmentMapSize();
@@ -885,6 +886,11 @@ public struct HookScene : IScene {
     __target_intrinsic(cuda, "(true)")
     __target_intrinsic(cpp, "(true)")
     public bool zUp();
+    // Whether emitters emit on both sides, else toward their front alone
+    __target_intrinsic(wgsl, "(false)")
+    __target_intrinsic(cuda, "(true)")
+    __target_intrinsic(cpp, "(true)")
+    public bool twoSided();
     __target_intrinsic(wgsl, "textureLoad(environment_cdf, $0, 0)")
     __target_intrinsic(cuda, "fcptEnvironmentCdf($0)")
     public float4 environmentCdf(uint2 cell);
@@ -1159,14 +1165,14 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
             let surface: Surface = scene.lightSurfaceAt(emitter, point, random_along.state, sample.dir,
                 context.depth, length(point - origin));
             sample.random_state = surface.random_state;
-            sample.radiance = select(surface.material.emissive, float3(0.0f), surface.skip) / sample.density;
+            sample.radiance = select(emitted(scene, surface.material.emissive, sample.dir, surface.smooth_n), float3(0.0f), surface.skip) / sample.density;
         }
 #else
         let surface: Surface = scene.surfaceAt(Hit(uv, leaf.y, triangle_index, 0u, 0.0f), point, random_along.state);
         sample.random_state = surface.random_state;
         sample.dir = normalize(point - start);
         sample.density = solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), point - start);
-        sample.radiance = select(surface.material.emissive * max(sign(dot(- sample.dir, surface.smooth_n)), 0.0f), float3(0.0f), surface.skip) / sample.density;
+        sample.radiance = select(emitted(scene, surface.material.emissive, sample.dir, surface.smooth_n), float3(0.0f), surface.skip) / sample.density;
         shadow = point - start;
 #endif
     }
@@ -1181,11 +1187,16 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
         let surface: Surface = scene.lightSurfaceAt(emitter, emitter_point, random_along.state, sample.dir,
             context.depth, length(emitter_point - origin));
         sample.random_state = surface.random_state;
-        sample.radiance = select(surface.material.emissive, float3(0.0f), surface.skip) / sample.density;
+        sample.radiance = select(emitted(scene, surface.material.emissive, sample.dir, surface.smooth_n), float3(0.0f), surface.skip) / sample.density;
     }
 #endif
     sample.radiance = select(sample.radiance * transmitted, float3(0.0f), all(transmitted == float3(0.0f)));
     return sample;
+}
+
+// Emission of a face of normal n seen along dir
+func emitted<S: IScene>(scene: S, emissive: float3, dir: float3, n: float3) -> float3 {
+    return select(emissive * max(sign(dot(- dir, n)), 0.0f), emissive, scene.twoSided());
 }
 
 // PDF = solidAngle(P(light)) or P(light) * sphereDensity, P(light) the product of child shares down the trail
@@ -1806,11 +1817,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let sided: bool = hair || isTranslucent(material) || (material.transmission > 0.0f && scene.layers(hit) == 1u);
 #endif
         // Emission met, of the surface or a point light, weighted against light sampling at the vertex the ray left
-#ifdef FK_FCPT_WALK
-        var emission: float3 = material.emissive;  // On both sides
-#else
-        var emission: float3 = material.emissive * max(sign(dot(- ray.unit_direction, front_n)), 0.0f);
-#endif
+        var emission: float3 = emitted(scene, material.emissive, ray.unit_direction, front_n);
         if (point_light_lighting) {
             emission = scene.calculatePointLightContrib(hit.instance_index);
         }
