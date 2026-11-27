@@ -138,7 +138,7 @@ __device__ Result evaluate(const Case& c) {
     }
     r.nee_balance = vec(balance);
     r.nee_power = vec(power);
-    r.straight_through = straightThrough(in_dir, n, material);
+    r.straight_through = straightThrough(material);
     float low_first[3], high_first[3], low_second[3], high_second[3];
     float light_point[3], facing[3], normal_scaled[3], toward[3];
     for (int i = 0; i < 3; i++) {

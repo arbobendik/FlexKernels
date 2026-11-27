@@ -1180,7 +1180,8 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
 
     // G = G1_v * G1_l
     // => throughput = refract_weight * G1_l * albedo
-    return w.refract_weight * G1_l * material.albedo / w.p_refract;
+    // ior = 1 => G1_l = 1
+    return w.refract_weight * select(G1_l, 1.0f, material.ior == 1.0f) * material.albedo / w.p_refract;
 }
 
 // Refractive case of sampleBSDF, through its half vector ggx_n
@@ -1468,17 +1469,10 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     return diffuse_factor_estimate > 0.04f || material.roughness > 0.2f;
 }
 
-// eta_i = eta_o => F = 0, l = -v
-// => throughput = transmission * (1 - metallic) * G1_l * albedo
-[CudaDeviceExport] public func straightThrough(dir: float3, n: float3, material: Material) -> float3 {
-    // Normal facing back along dir
-    let n_i: float3 = n * sign(dot(n, negate(dir)));
-    let frame: AnisotropicFrame = anisotropicFrame(material, n_i);
-    if (frame.alphas.x > 0.0f) {
-        return material.transmission * (1.0f - material.metallic) * anisotropicG1(anisotropicLocal(dir, frame.tangent,
-            negate(n_i)), frame.alphas) * material.albedo;
-    }
-    return material.transmission * (1.0f - material.metallic) * smithG1(material.roughness * material.roughness, abs(dot(n, dir))) * material.albedo;
+// eta_i = eta_o => F = 0, l = -v, G1_l = 1
+// => throughput = transmission * (1 - metallic) * albedo
+[CudaDeviceExport] public func straightThrough(material: Material) -> float3 {
+    return material.transmission * (1.0f - material.metallic) * material.albedo;
 }
 
 #ifdef FK_HAIR
@@ -1512,7 +1506,7 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
 // A coat crossed once: through *= mix(1, (1 - F(|n_c . toward|, 1, n)) * coat_tint, coat), n = max(coat_ior, 1.01),
 // the smooth coat's Fresnel in place of the refracted lobe's E_VNDF[f_c]
 [CudaDeviceExport] public func occluderTransmittance(toward: float3, n: float3, material: Material, coverage: float) -> float3 {
-    var through: float3 = material.ior == 1.0f ? straightThrough(toward, n, material) : float3(0.0f);
+    var through: float3 = material.ior == 1.0f ? straightThrough(material) : float3(0.0f);
     let coat_frame: CoatFrame = coatFrame(material, n);
     if (coat_frame.ior > 0.0f) {
         let F_c: float = fresnel(abs(dot(coat_frame.normal, toward)), 1.0f, coat_frame.ior);

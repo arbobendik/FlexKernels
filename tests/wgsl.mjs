@@ -295,7 +295,7 @@ fn parity(@builtin(global_invocation_id) id: vec3<u32>) {
     ${FLEXLIGHT ? `let straight = bsdfLobes(in_dir, - in_dir, n_i, n_i, material, 1.0, 1.0, anisotropicFrame(material, n_i));
     let through = lobeThroughput(in_dir, n_i, alpha, material, straight, 1u) * straight.p_refract;
     parity_put(&r, 119u, select(vec3<f32>(0.0), through, straight.p_refract > 0.0));` : `
-    parity_put(&r, 119u, straightThrough(in_dir, n, material));`}
+    parity_put(&r, 119u, straightThrough(material));`}
     let first = LightBounds(min(in_dir, out_dir), max(in_dir, out_dir) + albedo * 0.5, n, 1.0 + albedo.x,
         2.0 * albedo.y - 1.0);
     let second = LightBounds(min(n, g_n) - vec3<f32>(0.25), max(n, g_n) + vec3<f32>(albedo.z), g_n, albedo.z * v[15],

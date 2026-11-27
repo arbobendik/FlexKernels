@@ -178,7 +178,8 @@ diffuse sphere must recover `4 * PI * intensity * color`, without changing the r
   word for word.
   The C++ and CUDA targets leave out `neeBSDF` where it draws, toward the side of a diffuse lobe; the golden of its power
   heuristic is flex-cuda-pt's `lightBSDF` of `2782758` on FlexLight's `lobeBSDF`, over the density.
-  `straightThrough`'s is FlexLight's refraction throughput times its probability through the normal at equal IORs.
+  `straightThrough`'s is FlexLight's refraction throughput times its probability through the normal at equal IORs,
+  recorded with `G1_l` = 1, as is the refraction's at IOR 1: an interface between equal IORs masks nothing.
   The light tree's are renderer.cu's (`bd5216f`), transcribed into the kernel, whose generated CUDA returned the same
   words as renderer.cu's own on a million random nodes, points and picks, with and without `--use_fast_math`.
   The sphere's are pbrt-v4's formulas written out in the kernel, `1 - cos` of the cone by its square root.
