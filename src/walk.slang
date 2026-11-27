@@ -2045,6 +2045,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     bsdf_sampled.unit_direction = geometry_bsdf_sampled.unit_direction;
                     bsdf_sampled.refracted = geometry_bsdf_sampled.refracted;
                     bsdf_sampled.throughput = geometry_bsdf_sampled.throughput;
+                    bsdf_sampled.lobe = geometry_bsdf_sampled.lobe;
                 } else if (wrong_side) {
                     bsdf_sampled.unit_direction -= 2.0f * dot(bsdf_sampled.unit_direction, surface.geometry_n) * surface.geometry_n;
                 }
