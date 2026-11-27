@@ -612,6 +612,20 @@ func raySphere(center: float3, radius: float, ray: Ray, max_len: float) -> float
     return POW32;
 }
 
+// Distance along the ray to a light of half axes a, b, POW32 if missed: an area light's front within its rectangle,
+// (u, v) in [-1, 1]^2, or its ellipse, u^2 + v^2 <= 1; else its sphere
+[CudaDeviceExport] public func rayLight(light: Light, a: float4, b: float4, ray: Ray, max_len: float) -> float {
+    if (!(dot(a.xyz, a.xyz) > 0.0f)) {
+        return raySphere(light.position, light.variance, ray, max_len);
+    }
+    let n: float3 = cross(a.xyz, b.xyz);
+    let t: float = dot(light.position - ray.origin, n) / dot(ray.unit_direction, n);
+    let p: float3 = ray.origin + t * ray.unit_direction - light.position;
+    let uv: float2 = float2(dot(p, a.xyz) / dot(a.xyz, a.xyz), dot(p, b.xyz) / dot(b.xyz, b.xyz));
+    return select(POW32, t, (a.w > 0.0f ? dot(uv, uv) : max(uv.x * uv.x, uv.y * uv.y)) <= 1.0f
+        && dot(ray.unit_direction, n) > 0.0f && t > BIAS && t < max_len);
+}
+
 // Whether the material is a thin surface transmitting diffusely
 func isTranslucent(material: Material) -> bool {
     return rgb_to_greyscale(material.translucent) > 0.0f;
@@ -698,7 +712,7 @@ public interface IScene {
     public bool slotLeaf(uint n, uint j, uint4 trail_texel);
     public Light light(uint index);
     public uint triangleOffset(uint instance_index);
-    public float3 calculatePointLightContrib(uint index);
+    public float3 calculatePointLightContrib(uint index, float3 dir, uint depth, uint lobe, float length);
     public float3 env_map_sample(float3 dir, uint depth, uint lobe);
     public float4 environmentCdf(uint2 cell);
     public uint2 environmentCdfSize();
@@ -875,8 +889,8 @@ public struct HookScene : IScene {
     __target_intrinsic(cuda, "fcptTriangleOffset($0)")
     public uint triangleOffset(uint instance_index);
     __target_intrinsic(wgsl, "calculatePointLightContrib($0)")
-    __target_intrinsic(cuda, "fcptCalculatePointLightContrib($0)")
-    public float3 calculatePointLightContrib(uint index);
+    __target_intrinsic(cuda, "fcptCalculatePointLightContrib($0, $1, $2, $3, $4)")
+    public float3 calculatePointLightContrib(uint index, float3 dir, uint depth, uint lobe, float length);
     __target_intrinsic(wgsl, "env_map_sample($0)")
     __target_intrinsic(cuda, "fcptEnvMapSample($0, $1, $2)")
     public float3 env_map_sample(float3 dir, uint depth, uint lobe);
@@ -1073,7 +1087,7 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
 }
 
 // Light sampling: a light picked by the light tree, P(light) the product of child shares down to it
-// Triangle: uniform point, PDF = solidAngle(P(light))
+// Triangle, a lamp's rectangle or ellipse (leaf.w 1, 2) about t[0]: uniform point, PDF = solidAngle(P(light))
 // Sphere: uniform in its cone, PDF = P(light) * sphereDensity
 // radiance = L * T / PDF; sided: light all around, origin lifted to the light's side of the face
 [noinline] public func sampleLightTree<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_n: float3, geometry_offset: float, sided: bool, init_random_state: uint
@@ -1106,11 +1120,9 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
     let leaf: uint4 = scene.lightNode(n);
     // Vector from start to the end of the shadow ray
     var shadow: float3;
-#ifdef FK_FCPT_WALK
     var emitter: Hit = noHit();
     var emitter_point: float3 = float3(0.0f);
-#endif
-    if (leaf.x == 2u) {
+    if (leaf.x == 2u && leaf.w == 0u) {
         let light: Light = scene.light(leaf.y);
         if (sided) {
             lift_n = smooth_n * sign(dot(geometry_n, light.position - origin));
@@ -1126,14 +1138,21 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
             sample.density = probability * sphereDensity(light.position, light.variance, start);
             sample.radiance = pointLightRadiance(light.color, light.intensity, light.variance) / sample.density;
             shadow = sample.dir * raySphere(light.position, light.variance, Ray(start, sample.dir), POW32);
+            emitter = Hit(float2(0.0f), leaf.y, 0u, 1u, 0.0f);  // Its emission shaded as an emitter's
+            emitter_point = start + shadow;
         }
     } else {
-        let triangle_index: uint = scene.triangleOffset(leaf.y) + leaf.z;
+        let triangle_index: uint = leaf.x == 2u ? UINT_MAX : scene.triangleOffset(leaf.y) + leaf.z;
         let t: float3x3 = scene.worldTriangle(leaf.y, triangle_index);
-        // Uniform point on the triangle: (1 - sqrt(u), sqrt(u) * (1 - v), sqrt(u) * v)
+        // Uniform point on the triangle: (1 - sqrt(u), sqrt(u) * (1 - v), sqrt(u) * v); about t[0] on a rectangle at
+        // (2 * u - 1, 2 * v - 1), on an ellipse at sqrt(u) (cos, sin)(2 * PI * v)
         let side: float = sqrt(random_side.value);
-        let uv: float2 = float2(side * (1.0f - random_along.value), side * random_along.value);
-        let point: float3 = mul(float3(1.0f - side, uv), t);
+        let uv: float2 = leaf.w == 0u ? float2(side * (1.0f - random_along.value), side * random_along.value)
+            : leaf.w == 1u ? 2.0f * float2(random_side.value, random_along.value) - float2(1.0f) : side * float2(cos(2.0f * PI * random_along.value), sin(2.0f * PI * random_along.value));
+        let point: float3 = mul(float3(leaf.w == 0u ? 1.0f - side : 1.0f - uv.x - uv.y, uv), t);
+        if (leaf.x == 2u && !(dot(cross(t[1] - t[0], t[2] - t[0]), point - origin) > 0.0f)) {
+            return sample;  // A lamp lit from its front alone
+        }
         if (sided) {
             lift_n = smooth_n * sign(dot(geometry_n, point - origin));
             start = origin + geometry_offset * lift_n;
@@ -1142,18 +1161,11 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
         }
         // Emission at the point as the path tracer shades it
 #ifdef FK_FCPT_WALK
-        emitter = Hit(uv, leaf.y, triangle_index, 0u, 0.0f);
+        emitter = Hit(uv, leaf.y, triangle_index, leaf.x / 2u, 0.0f);
         emitter_point = point;
         sample.dir = normalize(point - start);
-        sample.density = solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), point - start);
+        sample.density = solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]) * float3(1.0f, 8.0f, 2.0f * PI)[leaf.w], point - start);
         shadow = point - start;
-        if (!scene.shadowFirst()) {
-            // Emitters emit on both sides
-            let surface: Surface = scene.lightSurfaceAt(emitter, point, random_along.state, sample.dir,
-                context.depth, length(point - origin));
-            sample.random_state = surface.random_state;
-            sample.radiance = select(surface.material.emissive, float3(0.0f), surface.skip) / sample.density;
-        }
 #else
         let surface: Surface = scene.surfaceAt(Hit(uv, leaf.y, triangle_index, 0u, 0.0f), point, random_along.state);
         sample.random_state = surface.random_state;
@@ -1169,8 +1181,8 @@ func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, g
 #endif
         );
 #ifdef FK_FCPT_WALK
-    // Emitter shaded after its shadow test passes
-    if (scene.shadowFirst() && emitter.instance_index != UINT_MAX && !all(transmitted == float3(0.0f))) {
+    // Emitter shaded after its shadow test passes, unless shaded first; emitters emit on both sides
+    if (emitter.instance_index != UINT_MAX && (!scene.shadowFirst() || !all(transmitted == float3(0.0f)))) {
         let surface: Surface = scene.lightSurfaceAt(emitter, emitter_point, random_along.state, sample.dir,
             context.depth, length(emitter_point - origin));
         sample.random_state = surface.random_state;
@@ -1204,12 +1216,12 @@ public func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, star
         return 0.0f;
     }
     let leaf: uint4 = scene.lightNode(n);
-    if (leaf.x == 2u) {
+    if (leaf.x == 2u && leaf.w == 0u) {
         let light: Light = scene.light(leaf.y);
         return probability * sphereDensity(light.position, light.variance, start);
     }
-    let t: float3x3 = scene.worldTriangle(leaf.y, scene.triangleOffset(leaf.y) + leaf.z);
-    return solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), light_point - start);
+    let t: float3x3 = scene.worldTriangle(leaf.y, leaf.x == 2u ? UINT_MAX : scene.triangleOffset(leaf.y) + leaf.z);
+    return solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]) * float3(1.0f, 8.0f, 2.0f * PI)[leaf.w], light_point - start);
 }
 
 #ifdef FK_FCPT_WALK
@@ -1839,7 +1851,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         var emission: float3 = material.emissive * max(sign(dot(- ray.unit_direction, front_n)), 0.0f);
 #endif
         if (point_light_lighting) {
-            emission = scene.calculatePointLightContrib(hit.instance_index);
+            emission = scene.calculatePointLightContrib(hit.instance_index, ray.unit_direction, b, arrivalLobe(b, prev.lobe), hit.distance);
         }
         // A replay uses emission and light sampling from its stop on alone
         let used: bool = !replay || b >= stop;
@@ -2279,10 +2291,10 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 continue;
             }
         }
-        // Only occluders in front of the reconnection vertex matter, passing through a point light no other
+        // Only occluders in front of the reconnection vertex matter
         hit = scene.traverseInstanceBVH(ray, !point_light_lighting, select(POW32, distance(reconnection, ray.origin) * 1.001f, replay && b == stop && rc == RC_SURFACE),
 #ifdef FK_FCPT_WALK
-            !hair, straight || hair ? hit : noHit(), viewed  // A fiber's own segment skipped
+            !hair, straight || hair || point_light_lighting ? hit : noHit(), viewed  // A fiber's own segment or the light passed skipped
 #else
             true, straight ? hit : noHit(), false
 #endif

@@ -116,7 +116,7 @@ bool HookScene_slotLeaf_0(uint32_t, uint32_t, Vector<uint32_t, 4>) { return slot
 Light HookScene_light_0(uint32_t) { return Light{SUN, 0, ONE, 1e8f, 0}; }
 uint32_t HookScene_triangleOffset_0(uint32_t) { return 0; }
 Matrix<float, 3, 3> HookScene_worldTriangle_0(uint32_t, uint32_t) { return Matrix<float, 3, 3>(0.0f); }
-V HookScene_calculatePointLightContrib_0(uint32_t) { return ZERO; }
+V HookScene_calculatePointLightContrib_0(uint32_t, V, uint32_t, uint32_t, float) { return ZERO; }
 V HookScene_hitPosition_0(Hit hit) {
     const Shape& s = scene[hit.instance_index];
     const V on(sinf(hit.uv.x) * cosf(hit.uv.y), sinf(hit.uv.x) * sinf(hit.uv.y), cosf(hit.uv.x));
