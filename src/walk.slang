@@ -715,17 +715,15 @@ public interface IScene {
     public float3 prevCameraPosition();
     public int4 pairing(int2 texel, uint t);
     public uint4 reservoirPrevious(int2 q, uint layer);
-#ifdef FK_FCPT_WALK
     // Domain of the sample of seed as the previous frame traced it at q
     public Domain previousDomain(int2 q, uint seed);
-#else
+#ifndef FK_FCPT_WALK
     public Domain previousDomain(int2 q);
 #endif
     public uint restirNeighbours();
     public Reservoir loadReservoirPrevious(int2 q);
     public Reservoir loadReservoirInitial(int2 p);
     public Reservoir loadReservoirTemporal(int2 p);
-#ifdef FK_FCPT_WALK
     // Domain of the sample of seed at p
     public bool storedDomainInitial(int2 p, uint seed, out Domain dom);
     public bool storedDomainTemporal(int2 p, uint seed, out Domain dom);
@@ -750,7 +748,7 @@ public interface IScene {
     public float3 missed(int2 p, Domain dom, float scale);
     // Color added to p's accumulation, w its sample count
     public void addColor(int2 p, float4 color);
-#else
+#ifndef FK_FCPT_WALK
     public bool storedDomainInitial(int2 p, out Domain dom);
     public bool storedDomainTemporal(int2 p, out Domain dom);
 #endif
@@ -931,10 +929,10 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "textureLoad(reservoir_prev, $0, $1, 0)")
     __target_intrinsic(cuda, "fcptReservoirPrevious($0, $1)")
     public uint4 reservoirPrevious(int2 q, uint layer);
-#ifdef FK_FCPT_WALK
+    __target_intrinsic(wgsl, "previousDomain($0)")
     __target_intrinsic(cuda, "fcptPreviousDomain($0, $1)")
     public Domain previousDomain(int2 q, uint seed);
-#else
+#ifndef FK_FCPT_WALK
     __target_intrinsic(wgsl, "previousDomain($0)")
     __target_intrinsic(cuda, "fcptPreviousDomain($0)")
     public Domain previousDomain(int2 q);
@@ -951,19 +949,24 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "loadReservoir(reservoir_temp, $0)")
     __target_intrinsic(cuda, "fcptLoadReservoirTemporal($0)")
     public Reservoir loadReservoirTemporal(int2 p);
-#ifdef FK_FCPT_WALK
+    // On wgsl a pixel's one domain, every seed's
+    __target_intrinsic(wgsl, "storedDomain(reservoir_initial, $0, &$2)")
     __target_intrinsic(cuda, "fcptStoredDomainInitial($0, $1, $2)")
     public bool storedDomainInitial(int2 p, uint seed, out Domain dom);
+    __target_intrinsic(wgsl, "storedDomain(reservoir_temp, $0, &$2)")
     __target_intrinsic(cuda, "fcptStoredDomainTemporal($0, $1, $2)")
     public bool storedDomainTemporal(int2 p, uint seed, out Domain dom);
+    __target_intrinsic(wgsl, "(false)")
     __target_intrinsic(cuda, "fcptSceneUnchanged()")
     public bool sceneUnchanged();
+    __target_intrinsic(wgsl, "(false)")
     __target_intrinsic(cuda, "fcptPreviousScenes()")
     public bool previousScenes();
     __target_intrinsic(cuda, "fcptStoreTemporalNeighbor($0, $1)")
     public void storeTemporalNeighbor(int2 p, int2 q);
     __target_intrinsic(cuda, "fcptLoadTemporalNeighbor($0)")
     public int2 loadTemporalNeighbor(int2 p);
+    __target_intrinsic(wgsl, "(true)")
     __target_intrinsic(cuda, "fcptTemporalQueued()")
     public bool temporalQueued();
     __target_intrinsic(cuda, "fcptShiftPrevious($0, $1)")
@@ -978,7 +981,7 @@ public struct HookScene : IScene {
     public float3 missed(int2 p, Domain dom, float scale);
     __target_intrinsic(cuda, "fcptAddColor($0, $1)")
     public void addColor(int2 p, float4 color);
-#else
+#ifndef FK_FCPT_WALK
     __target_intrinsic(wgsl, "storedDomain(reservoir_initial, $0, &$1)")
     __target_intrinsic(cuda, "fcptStoredDomainInitial($0, $1)")
     public bool storedDomainInitial(int2 p, out Domain dom);
@@ -2357,17 +2360,21 @@ func project<S: IScene>(scene: S, view: float3x3, camera: float3, position: floa
     return float2(screen_space.x, 1.0f - screen_space.y) * float2(scene.renderSize());
 }
 
+// Pixel coordinates of position seen by the previous or the current frame's camera, on wgsl through its view matrix
+func pixelOf<S: IScene>(scene: S, position: float3, previous: bool) -> float2 {
+    __target_switch {
+    case wgsl: return project(scene, previous ? scene.prevViewMatrix() : scene.viewMatrix(),
+        select(scene.cameraPosition(), scene.prevCameraPosition(), previous), position);
+    default: return scene.pixelOf(position, previous);
+    }
+}
+
 func previousValid<S: IScene>(scene: S, q: int2) -> bool {
     return all(q >= int2(0)) && all(q < int2(scene.renderSize())) && asfloat(scene.reservoirPrevious(q, 0u).w) > 0.0f;
 }
 
 // Backprojection of the camera motion, or the dual motion vector of the surface previously seen there (Sec. 6.4)
-public func temporalNeighbor<S: IScene>(scene: S, p: int2, dom: Domain
-#ifdef FK_FCPT_WALK
-    , seed: uint
-#endif
-    ) -> int2 {
-#ifdef FK_FCPT_WALK
+public func temporalNeighbor<S: IScene>(scene: S, p: int2, dom: Domain, seed: uint) -> int2 {
     // The same domain of the sample of seed at p, which reprojecting a still view can round to a neighbour
     if (previousValid(scene, p) && sameDomain(scene.previousDomain(p, seed), dom)) {
         return p;
@@ -2376,32 +2383,20 @@ public func temporalNeighbor<S: IScene>(scene: S, p: int2, dom: Domain
     if (dom.hit.instance_index == UINT_MAX) {
         return int2(-1);
     }
-    let q: int2 = int2(floor(scene.pixelOf(dom.x1, true)));
-#else
     // Primary hits are rasterized at pixel centers
-    let q: int2 = int2(floor(project(scene, scene.prevViewMatrix(), scene.prevCameraPosition(), dom.x1)));
-#endif
+    let q: int2 = int2(floor(pixelOf(scene, dom.x1, true)));
     if (!previousValid(scene, q)) {
         return int2(-1);
     }
-#ifdef FK_FCPT_WALK
     // Of q's previous sample
     let previous: Domain = scene.previousDomain(q, scene.reservoirPrevious(q, 0u).x);
-#else
-    let previous: Domain = scene.previousDomain(q);
-#endif
     if (previous.hit.instance_index == dom.hit.instance_index && distance(previous.x1, dom.x1) <= dom.hit.distance * 8.0f / float(scene.renderSize().x)) {
         return q;
     }
-#ifdef FK_FCPT_WALK
-    let dual: int2 = int2(floor(float2(p + q) + 1.0f - scene.pixelOf(previous.x1, false)));
-#else
-    let dual: int2 = int2(floor(float2(p + q) + 1.0f - project(scene, scene.viewMatrix(), scene.cameraPosition(), previous.x1)));
-#endif
+    let dual: int2 = int2(floor(float2(p + q) + 1.0f - pixelOf(scene, previous.x1, false)));
     return select(int2(-1), dual, previousValid(scene, dual));
 }
 
-#ifdef FK_FCPT_WALK
 // Temporal neighbour of p's sample of seed: p itself in an unchanged view, where every sample keeps its domain, a
 // missed one too; else by its domain's reprojection, none for a missed sample or off the image
 func sampleNeighbor<S: IScene>(scene: S, p: int2, seed: uint) -> int2 {
@@ -2414,7 +2409,6 @@ func sampleNeighbor<S: IScene>(scene: S, p: int2, seed: uint) -> int2 {
     }
     return temporalNeighbor(scene, p, dom, seed);
 }
-#endif
 
 // Partner of p in reuse texture t, randomly flipped, transposed and offset every frame (Sec. 3.2)
 public func partner<S: IScene>(scene: S, p: int2, t: uint) -> int2 {
@@ -2516,7 +2510,7 @@ public func temporalJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJ
     if (t > 1u || !scene.storedDomainInitial(p, dom)) {
         return false;
     }
-    let q: int2 = temporalNeighbor(scene, p, dom);
+    let q: int2 = temporalNeighbor(scene, p, dom, scene.loadReservoirInitial(p).seed);
     if (q.x < 0) {
         return false;
     }
@@ -2799,7 +2793,7 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
     let queued: bool = scene.temporalQueued();
     let q: int2 = scene.sceneUnchanged() || !queued ? sampleNeighbor(scene, p, r.seed) : scene.loadTemporalNeighbor(p);
 #else
-    let q: int2 = temporalNeighbor(scene, p, dom);
+    let q: int2 = temporalNeighbor(scene, p, dom, r.seed);
 #endif
     if (q.x >= 0) {
         let temporal: Reservoir = scene.loadReservoirPrevious(q);

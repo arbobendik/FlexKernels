@@ -144,11 +144,7 @@ float walkOver(Domain dom, Reservoir r) {
     float passes = 0.0f;
 #ifdef FK_RESTIR_PASSES
     const int2 p = int2(int(r.seed % 64u), int(r.seed / 64u % 48u));
-#ifdef FK_FCPT_WALK
     const int2 q = temporalNeighbor(scene, p, dom, r.seed) + partner(scene, p, r.path % 3u);
-#else
-    const int2 q = temporalNeighbor(scene, p, dom) + partner(scene, p, r.path % 3u);
-#endif
     const uint[3] bins = temporalBins(scene, p);
     const uint[3] spatial = spatialBins(scene, q);
     passes = float(q.x * q.y) + float(bins[0] + bins[1] + spatial[2] + shiftBin(r));
