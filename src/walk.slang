@@ -475,7 +475,7 @@ func emitting(surface: Surface, top: bool) -> Surface {
 
 // Sign turning the normals toward the arriving ray, kept for transmitting surfaces
 [CudaDeviceExport] public func facingSign(transmission: float, face: float3, direction: float3) -> float {
-    return transmission > 0.0f || dot(face, direction) < 0.0f ? 1.0f : -1.0f;
+    return select(-1.0f, 1.0f, transmission > 0.0f || dot(face, direction) < 0.0f);
 }
 
 // Russian roulette: q = min(max(throughput) / density, 1)
@@ -1048,8 +1048,6 @@ public struct HookScene : IScene {
 #endif
 
 #ifdef FK_RESTIR
-[ForceInline] uint select(uint f, uint t, bool cond) { return select(cond, t, f); }
-
 // Shadow test toward a light sample, short of its end
 func lightTransmittance<S: IScene>(scene: S, origin: float3, smooth_n: float3, geometry_offset: float, light_dir: float3
 #ifdef FK_FCPT_WALK
@@ -1249,7 +1247,7 @@ func lightBSDF(in_dir: float3, light: TreeSample, smooth_n: float3, geometry_n: 
             }
         }
     }
-    return weigh ? f * light.radiance * light.density : f * light.radiance;
+    return select(f * light.radiance, f * light.radiance * light.density, weigh);
 }
 
 // Power heuristic of BSDF sampling at the vertex the ray left against light sampling of the point met
@@ -1422,8 +1420,8 @@ func skyLobes(in_dir: float3, dir: float3, surface: Surface, material: Material,
     for (var i: uint = 0u; i < 6u; i++) {
         if (pdfs[i] > 0.0f) {
             if (scene.worldReadsPath() || !shaded) {
-                world = scene.env_map_sample(dir, depth, i == 3u ? LOBE_SHEEN_VELVET : i == 4u ? LOBE_TOON
-                    : i == 5u ? LOBE_COAT : i);
+                world = scene.env_map_sample(dir, depth,
+                    select(select(select(i, LOBE_COAT, i == 5u), LOBE_TOON, i == 4u), LOBE_SHEEN_VELVET, i == 3u));
                 shaded = true;
             }
             color += terms[i] * world;
@@ -2403,7 +2401,7 @@ public func temporalNeighbor<S: IScene>(scene: S, p: int2, dom: Domain
 // missed one too; else by its domain's reprojection, none for a missed sample or off the image
 func sampleNeighbor<S: IScene>(scene: S, p: int2, seed: uint) -> int2 {
     if (scene.sceneUnchanged()) {
-        return previousValid(scene, p) ? p : int2(-1);
+        return select(int2(-1), p, previousValid(scene, p));
     }
     var dom: Domain = {};
     if (any(p >= int2(scene.renderSize())) || !scene.storedDomainInitial(p, seed, dom)) {
@@ -2749,7 +2747,7 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     }
     // The camera medium's glow at the paths' share, the walks having summed it unscaled
     seen += initial.glow / float(scene.samples());
-    scene.addColor(p, float4(initial.sums ? seen + initial.color : seen, 1.0f));
+    scene.addColor(p, float4(select(seen, seen + initial.color, initial.sums), 1.0f));
     scene.storeReservoirInitial(p, finalize(initial, 1.0f), hit);
 }
 #else

@@ -4,6 +4,8 @@
 module noise;
 
 public static const uint UINT_MAX = 4294967295u;
+[ForceInline] public float select(float f, float t, bool cond) { return select(cond, t, f); }
+[ForceInline] public uint select(uint f, uint t, bool cond) { return select(cond, t, f); }
 
 // Blue noise: a fixed S x S x NOISE_LAYERS tensor of texels of two 16-bit ranks, toroidal in all three dimensions,
 // texel (x, y) of layer t at (t * S + y) * S + x, its ranks as channel 0 | channel 1 << 16
@@ -80,7 +82,7 @@ __extern_cpp public struct Random {
     // Channels 0 and 1 of (x, y), then of the texel across
     var ranks: uint[4];
     for (var i: uint = 0u; i < 4u; i++) {
-        var l: uint = i < 2u ? x : (x + size / 2u) & (size - 1u);
+        var l: uint = select((x + size / 2u) & (size - 1u), x, i < 2u);
         var r: uint = y;
         for (var k: uint = 0u; k < 4u; k++) {
             let next: uint = l ^ (hash(r ^ t << 16u ^ k << 28u ^ (i & 1u) << 31u) & (size - 1u));
@@ -93,7 +95,7 @@ __extern_cpp public struct Random {
     let unbound: bool = ranks[0] == 0xFFFFu && ranks[1] == 0xFFFFu;
     let across_unbound: bool = ranks[2] == 0xFFFFu && ranks[3] == 0xFFFFu;
     let trade: bool = (unbound && ranks[3] != 0xFFFFu) || (across_unbound && ranks[1] != 0xFFFFu);
-    return ranks[0] | (trade ? ranks[3] : ranks[1]) << 16u;
+    return ranks[0] | select(ranks[1], ranks[3], trade) << 16u;
 }
 
 // The start's pass, one thread per texel
@@ -128,7 +130,7 @@ func noiseExp(q: uint) -> uint {
     e = 15688 + (e * f >> 12);
     e = -45418 + (e * f >> 12);
     e = 65536 + (e * f >> 12);
-    return y >> 12u < 31u ? uint(e) >> (y >> 12u) : 0u;
+    return uint(e) >> min(y >> 12u, 31u);
 }
 
 // floor(sqrt(q)), digit by digit, q below 2^30
@@ -137,8 +139,8 @@ func noiseRoot(q: uint) -> uint {
     var root: uint = 0u;
     for (var bit: uint = 1u << 28u; bit != 0u; bit >>= 2u) {
         let step: bool = rest >= root + bit;
-        rest -= step ? root + bit : 0u;
-        root = (root >> 1u) + (step ? bit : 0u);
+        rest -= select(0u, root + bit, step);
+        root = (root >> 1u) + select(0u, bit, step);
     }
     return root;
 }
@@ -295,6 +297,6 @@ public func noiseSize() -> uint {
     let texel: uint = noiseRank(at.x, at.y, (f + (e * 2654435769u >> 27u)) % NOISE_LAYERS);
     let second: bool = (variable & NOISE_SECOND) != 0u;
     let white: Random = pcg(stream(address, variable & ~NOISE_SECOND));
-    return Random(address, texel == NOISE_UNBOUND ? (second ? pcg(white.state).value : white.value)
-        : (float(second ? texel >> 16u : texel & 0xFFFFu) + 0.5f) / 65536.0f);
+    return Random(address, select((float(select(texel & 0xFFFFu, texel >> 16u, second)) + 0.5f) / 65536.0f,
+        select(white.value, pcg(white.state).value, second), texel == NOISE_UNBOUND));
 }

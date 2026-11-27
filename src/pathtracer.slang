@@ -330,7 +330,6 @@ public float inverseSqrt(float x) {
     default: return 1.0f / sqrt(x);
     }
 }
-[ForceInline] public float select(float f, float t, bool cond) { return select(cond, t, f); }
 [ForceInline] public float3 select(float3 f, float3 t, bool cond) { return select(cond, t, f); }
 [ForceInline] public float3 select(float3 f, float3 t, bool3 cond) { return select(cond, t, f); }
 [ForceInline] public bool sheenUsed() {
@@ -378,7 +377,7 @@ public float3 mix(float3 e1, float3 e2, float e3) {
 public float sign(float e) {
     __target_switch {
     case wgsl: __intrinsic_asm "sign($0)";
-    default: return e > 0.0f ? 1.0f : e < 0.0f ? -1.0f : 0.0f;
+    default: return select(select(0.0f, -1.0f, e < 0.0f), 1.0f, e > 0.0f);
     }
 }
 public uint insertBits(uint e, uint newbits, uint offset, uint count) {
@@ -452,11 +451,7 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     let Vh: float3 = normalize(float3(alpha * Ve.x, alpha * Ve.y, Ve.z));
     // Section 4.1: orthonormal basis (with special case if cross product is zero).
     let lensq: float = Vh.x * Vh.x + Vh.y * Vh.y;
-    var T1: float3;
-    __target_switch {
-    case wgsl: T1 = select(float3(1.0, 0.0, 0.0), float3(-Vh.y, Vh.x, 0.0) * inverseSqrt(lensq), lensq > 0.0);
-    default: T1 = lensq > 0.0f ? float3(-Vh.y, Vh.x, 0.0f) * inverseSqrt(lensq) : float3(1.0f, 0.0f, 0.0f);
-    }
+    let T1: float3 = select(float3(1.0f, 0.0f, 0.0f), float3(-Vh.y, Vh.x, 0.0f) * inverseSqrt(lensq), lensq > 0.0f);
     let T2: float3 = cross(Vh, T1);
     // Section 4.2: parameterization of the projected area.
     let r: float = sqrt(U1);
@@ -642,7 +637,7 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     let b: float = min(a + s, PI / 2.0f);
     // view = P(theta_v)
     let view: float = toonP(acos(min(dot(n_i, v), 1.0f)), a, s);
-    let axis: float3 = glossy ? normalize(2.0f * dot(n_i, v) * n_i - v) : n_i;
+    let axis: float3 = select(n_i, normalize(2.0f * dot(n_i, v) * n_i - v), glossy);
     return ToonProfile(glossy, a, s, b, 2.0f * PI * toonIntegral(b, a, s, glossy), view, axis);
 }
 // A toon of mark w != 0
@@ -651,14 +646,14 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
 }
 // P(t) = 1 below a, 1 - (t - a) / s up to a + s, 0 beyond
 [CudaDeviceExport] public func toonP(t: float, a: float, s: float) -> float {
-    return t < a ? 1.0f : max(1.0f - (t - a) / max(s, BIAS), 0.0f);
+    return select(max(1.0f - (t - a) / max(s, BIAS), 0.0f), 1.0f, t < a);
 }
 // G(t) = integral_0^t P cos sin = sin(min(t, a))^2 / 2 + (1 + a / s) * (cos(2a) - cos(2t)) / 4
 //      - ((sin(2t) / 8 - t * cos(2t) / 4) - (sin(2a) / 8 - a * cos(2a) / 4)) / s beyond a
 // H(t) = integral_0^t P sin = 1 - cos(min(t, a)) + (1 + a / s) * (cos(a) - cos(t))
 //      - ((sin(t) - t * cos(t)) - (sin(a) - a * cos(a))) / s beyond a, glossy
 [CudaDeviceExport] public func toonIntegral(t: float, a: float, s: float, glossy: bool) -> float {
-    var integral: float = glossy ? 1.0f - cos(min(t, a)) : sin(min(t, a)) * sin(min(t, a)) / 2.0f;
+    var integral: float = select(sin(min(t, a)) * sin(min(t, a)) / 2.0f, 1.0f - cos(min(t, a)), glossy);
     if (t > a && s > 0.0f) {
         integral += glossy ? (1.0f + a / s) * (cos(a) - cos(t)) - ((sin(t) - t * cos(t)) - (sin(a) - a * cos(a))) / s
             : (1.0f + a / s) * (cos(2.0f * a) - cos(2.0f * t)) / 4.0f
@@ -692,10 +687,11 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     let refracted: float3 = normalize(refract(in_dir, ggx_n, eta));
     // F_dielectric = specular_tint * F0 + (1 - specular_tint * F0) * (F(eta_level) - F0) / (1 - F0)
     // F_dielectric = 1 past total internal reflection: eta_i^2 * (1 - v_dot_h^2) >= eta_o^2
-    let F_level: float = fresnel(abs(v_dot_h), eta_i > eta_o ? eta_level : 1.0f, eta_i > eta_o ? 1.0f : eta_level);
+    let F_level: float = fresnel(abs(v_dot_h), select(1.0f, eta_level, eta_i > eta_o),
+        select(eta_level, 1.0f, eta_i > eta_o));
     let total: bool = eta_i * eta_i * (1.0f - v_dot_h * v_dot_h) >= eta_o * eta_o;
-    let F_dielectric: float3 = total ? float3(1.0f) : material.specular_tint * f0 + (1.0f - material.specular_tint * f0)
-        * (F_level - f0) / (1.0f - f0);
+    let F_dielectric: float3 = select(material.specular_tint * f0 + (1.0f - material.specular_tint * f0)
+        * (F_level - f0) / (1.0f - f0), float3(1.0f), total);
     // Coat: under the sheen, over the base lobes at coat_h
     // f_c: coatFresnel's, series: coatSeries', 1 behind
     // => coat = material.coat * f_c, behind * coat_tint^2 crossing the coat in and out
@@ -1057,10 +1053,11 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     // t = t - (G(t) - target) / (P(t) * sin(t) * cos(t)), P(t) * sin(t) glossy, 8 steps from (a + b) / 2
     let a: float = profile.a;
     let target: float = random_t_1.value * profile.norm / (2.0f * PI);
-    let core: float = profile.glossy ? acos(clamp(1.0f - target, -1.0f, 1.0f)) : asin(min(sqrt(2.0f * target), 1.0f));
-    var t: float = core < a ? core : (a + profile.b) / 2.0f;
+    let core: float = select(asin(min(sqrt(2.0f * target), 1.0f)), acos(clamp(1.0f - target, -1.0f, 1.0f)),
+        profile.glossy);
+    var t: float = select((a + profile.b) / 2.0f, core, core < a);
     for (var k: int = 0; k < 8; k++) {
-        let slope: float = toonP(t, a, profile.s) * sin(t) * (profile.glossy ? 1.0f : cos(t));
+        let slope: float = toonP(t, a, profile.s) * sin(t) * select(cos(t), 1.0f, profile.glossy);
         t = clamp(t - select(0.0f, (toonIntegral(t, a, profile.s, profile.glossy) - target) / slope, slope > 0.0f),
             0.0f, profile.b);
     }
@@ -1456,7 +1453,7 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
 // Colour at accumulation: f_c = w_c(λ) / p(λ) * upsample(f, λ), f a spectral path's throughput times the radiance
 // it meets; RGB paths (wavelength 0) unchanged
 [CudaDeviceExport] public func pathColor(f: float3, weight: float3, wavelength: float) -> float3 {
-    return wavelength > 0.0f ? weight * upsample(f, wavelength) : f;
+    return select(f, weight * upsample(f, wavelength), wavelength > 0.0f);
 }
 
 // Decide between next event estimation and emission on the next hit, as the path tracer does
