@@ -86,10 +86,11 @@ __extern_cpp public struct Weights {
 }
 
 // A vertex's facets, drawn once from its random_state for sampleBSDF and every BSDF toward its lights: the VNDF's
-// half vector h and the coat's microfacet coat_h
+// half vector h and the coat's microfacet coat_h, and the face's other facet t, scaled as their areas, 0 off a face
 __extern_cpp public struct Facets {
     __extern_cpp public float3 h;
     __extern_cpp public float3 coat_h;
+    __extern_cpp public float3 t;
 }
 
 // Tangent and roughness along tangent and bitangent, 0 when isotropic
@@ -608,6 +609,11 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     // Coat
     pdfs[5] = select(0.0f, coatPDF(v, coat_n, coat_frame, w), coat_on);
     throughputs[5] = select(float3(0.0f), coatBSDF(w), coat_on);
+    // Leaving the face by n's masking: BSDF * n_dot_l * G1 = sum throughput * PDF_lobe * G1
+    let masking: float = facetMasking(out_dir, n, facets.t);
+    for (var i: uint = 0u; i < 6u; i++) {
+        pdfs[i] *= masking;
+    }
 }
 
 // Half vector from the VNDF, an anisotropic material's in its frame
@@ -1321,7 +1327,25 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     let n_i: float3 = n * sign(dot(n, v));
     var state: uint = random_state;
     return Facets(sampleHalfVector(v, n_i, material.roughness * material.roughness, anisotropicFrame(material, n_i),
-        state, NOISE_HALF_1), coatHalf(v, coatFrame(material, n_i), random_state));
+        state, NOISE_HALF_1), coatHalf(v, coatFrame(material, n_i), random_state), float3(0.0f));
+}
+
+// A face of normal g as facets of n and tangent facets t = <n, g> g - n = (n x g) x g, of area |t| = sin per facet of
+// n: n + t along g, each facet's area seen from v max(<v, m>, 0) on v's side; v meets t by its share of the two
+// => the facet v meets and the other, scaled against it: (n, t) or (t / |t|, n / |t|)
+[CudaDeviceExport] public func meetFacet(v: float3, n: float3, g: float3, random_state: uint) -> float2x3 {
+    let t: float3 = cross(cross(n, g), g);
+    let area: float2 = max(sign(dot(v, n + t)) * float2(dot(v, n), dot(v, t)), float2(0.0f));
+    return area.y > 0.0f && draw(random_state, NOISE_FACET).value * (area.x + area.y) >= area.x
+        ? float2x3(normalize(t), n / length(t)) : float2x3(n, t);
+}
+
+// Masking of facet n by the face's other facet t: G1 = H(<l, n>) min(1, <l, g> / (a_n + a_t)), on l's side
+// <l, g> ~ <l, n> + <l, t>, a_m ~ max(<l, m>, 0)
+// => G1 = H(<l, n>) max(<l, n> + <l, t>, 0) / (max(<l, n>, 0) + max(<l, t>, 0)), 1 for t = 0
+[CudaDeviceExport] public func facetMasking(l: float3, n: float3, t: float3) -> float {
+    let side: float2 = sign(dot(l, n + t)) * float2(dot(l, n), dot(l, t));
+    return select(0.0f, max(side.x + side.y, 0.0f) / (max(side.x, 0.0f) + max(side.y, 0.0f)), side.x > 0.0f);
 }
 
 // sampleBSDF's coat microfacet, drawn from random_state as sampleBSDF draws it: the VNDF's of alpha_c about n_c, 0

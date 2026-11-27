@@ -1778,6 +1778,9 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         }
         // Ray footprint criterion for reconnecting from the previous vertex to this one (Eq. 5)
         let footprint: bool = scatter && prev.rough && prev.pdf * geometry_density * threshold <= 1.0f;
+        // The facet the ray meets, the face's other facet scaled against it
+        var met: float2x3 = meetFacet(- ray.unit_direction, surface.smooth_n, surface.geometry_n, surface.random_state);
+        surface.smooth_n = met[0];
         let n_dot_v: float = dot(surface.smooth_n, - ray.unit_direction);
         // First dispersive hit: λ from the seed and the path's stratum, which every replay draws again
         // f_c = integral w_c(λ) f(λ) dλ ≈ w_c(λ) / p(λ) * f(λ)
@@ -1798,7 +1801,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let material: Material = pathMaterial(surface.material, wavelength);
         let eta: float2 = wavelengthEta(material, n_dot_v, wavelength);
         // The vertex's facets, drawn once for its light, its sky and its bounce
-        let facets: Facets = drawFacets(ray.unit_direction, surface.smooth_n, material, surface.random_state);
+        var facets: Facets = drawFacets(ray.unit_direction, surface.smooth_n, material, surface.random_state);
+        facets.t = met[1];
         var nee: bool = scatter && neeDecision(material, n_dot_v, eta.x, eta.y);
         // Light is sampled at the top layer alone
         if (layersUsed() && (passed || layer != 0u)) {
@@ -2007,8 +2011,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             var lobe_index: uint = select(extractBits(r.path, PATH_LOBE_PREV, 3u), extractBits(r.path, PATH_LOBE, 3u), arrived);
             var dir: float3 = r.dir;
             var refracted: bool = lobe_index == LOBE_REFRACT;
-            var wrong_side: bool = false;
-            // Sample leaving this vertex, without density when sampled to the wrong side of the face
+            var masked: bool = false;
+            // Sample leaving this vertex, without density when scattered again by the face's other facet
             var lobe: SampleBSDF = SampleBSDF();
             if (connect) {
                 if (is_inside != (extractBits(r.path, PATH_INSIDE, 1u) == 1u)) {
@@ -2022,10 +2026,6 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                 if (rc == RC_SURFACE) {
                     dir = normalize(reconnection - (ray.origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, is_inside != refracted)));
                 }
-                // The path tracer samples again or mirrors directions sampled to the wrong side of the face, which no density reaches
-                if (AT_HAIR(false, wrongSide(is_inside, refracted, dir, surface.geometry_n))) {
-                    return fail;
-                }
             } else if (!arrived) {
                 var bsdf_sampled: SampleBSDF = AT_HAIR(scene.sampleHair(surface.hair, material.albedo, material.specular_tint, ray.unit_direction, surface.random_state),
                     sampleBSDF(ray.unit_direction, surface.smooth_n, material, eta.x, eta.y, facets, surface.random_state, float2(0.0f)));
@@ -2038,21 +2038,25 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     break;
                 }
 #endif
-                // Rays sampled to the wrong side of the face are sampled again or mirrored, as the path tracer's
-                wrong_side = AT_HAIR(false, wrongSide(is_inside, bsdf_sampled.refracted, bsdf_sampled.unit_direction, surface.geometry_n));
-                if (wrong_side && material.transmission > 0.0f) {
-                    let geometry_bsdf_sampled: SampleBSDF = sampleBSDF(bsdf_sampled.unit_direction, surface.geometry_n, material, eta.x, eta.y, drawFacets(bsdf_sampled.unit_direction, surface.geometry_n, material, bsdf_sampled.random_state), bsdf_sampled.random_state, float2(0.0f));
-                    bsdf_sampled.unit_direction = geometry_bsdf_sampled.unit_direction;
-                    bsdf_sampled.refracted = geometry_bsdf_sampled.refracted;
-                    bsdf_sampled.throughput = geometry_bsdf_sampled.throughput;
-                } else if (wrong_side) {
-                    bsdf_sampled.unit_direction -= 2.0f * dot(bsdf_sampled.unit_direction, surface.geometry_n) * surface.geometry_n;
+                // Leaving by the facet's masking, else scattered by the face's other facet until leaving
+                let masking: float = AT_HAIR(1.0f, facetMasking(bsdf_sampled.unit_direction, surface.smooth_n, facets.t));
+                for (var leaving: float = masking; leaving < 1.0f
+                    && leaving < draw(bsdf_sampled.random_state, NOISE_ESCAPE).value; ) {
+                    masked = true;
+                    met = float2x3(normalize(met[1]), met[0] / length(met[1]));
+                    let state: uint = hash(bsdf_sampled.random_state);
+                    let side: float2 = bsdf_sampled.refracted ? eta.yx : eta;
+                    let again: SampleBSDF = sampleBSDF(bsdf_sampled.unit_direction, met[0], material, side.x, side.y,
+                        drawFacets(bsdf_sampled.unit_direction, met[0], material, state), state, float2(0.0f));
+                    bsdf_sampled = SampleBSDF(again.unit_direction, bsdf_sampled.throughput * again.throughput, state,
+                        bsdf_sampled.refracted != again.refracted, again.lobe, 0.0f);
+                    leaving = facetMasking(again.unit_direction, met[0], met[1]);
                 }
                 lobe_index = bsdf_sampled.lobe;
                 dir = bsdf_sampled.unit_direction;
                 refracted = bsdf_sampled.refracted;
                 lobe = bsdf_sampled;
-                lobe.pdf = select(bsdf_sampled.pdf, 0.0f, wrong_side);
+                lobe.pdf = bsdf_sampled.pdf * masking;
             }
             // Connections evaluate the given direction
             if (connect || arrived) {
@@ -2119,7 +2123,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     // Directions the lobe can't sample carry no throughput
                     if (pdf > 0.0f) {
                         lobe = SampleBSDF(dir, lobe_throughput, surface.random_state, lobe_index == LOBE_REFRACT,
-                            lobe_index, pdf);
+                            lobe_index, pdf * facetMasking(dir, surface.smooth_n, facets.t));
                     }
                 }
             }
@@ -2140,7 +2144,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
 #endif
             // Translucent surfaces are thin, as in the path tracer
             let through: bool = isTranslucent(material) && lobe_index == LOBE_DIFFUSE && dot(dir, surface.geometry_n) < 0.0f;
-            if (nee && !delta && !wrong_side) {
+            if (nee && !delta && !masked) {
 #ifdef FK_FCPT_WALK
                 nee_vertex = NEEVertex(false, lobe.pdf, ray.origin, select(surface.smooth_n, float3(0.0f), sided), ray.origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, through));
 #else
