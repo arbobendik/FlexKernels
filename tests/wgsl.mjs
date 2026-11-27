@@ -66,7 +66,7 @@ fn parity_importance(node: LightBounds, p: vec3<f32>, normal: vec3<f32>) -> f32 
     if (dot(normal, normal) != 0.0) {
         facing = parity_cosSubClamped(parity_sine(cos_theta_i), cos_theta_i, sin_theta_b, cos_theta_b);
     }
-    return max(node.phi * cos_theta_p / max(d2, length(diagonal) / 2.0) * facing, 0.0);
+    return max(node.phi * cos_theta_p / max(d2, r2) * facing, 0.0);
 }
 `;
 // FK's lobes by their BSDF and PDF functions, toward a given out_dir as the walk's replay takes them

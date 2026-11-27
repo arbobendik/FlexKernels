@@ -509,7 +509,7 @@ float interpolate(float a, float b, float t) {
 
 // Importance of a node to p
 // theta_x = max(0, theta_w - theta_o), theta_p = max(0, theta_x - theta_b)
-// importance = phi * cos(theta_p) / max(d^2, |diagonal| / 2) * cos(max(0, theta_i - theta_b)), 1 without normal
+// importance = phi * cos(theta_p) / max(d^2, |diagonal|^2 / 4) * cos(max(0, theta_i - theta_b)), 1 without normal
 [CudaDeviceExport] public func importance(node: LightBounds, p: float3, normal: float3) -> float {
     let center: float3 = (node.low + node.high) * 0.5f;
     let diagonal: float3 = node.high - node.low;
@@ -529,7 +529,7 @@ float interpolate(float a, float b, float t) {
         return 0.0f;
     }
     let cos_theta_i: float = - dot(wi, normal);
-    return max(node.phi * cos_theta_p / max(d2, length(diagonal) / 2.0f)
+    return max(node.phi * cos_theta_p / max(d2, r2)
         * select(cosSubClamped(sine(cos_theta_i), cos_theta_i, sin_theta_b, cos_theta_b), 1.0f, dot(normal, normal) == 0.0f), 0.0f);
 }
 
