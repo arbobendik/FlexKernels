@@ -1575,6 +1575,28 @@ uint extractBits(uint e, uint offset, uint count) {
     return false;
 }
 
+// The ray carried to hit through its medium, and its cone widened
+[ForceInline] func toHit<S: IScene>(scene: S, hit: Hit, replay: bool, filling: uint, scatter_in: float3,
+    extinction_in: float3, weight: float3, glowed: float3, spread: float, density: float, spectral_weight: float3,
+    wavelength: float, inout ray: Ray, inout throughput: float3, inout width: float, inout sel: Selection) {
+    // Project ray origin to hit point
+    ray.origin += hit.distance * ray.unit_direction;
+    if (mediaUsed()) {
+        // Medium transmittance to the hit, and a varying medium's emission
+        if (scene.varyingUsed() && filling != UINT_MAX) {
+            if (!replay) {
+                addGlow(sel, pathColor(throughput * glowed, spectral_weight, wavelength) / density);
+            }
+            throughput *= weight;
+        } else {
+            throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
+        }
+    }
+    if (coneUsed()) {
+        width += spread * hit.distance;
+    }
+}
+
 // An escape along ray, which ends the walk: its environment weighed against the sky's light sampling, returned
 // replaying, else offered into sel
 func escape<S: IScene>(scene: S, r: Reservoir, replay: bool, stop: uint, rc: uint, end: uint, end_type: uint,
@@ -1709,22 +1731,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             return escape(scene, r, replay, stop, rc, end, end_type, scale, strata, chain, chain_throughput, b, ray,
                 throughput, density, prev, nee_vertex, sky_pdf, spectral_weight, wavelength, sel);
         }
-        // Project ray origin to hit point
-        ray.origin += hit.distance * ray.unit_direction;
-        if (mediaUsed()) {
-            // Medium transmittance to the hit, and a varying medium's emission
-            if (scene.varyingUsed() && filling != UINT_MAX) {
-                if (!replay) {
-                    addGlow(sel, pathColor(throughput * glowed, spectral_weight, wavelength) / density);
-                }
-                throughput *= weight;
-            } else {
-                throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
-            }
-        }
-        if (coneUsed()) {
-            width += spread * hit.distance;
-        }
+        toHit(scene, hit, replay, filling, scatter_in, extinction_in, weight, glowed, spread, density, spectral_weight,
+            wavelength, ray, throughput, width, sel);
 #ifdef FK_FCPT_WALK
         camera_b = b;
 #endif
@@ -2304,22 +2312,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             return escape(scene, r, replay, stop, rc, end, end_type, scale, strata, chain, chain_throughput, b, ray,
                 throughput, density, prev, nee_vertex, sky_pdf, spectral_weight, wavelength, sel);
         }
-        // Project ray origin to hit point
-        ray.origin += hit.distance * ray.unit_direction;
-        if (mediaUsed()) {
-            // Medium transmittance to the hit, and a varying medium's emission
-            if (scene.varyingUsed() && filling != UINT_MAX) {
-                if (!replay) {
-                    addGlow(sel, pathColor(throughput * glowed, spectral_weight, wavelength) / density);
-                }
-                throughput *= weight;
-            } else {
-                throughput *= flightWeight(scatter_in, extinction_in, (scatter_in.x + scatter_in.y + scatter_in.z) / 3.0f, hit.distance, false);
-            }
-        }
-        if (coneUsed()) {
-            width += spread * hit.distance;
-        }
+        toHit(scene, hit, replay, filling, scatter_in, extinction_in, weight, glowed, spread, density, spectral_weight,
+            wavelength, ray, throughput, width, sel);
     }
     return fail;
 }
