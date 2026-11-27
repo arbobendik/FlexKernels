@@ -1575,6 +1575,43 @@ uint extractBits(uint e, uint offset, uint count) {
     return false;
 }
 
+// An escape along ray, which ends the walk: its environment weighed against the sky's light sampling, returned
+// replaying, else offered into sel
+func escape<S: IScene>(scene: S, r: Reservoir, replay: bool, stop: uint, rc: uint, end: uint, end_type: uint,
+    scale: float, strata: uint, chain: Reservoir, chain_throughput: float3, b: uint, ray: Ray, throughput: float3,
+    density: float, prev: Vertex, nee_vertex: NEEVertex, sky_pdf: float, spectral_weight: float3, wavelength: float,
+    inout sel: Selection) -> Shift {
+    let fail: Shift = Shift(float3(0.0f), 0.0f);
+    // BSDF sampled escapes share the environment with its next event estimation
+    let weight: float = escapeWeight(scene, select(0.0f, sky_pdf, !nee_vertex.none), ray.unit_direction);
+    let f: float3 = pathColor(throughput * environment(scene, ray.unit_direction
+#ifdef FK_FCPT_WALK
+        , b, prev.lobe
+#endif
+        ), spectral_weight, wavelength);
+    if (replay) {
+        if (b == stop && rc == RC_ENV) {
+            return Shift(f * weight / r.jac, density / r.jac);
+        }
+        if (rc == RC_NONE && end_type == END_ENV && b == end && !prev.rough) {
+            return Shift(f * weight, 1.0f);
+        }
+        return fail;
+    }
+    var candidate: Reservoir = chain;
+    if (extractBits(chain.path, PATH_RC, 2u) == RC_SURFACE) {
+        // Escaping right after x_k, the shift evaluates the weight with the new incoming direction
+        candidate.radiance = safeDivide(f * select(weight, 1.0f, extractBits(chain.path, PATH_K, 5u) == b), chain_throughput);
+    } else if (prev.rough) {
+        // Reconnection to the environment direction, guarded by the roughness threshold only (Sec. 4.2)
+        candidate.path = insertBits(insertBits(insertBits(insertBits(strata, b + 1u, PATH_K, 5u), RC_ENV, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 3u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
+        candidate.jac = prev.pdf;
+        candidate.dir = ray.unit_direction;
+    }
+    offer(sel, withEnd(candidate, END_ENV, b, f * weight), f * weight * scale / density);
+    return fail;
+}
+
 // Walk a path from dom. Generating, every path is resampled into sel with its reconnection vertex (Sec. 6.1).
 // Replaying, the hybrid shift maps r into dom (Sec. 2.3) and returns f * |J| (Eq. 2), 0 outside its image.
 public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, scale: float, inout sel: Selection) -> Shift {
@@ -1669,34 +1706,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
 #endif
         // Escape ends the walk
         if (hit.instance_index == UINT_MAX) {
-            // BSDF sampled escapes share the environment with its next event estimation
-            let weight: float = escapeWeight(scene, select(0.0f, sky_pdf, !nee_vertex.none), ray.unit_direction);
-            let f: float3 = pathColor(throughput * environment(scene, ray.unit_direction
-#ifdef FK_FCPT_WALK
-                , b, prev.lobe
-#endif
-                ), spectral_weight, wavelength);
-            if (replay) {
-                if (b == stop && rc == RC_ENV) {
-                    return Shift(f * weight / r.jac, density / r.jac);
-                }
-                if (rc == RC_NONE && end_type == END_ENV && b == end && !prev.rough) {
-                    return Shift(f * weight, 1.0f);
-                }
-                return fail;
-            }
-            var candidate: Reservoir = chain;
-            if (extractBits(chain.path, PATH_RC, 2u) == RC_SURFACE) {
-                // Escaping right after x_k, the shift evaluates the weight with the new incoming direction
-                candidate.radiance = safeDivide(f * select(weight, 1.0f, extractBits(chain.path, PATH_K, 5u) == b), chain_throughput);
-            } else if (prev.rough) {
-                // Reconnection to the environment direction, guarded by the roughness threshold only (Sec. 4.2)
-                candidate.path = insertBits(insertBits(insertBits(insertBits(strata, b + 1u, PATH_K, 5u), RC_ENV, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 3u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
-                candidate.jac = prev.pdf;
-                candidate.dir = ray.unit_direction;
-            }
-            offer(sel, withEnd(candidate, END_ENV, b, f * weight), f * weight * scale / density);
-            return fail;
+            return escape(scene, r, replay, stop, rc, end, end_type, scale, strata, chain, chain_throughput, b, ray,
+                throughput, density, prev, nee_vertex, sky_pdf, spectral_weight, wavelength, sel);
         }
         // Project ray origin to hit point
         ray.origin += hit.distance * ray.unit_direction;
@@ -2290,34 +2301,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
 #endif
         }
         if (hit.instance_index == UINT_MAX) {
-            // BSDF sampled escapes share the environment with its next event estimation
-            let weight: float = escapeWeight(scene, select(0.0f, sky_pdf, !nee_vertex.none), ray.unit_direction);
-            let f: float3 = pathColor(throughput * environment(scene, ray.unit_direction
-#ifdef FK_FCPT_WALK
-                , b, prev.lobe
-#endif
-                ), spectral_weight, wavelength);
-            if (replay) {
-                if (b == stop && rc == RC_ENV) {
-                    return Shift(f * weight / r.jac, density / r.jac);
-                }
-                if (rc == RC_NONE && end_type == END_ENV && b == end && !prev.rough) {
-                    return Shift(f * weight, 1.0f);
-                }
-                return fail;
-            }
-            var candidate: Reservoir = chain;
-            if (extractBits(chain.path, PATH_RC, 2u) == RC_SURFACE) {
-                // Escaping right after x_k, the shift evaluates the weight with the new incoming direction
-                candidate.radiance = safeDivide(f * select(weight, 1.0f, extractBits(chain.path, PATH_K, 5u) == b), chain_throughput);
-            } else if (prev.rough) {
-                // Reconnection to the environment direction, guarded by the roughness threshold only (Sec. 4.2)
-                candidate.path = insertBits(insertBits(insertBits(insertBits(strata, b + 1u, PATH_K, 5u), RC_ENV, PATH_RC, 2u), prev.lobe, PATH_LOBE_PREV, 3u), select(0u, 1u, prev.inside), PATH_INSIDE, 1u);
-                candidate.jac = prev.pdf;
-                candidate.dir = ray.unit_direction;
-            }
-            offer(sel, withEnd(candidate, END_ENV, b, f * weight), f * weight * scale / density);
-            break;
+            return escape(scene, r, replay, stop, rc, end, end_type, scale, strata, chain, chain_throughput, b, ray,
+                throughput, density, prev, nee_vertex, sky_pdf, spectral_weight, wavelength, sel);
         }
         // Project ray origin to hit point
         ray.origin += hit.distance * ray.unit_direction;
