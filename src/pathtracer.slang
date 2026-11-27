@@ -501,6 +501,12 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     return float3(dot(v, tangent), dot(v, n), dot(v, bitangent));
 }
 
+// t projected off n, any perpendicular where t lies along n
+[ForceInline] func perpendicular(t: float3, n: float3) -> float3 {
+    let projected: float3 = t - n * dot(n, t);
+    return normalize(select(tangentToWorld(float3(1.0f, 0.0f, 0.0f), n), projected, dot(projected, projected) > 0.0f));
+}
+
 // Tangent frame of the normal map from the triangle's edges and UV deltas
 [CudaDeviceExport] public func normalMapTBN(p0: float3, p1: float3, p2: float3, uv0: float2, uv1: float2, uv2: float2, n: float3) -> float3x3 {
     let e1: float3 = p1 - p0;
@@ -513,7 +519,7 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     let b_geom: float3 = (e2 * duv1.x - e1 * duv2.x) * inv_det;
 
     // Gram-Schmidt: make tangent perpendicular to interpolated normal.
-    t = normalize(t - n * dot(n, t));
+    t = perpendicular(t, n);
     // Handedness: ensure TBN is right-handed; flip T if geometric b disagrees with cross(n,t).
     if (dot(cross(n, t), b_geom) > 0.0f) {
         // Refractive half-vector (eq. 16)
@@ -842,9 +848,7 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     if (!anisotropyUsed() || material.anisotropy == 0.0f || !(alpha > 0.0f)) {
         return AnisotropicFrame(float3(0.0f), float2(0.0f));
     }
-    // Any perpendicular where the tangent lies along the normal
-    let projected: float3 = material.tangent - n_i * dot(n_i, material.tangent);
-    let t: float3 = normalize(select(tangentToWorld(float3(1.0f, 0.0f, 0.0f), n_i), projected, dot(projected, projected) > 0.0f));
+    let t: float3 = perpendicular(material.tangent, n_i);
     let angle: float = 2.0f * PI * material.anisotropic_rotation;
     let aspect: float = sqrt(1.0f - 0.9f * abs(material.anisotropy));
     let ratio: float = select(aspect, 1.0f / aspect, material.anisotropy < 0.0f);
