@@ -89,8 +89,8 @@ __device__ Result evaluate(const Case& c) {
     for (unsigned lobe = 0; lobe < 3; lobe++) {
         const bool side = lobe == 1 ? dot3(vec(n_i), out_dir) < 0 : dot3(vec(n_i), out_dir) > 0;
         const Vec throughput = lobe == 0 ? diffuseBSDF(out_dir, vec(n_i), material, r.lobes)
-            : lobe == 1 ? refractBSDF(out_dir, vec(n_i), alpha, frame, material, r.lobes)
-            : reflectBSDF(out_dir, vec(n_i), alpha, frame, r.lobes);
+            : lobe == 1 ? refractBSDF(maskingG1(out_dir, vec(n_i), -1.0f, alpha, frame), material, r.lobes)
+            : reflectBSDF(maskingG1(out_dir, vec(n_i), 1.0f, alpha, frame), r.lobes);
         r.lobe_throughput[lobe] = p_lobe[lobe] > 1e-6f && side ? throughput : vec(zero);
         const float n_i_dot_l = dot3(vec(n_i), out_dir), l_dot_h = dot3(out_dir, vec(ggx_n));
         const float n_i_dot_v = fabsf(n_dot_v);

@@ -589,10 +589,12 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     let pdf_h: float = vndfPDF(v, ggx_n, n_i, abs(n_dot_v), alpha, frame, w.v_dot_h);
     // Refraction
     pdfs[1] = select(0.0f, refractPDF(dot(out_dir, ggx_n), pdf_h, w, eta_i, eta_o), refracted);
-    throughputs[1] = select(float3(0.0f), refractBSDF(out_dir, n_i, alpha, frame, material, w), refracted);
+    throughputs[1] = select(float3(0.0f), refractBSDF(maskingG1(out_dir, n_i, -1.0f, alpha, frame), material, w),
+        refracted);
     // Reflection at out_dir's reflective half vector
     pdfs[2] = select(0.0f, reflectPDF(pdf_h, w), !refracted);
-    throughputs[2] = select(float3(0.0f), reflectBSDF(out_dir, n_i, alpha, frame, w), !refracted);
+    throughputs[2] = select(float3(0.0f), reflectBSDF(maskingG1(out_dir, n_i, 1.0f, alpha, frame), w),
+        !refracted);
     // Sheen
     pdfs[3] = select(0.0f, sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), w), !refracted);
     throughputs[3] = select(float3(0.0f), sheenVelvetBSDF(out_dir, v, n_i, material, w), !refracted);
@@ -868,6 +870,17 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
 [CudaDeviceExport] public func anisotropicG1(w: float3, alphas: float2) -> float {
     let n_dot_w: float = max(w.z, 0.0f);
     return 2.0f * n_dot_w / (n_dot_w + length(float3(alphas.x * w.x, alphas.y * w.y, n_dot_w)));
+}
+
+// G1_l, the masking toward l on side of n_i, 1 above and -1 below: the reflection's and the refraction's
+[CudaDeviceExport] public func maskingG1(l: float3, n_i: float3, side: float, alpha: float, frame: AnisotropicFrame)
+    -> float {
+    var G1_l: float = smithG1(alpha, max(side * dot(n_i, l), 0.0f));
+    // Anisotropic masking toward l in its frame
+    if (frame.alphas.x > 0.0f) {
+        G1_l = anisotropicG1(anisotropicLocal(l, frame.tangent, n_i * side), frame.alphas);
+    }
+    return G1_l;
 }
 
 // Each lobe by three functions under each other: XBSDF, its throughput toward l, XSample, sampleBSDF's case drawing
@@ -1162,15 +1175,8 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
         / (4.0f * n_dot_v), alpha_c > 0.0f);
 }
 
-[CudaDeviceExport] public func refractBSDF(l: float3, n_i: float3, alpha: float, frame: AnisotropicFrame,
-    material: Material, w: Weights) -> float3 {
-    let m_n_i_dot_l: float = - dot(n_i, l);
+[CudaDeviceExport] public func refractBSDF(G1_l: float, material: Material, w: Weights) -> float3 {
     // Microfacet term
-    var G1_l: float = smithG1(alpha, max(m_n_i_dot_l, 0.0f));
-    // Anisotropic masking toward l in its frame
-    if (frame.alphas.x > 0.0f) {
-        G1_l = anisotropicG1(anisotropicLocal(l, frame.tangent, negate(n_i)), frame.alphas);
-    }
     // BSDF = refract_weight * v_dot_h / n_dot_v / n_dot_l * D * G * JACOBIAN * albedo, refract_weight holding (1 - F)
     // => BSDF * n_dot_l = refract_weight * v_dot_h / n_dot_v * D * G * JACOBIAN * albedo
 
@@ -1192,7 +1198,7 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     sample.random_state = random_state;
     sample.refracted = true;
     sample.lobe = LOBE_REFRACT;
-    sample.throughput = refractBSDF(sample.unit_direction, n_i, alpha, frame, material, w);
+    sample.throughput = refractBSDF(maskingG1(sample.unit_direction, n_i, -1.0f, alpha, frame), material, w);
     sample.pdf = refractPDF(dot(sample.unit_direction, ggx_n), pdf_h, w, eta_i, eta_o);
     return sample;
 }
@@ -1213,15 +1219,8 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
         eta_i != eta_o && l_dot_h < 0.0f);
 }
 
-[CudaDeviceExport] public func reflectBSDF(l: float3, n_i: float3, alpha: float, frame: AnisotropicFrame, w: Weights)
-    -> float3 {
-    let n_i_dot_l: float = dot(n_i, l);
+[CudaDeviceExport] public func reflectBSDF(G1_l: float, w: Weights) -> float3 {
     // Torrance-Sparrow
-    var G1_l: float = smithG1(alpha, max(n_i_dot_l, 0.0f));
-    // Anisotropic masking toward l in its frame
-    if (frame.alphas.x > 0.0f) {
-        G1_l = anisotropicG1(anisotropicLocal(l, frame.tangent, n_i), frame.alphas);
-    }
     // BSDF = reflect_weight * D * G * F / (4 * n_dot_v * n_dot_l)
     // => BSDF * n_dot_l = reflect_weight * D * G * F / (4 * n_dot_v)
 
@@ -1241,7 +1240,7 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     sample.unit_direction = normalize(reflect(in_dir, ggx_n));
     sample.random_state = random_state;
     sample.lobe = LOBE_REFLECT;
-    sample.throughput = reflectBSDF(sample.unit_direction, n_i, alpha, frame, w);
+    sample.throughput = reflectBSDF(maskingG1(sample.unit_direction, n_i, 1.0f, alpha, frame), w);
     sample.pdf = reflectPDF(pdf_h, w);
     return sample;
 }

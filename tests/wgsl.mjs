@@ -75,8 +75,8 @@ fn parity_throughput(l: vec3<f32>, n_i: vec3<f32>, alpha: f32, material: Materia
     -> vec3<f32> {
     let frame = anisotropicFrame(material, n_i);
     if (lobe == 0u) { return diffuseBSDF(l, n_i, material, lobes); }
-    if (lobe == 1u) { return refractBSDF(l, n_i, alpha, frame, material, lobes); }
-    return reflectBSDF(l, n_i, alpha, frame, lobes);
+    if (lobe == 1u) { return refractBSDF(maskingG1(l, n_i, -1.0, alpha, frame), material, lobes); }
+    return reflectBSDF(maskingG1(l, n_i, 1.0, alpha, frame), lobes);
 }
 fn parity_density(n_i_dot_l: f32, l_dot_h: f32, n_i_dot_v: f32, alpha: f32, lobes: Weights, eta_i: f32,
     eta_o: f32, lobe: u32, v: vec3<f32>, h: vec3<f32>, n_i: vec3<f32>, material: Material) -> f32 {

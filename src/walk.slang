@@ -2093,7 +2093,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                         break;
                     case LOBE_REFRACT:
                         pdf = refractPDF(dot(dir, ggx_n), pdf_h, w, eta.x, eta.y);
-                        lobe_throughput = refractBSDF(dir, n_i, alpha, frame, material, w);
+                        lobe_throughput = refractBSDF(maskingG1(dir, n_i, -1.0f, alpha, frame), material, w);
                         break;
                     case LOBE_SHEEN_VELVET:
                         pdf = sheenVelvetPDF(n_i_dot_l, abs(n_dot_v), w);
@@ -2113,7 +2113,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
 #endif
                     default:
                         pdf = reflectPDF(pdf_h, w);
-                        lobe_throughput = reflectBSDF(dir, n_i, alpha, frame, w);
+                        lobe_throughput = reflectBSDF(maskingG1(dir, n_i, 1.0f, alpha, frame), w);
                         break;
                     }
                     // Directions the lobe can't sample carry no throughput

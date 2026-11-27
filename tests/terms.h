@@ -41,7 +41,7 @@ TERMS SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, TermsM m, f
         throughput = diffuseBSDF(out_dir, n_i, m, w);
     } else if (lobe == 1) {
         pdf = refractPDF(dot_0(out_dir, h), vndfPDF(v, h, n_i, n_i_dot_v, alpha, frame, w.v_dot_h), w, eta_i, eta_o);
-        throughput = refractBSDF(out_dir, n_i, alpha, frame, m, w);
+        throughput = refractBSDF(maskingG1(out_dir, n_i, -1.0f, alpha, frame), m, w);
     } else if (lobe == 5) {
         pdf = coatPDF(v, coat_n, coat_frame, w);
         throughput = coatBSDF(w);
@@ -56,7 +56,7 @@ TERMS SampleBSDF towardLobe(TermsV in_dir, TermsV out_dir, TermsV n, TermsM m, f
 #endif
     } else {
         pdf = reflectPDF(vndfPDF(v, h, n_i, n_i_dot_v, alpha, frame, w.v_dot_h), w);
-        throughput = reflectBSDF(out_dir, n_i, alpha, frame, w);
+        throughput = reflectBSDF(maskingG1(out_dir, n_i, 1.0f, alpha, frame), w);
     }
     if (!(pdf > 0)) return SampleBSDF{};
     return SampleBSDF{out_dir, throughput, random_init, lobe == 1, lobe, pdf};
