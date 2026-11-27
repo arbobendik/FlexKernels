@@ -516,7 +516,6 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     t = normalize(t - n * dot(n, t));
     // Handedness: ensure TBN is right-handed; flip T if geometric b disagrees with cross(n,t).
     if (dot(cross(n, t), b_geom) > 0.0f) {
-        // Refractive half-vector (eq. 16)
         t = negate(t);
     }
     let b: float3 = cross(n, t);
@@ -927,21 +926,16 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
 // Diffuse case of sampleBSDF, u its draw over the base lobes
 [CudaDeviceExport] public func diffuseSample(u: float, n_i: float3, n_i_dot_v: float, material: Material, w: Weights,
     random_state: uint) -> SampleBSDF {
-    var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     let random_d_1: Random = draw(random_state, NOISE_DIR_1);
     let random_d_2: Random = draw(random_state, NOISE_DIR_2);
-    sample.random_state = random_d_2.state;
     // Sample cosine weighted hemisphere
     let cosine_hemisphere: float3 = sampleCosWeightedHemisphere(random_d_1.value, random_d_2.value);
     // Behind the surface with probability translucent_share: cosine sample mirrored across the tangent plane
     let through: bool = u < w.p_diffuse * translucentShare(material);
     let toward: float = select(cosine_hemisphere.y, - cosine_hemisphere.y, through);
-    sample.unit_direction = tangentToWorld(float3(cosine_hemisphere.x, toward, cosine_hemisphere.z), n_i);
-    sample.refracted = through;
-    sample.lobe = LOBE_DIFFUSE;
-    sample.throughput = diffuseBSDF(sample.unit_direction, n_i, material, w);
-    sample.pdf = diffusePDF(toward, n_i_dot_v, material, w);
-    return sample;
+    let dir: float3 = tangentToWorld(float3(cosine_hemisphere.x, toward, cosine_hemisphere.z), n_i);
+    return SampleBSDF(dir, diffuseBSDF(dir, n_i, material, w), random_d_2.state, through, LOBE_DIFFUSE,
+        diffusePDF(toward, n_i_dot_v, material, w));
 }
 
 [CudaDeviceExport] public func diffusePDF(n_i_dot_l: float, n_i_dot_v: float, material: Material, w: Weights)
@@ -1022,18 +1016,14 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
 // Sheen case of sampleBSDF
 [CudaDeviceExport] public func sheenVelvetSample(v: float3, n_i: float3, n_i_dot_v: float, material: Material,
     w: Weights, random_state: uint) -> SampleBSDF {
-    var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     let random_s_1: Random = draw(random_state, NOISE_DIR_1);
     let random_s_2: Random = draw(random_state, NOISE_DIR_2);
-    sample.random_state = random_s_2.state;
     // Sample uniform hemisphere
     let across: float = sqrt(max(0.0f, 1.0f - random_s_1.value * random_s_1.value));
     let phi: float = 2.0f * PI * random_s_2.value;
-    sample.unit_direction = tangentToWorld(float3(across * cos(phi), random_s_1.value, across * sin(phi)), n_i);
-    sample.lobe = LOBE_SHEEN_VELVET;
-    sample.throughput = sheenVelvetBSDF(sample.unit_direction, v, n_i, material, w);
-    sample.pdf = sheenVelvetPDF(random_s_1.value, n_i_dot_v, w);
-    return sample;
+    let dir: float3 = tangentToWorld(float3(across * cos(phi), random_s_1.value, across * sin(phi)), n_i);
+    return SampleBSDF(dir, sheenVelvetBSDF(dir, v, n_i, material, w), random_s_2.state, false, LOBE_SHEEN_VELVET,
+        sheenVelvetPDF(random_s_1.value, n_i_dot_v, w));
 }
 
 [CudaDeviceExport] public func sheenVelvetPDF(n_i_dot_l: float, n_i_dot_v: float, w: Weights) -> float {
@@ -1062,10 +1052,8 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
 // Toon case of sampleBSDF
 [CudaDeviceExport] public func toonSample(n_i: float3, profile: ToonProfile, w: Weights, random_state: uint)
     -> SampleBSDF {
-    var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     let random_t_1: Random = draw(random_state, NOISE_DIR_1);
     let random_t_2: Random = draw(random_state, NOISE_DIR_2);
-    sample.random_state = random_t_2.state;
     // target = u_1 * K / (2 * PI), t = G^-1(target), H^-1 glossy, closed below a
     // t = t - (G(t) - target) / (P(t) * sin(t) * cos(t)), P(t) * sin(t) glossy, 8 steps from (a + b) / 2
     let a: float = profile.a;
@@ -1078,12 +1066,9 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
             0.0f, profile.b);
     }
     let phi: float = 2.0f * PI * random_t_2.value;
-    sample.unit_direction = tangentToWorld(float3(sin(t) * cos(phi), cos(t), sin(t) * sin(phi)), profile.axis);
-    sample.refracted = dot(n_i, sample.unit_direction) < 0.0f;
-    sample.lobe = LOBE_TOON;
-    sample.throughput = toonBSDF(sample.unit_direction, n_i, profile, w);
-    sample.pdf = toonPDF(sample.unit_direction, n_i, profile, w);
-    return sample;
+    let dir: float3 = tangentToWorld(float3(sin(t) * cos(phi), cos(t), sin(t) * sin(phi)), profile.axis);
+    return SampleBSDF(dir, toonBSDF(dir, n_i, profile, w), random_t_2.state, dot(n_i, dir) < 0.0f, LOBE_TOON,
+        toonPDF(dir, n_i, profile, w));
 }
 
 [CudaDeviceExport] public func toonPDF(l: float3, n_i: float3, profile: ToonProfile, w: Weights) -> float {
@@ -1154,13 +1139,8 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
 // Coat case of sampleBSDF: the mirror about the coat's microfacet coat_h
 [CudaDeviceExport] public func coatSample(in_dir: float3, v: float3, coat_h: float3, coat_frame: CoatFrame,
     w: Weights, random_state: uint) -> SampleBSDF {
-    var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
-    sample.unit_direction = normalize(reflect(in_dir, coat_h));
-    sample.random_state = random_state;
-    sample.lobe = LOBE_COAT;
-    sample.throughput = coatBSDF(w);
-    sample.pdf = coatPDF(v, coat_h, coat_frame, w);
-    return sample;
+    return SampleBSDF(normalize(reflect(in_dir, coat_h)), coatBSDF(w), random_state, false, LOBE_COAT,
+        coatPDF(v, coat_h, coat_frame, w));
 }
 
 [CudaDeviceExport] public func coatPDF(v: float3, coat_h: float3, coat_frame: CoatFrame, w: Weights) -> float {
@@ -1192,15 +1172,9 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
 // Refractive case of sampleBSDF, through its half vector ggx_n
 [CudaDeviceExport] public func refractSample(ggx_n: float3, n_i: float3, alpha: float, frame: AnisotropicFrame,
     material: Material, w: Weights, pdf_h: float, eta_i: float, eta_o: float, random_state: uint) -> SampleBSDF {
-    var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
     // Refraction is valid
-    sample.unit_direction = w.refracted;
-    sample.random_state = random_state;
-    sample.refracted = true;
-    sample.lobe = LOBE_REFRACT;
-    sample.throughput = refractBSDF(maskingG1(sample.unit_direction, n_i, -1.0f, alpha, frame), material, w);
-    sample.pdf = refractPDF(dot(sample.unit_direction, ggx_n), pdf_h, w, eta_i, eta_o);
-    return sample;
+    return SampleBSDF(w.refracted, refractBSDF(maskingG1(w.refracted, n_i, -1.0f, alpha, frame), material, w),
+        random_state, true, LOBE_REFRACT, refractPDF(dot(w.refracted, ggx_n), pdf_h, w, eta_i, eta_o));
 }
 
 // pdf_h holds PDF_VNDF
@@ -1236,13 +1210,9 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
 // Reflective case of sampleBSDF, off its half vector ggx_n
 [CudaDeviceExport] public func reflectSample(in_dir: float3, ggx_n: float3, n_i: float3, alpha: float,
     frame: AnisotropicFrame, w: Weights, pdf_h: float, random_state: uint) -> SampleBSDF {
-    var sample: SampleBSDF = SampleBSDF(float3(1.0f), float3(1.0f), 0u, false, 0u, 0.0f);
-    sample.unit_direction = normalize(reflect(in_dir, ggx_n));
-    sample.random_state = random_state;
-    sample.lobe = LOBE_REFLECT;
-    sample.throughput = reflectBSDF(maskingG1(sample.unit_direction, n_i, 1.0f, alpha, frame), w);
-    sample.pdf = reflectPDF(pdf_h, w);
-    return sample;
+    let dir: float3 = normalize(reflect(in_dir, ggx_n));
+    return SampleBSDF(dir, reflectBSDF(maskingG1(dir, n_i, 1.0f, alpha, frame), w), random_state, false,
+        LOBE_REFLECT, reflectPDF(pdf_h, w));
 }
 
 // pdf_h holds PDF_VNDF
