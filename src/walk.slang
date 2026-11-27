@@ -1802,7 +1802,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let eta: float2 = wavelengthEta(material, n_dot_v, wavelength);
         // The vertex's facets, drawn once for its light, its sky and its bounce
         let facets: Facets = drawFacets(ray.unit_direction, surface.smooth_n, material, surface.random_state);
-        var nee: bool = scatter && neeDecision(material, n_dot_v, eta.x, eta.y);
+        var nee: bool = scatter && (b >= scene.maxBounces() || neeDecision(material, n_dot_v, eta.x, eta.y));
         // Light is sampled at the top layer alone
         if (layersUsed() && (passed || layer != 0u)) {
             nee = false;
