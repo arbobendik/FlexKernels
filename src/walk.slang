@@ -717,9 +717,6 @@ public interface IScene {
     public uint4 reservoirPrevious(int2 q, uint layer);
     // Domain of the sample of seed as the previous frame traced it at q
     public Domain previousDomain(int2 q, uint seed);
-#ifndef FK_FCPT_WALK
-    public Domain previousDomain(int2 q);
-#endif
     public uint restirNeighbours();
     public Reservoir loadReservoirPrevious(int2 q);
     public Reservoir loadReservoirInitial(int2 p);
@@ -748,10 +745,6 @@ public interface IScene {
     public float3 missed(int2 p, Domain dom, float scale);
     // Color added to p's accumulation, w its sample count
     public void addColor(int2 p, float4 color);
-#ifndef FK_FCPT_WALK
-    public bool storedDomainInitial(int2 p, out Domain dom);
-    public bool storedDomainTemporal(int2 p, out Domain dom);
-#endif
     public uint queueCountAdd(uint bin, uint jobs);
     public uint queueCountLoad(uint bin);
     public uint queueCursorAdd(uint bin, uint jobs);
@@ -932,11 +925,6 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "previousDomain($0)")
     __target_intrinsic(cuda, "fcptPreviousDomain($0, $1)")
     public Domain previousDomain(int2 q, uint seed);
-#ifndef FK_FCPT_WALK
-    __target_intrinsic(wgsl, "previousDomain($0)")
-    __target_intrinsic(cuda, "fcptPreviousDomain($0)")
-    public Domain previousDomain(int2 q);
-#endif
     __target_intrinsic(wgsl, "uniforms_uint.restir_neighbours")
     __target_intrinsic(cuda, "fcptRestirNeighbours()")
     public uint restirNeighbours();
@@ -981,14 +969,6 @@ public struct HookScene : IScene {
     public float3 missed(int2 p, Domain dom, float scale);
     __target_intrinsic(cuda, "fcptAddColor($0, $1)")
     public void addColor(int2 p, float4 color);
-#ifndef FK_FCPT_WALK
-    __target_intrinsic(wgsl, "storedDomain(reservoir_initial, $0, &$1)")
-    __target_intrinsic(cuda, "fcptStoredDomainInitial($0, $1)")
-    public bool storedDomainInitial(int2 p, out Domain dom);
-    __target_intrinsic(wgsl, "storedDomain(reservoir_temp, $0, &$1)")
-    __target_intrinsic(cuda, "fcptStoredDomainTemporal($0, $1)")
-    public bool storedDomainTemporal(int2 p, out Domain dom);
-#endif
     __target_intrinsic(wgsl, "atomicAdd(&shift_queue.counts[$0], $1)")
     __target_intrinsic(cuda, "fcptQueueCountAdd($0, $1)")
     public uint queueCountAdd(uint bin, uint jobs);
@@ -2531,7 +2511,7 @@ public func spatialJob<S: IScene>(scene: S, p: int2, t: uint, inout job: ShiftJo
     }
     return job.r.w > 0.0f && scene.storedDomainTemporal(q, job.r.seed, job.dom);
 #else
-    return job.r.w > 0.0f && scene.storedDomainTemporal(partner(scene, p, t), job.dom);
+    return job.r.w > 0.0f && scene.storedDomainTemporal(partner(scene, p, t), job.r.seed, job.dom);
 #endif
 }
 
@@ -2759,28 +2739,19 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
     let p: int2 = int2(global_invocation_id.xy);
     var dom: Domain = {};
     if (!scene.currentDomain(p, dom)) {
-#ifdef FK_FCPT_WALK
         scene.storeReservoirTemporal(p, emptyReservoir(), dom.hit);
-#else
-        scene.storeReservoirTemporal(p, Reservoir(), dom.hit);
-#endif
         return;
     }
     var r: Reservoir = scene.loadReservoirInitial(p);
-#ifdef FK_FCPT_WALK
     // Neighbour of r's sample: its own pixel in an unchanged view, the count pass's on a queued round, else found here
     let queued: bool = scene.temporalQueued();
-    let q: int2 = scene.sceneUnchanged() || !queued ? sampleNeighbor(scene, p, r.seed) : scene.loadTemporalNeighbor(p);
-#else
-    let q: int2 = temporalNeighbor(scene, p, dom, r.seed);
-#endif
+    let q: int2 = scene.sceneUnchanged() || !queued ? sampleNeighbor(scene, p, r.seed) : storedNeighbor(scene, p);
     if (q.x >= 0) {
         let temporal: Reservoir = scene.loadReservoirPrevious(q);
         // Optionally lower the confidence cap where the previous frame duplicated samples (Sec. 5), this biases the estimate
         let duplicated: float = select(0.0f, asfloat(scene.duplication(q).x), scene.restirDecorrelation() == 1u);
         // Temporal confidence cap (Sec. 5)
         let c_t: float = min(temporal.c, interpolate(RESTIR_CAP, RESTIR_CAP_MIN, pow(duplicated, RESTIR_DUPLICATION_ALPHA)));
-#ifdef FK_FCPT_WALK
         // Both samples keep their domains in an unchanged view; else the shifts the round ran, zero where none ran,
         // from its queue's slots or made here
         let unchanged: bool = scene.sceneUnchanged();
@@ -2801,20 +2772,9 @@ public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
             let shifted: Shift = temporalShiftAt(scene, p, q, 1u);
             to_previous = float4(shifted.f, shifted.jac);
         }
-#else
-        let to_current: float4 = asfloat(scene.temporalShift(p, 0u));
-        var to_previous: float4 = float4(r.f, 1.0f);
-        if (!sameDomain(scene.previousDomain(q), dom)) {
-            to_previous = asfloat(scene.temporalShift(p, 1u));
-        }
-#endif
         let p_c: float = resamplingTarget(r.f);
         let p_t: float = resamplingTarget(temporal.f);
-#ifdef FK_FCPT_WALK
         var sel: Selection = emptySelection();
-#else
-        var sel: Selection = {};
-#endif
         sel.random_state = stream(stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y), STREAM_SELECT + 1u);
         // Temporal MIS weights, p_t->c = g_previous the previous sample shifted here, p_c->t = g_current
         // m_c = c * p_c / (c * p_c + c_t * p_t->c)
@@ -2907,11 +2867,7 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
     let p: int2 = int2(global_invocation_id.xy);
     var dom: Domain = {};
     if (!scene.currentDomain(p, dom)) {
-#ifdef FK_FCPT_WALK
         scene.storeReservoirPrevious(p, emptyReservoir(), dom.hit);
-#else
-        scene.storeReservoirPrevious(p, Reservoir(), dom.hit);
-#endif
 #ifndef FK_FCPT_WALK
         let screen_space: float2 = float2(global_invocation_id.xy) / float2(scene.renderSize().xy) * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
         // If there is no triangle render ambient color
@@ -2937,11 +2893,7 @@ public func restir_spatial<S: IScene>(scene: S, global_invocation_id: uint3) {
     let c_pair: float = r.c / max(count, 1.0f);
     let p_c: float = resamplingTarget(r.f);
     var canonical_mis: float = select(0.0f, 1.0f, count == 0.0f);
-#ifdef FK_FCPT_WALK
     var sel: Selection = emptySelection();
-#else
-    var sel: Selection = {};
-#endif
     sel.random_state = stream(stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y), STREAM_SELECT + 2u);
     for (var t: uint = 0u; t < scene.restirNeighbours(); t++) {
         let q: int2 = partner(scene, p, t);

@@ -92,8 +92,6 @@ struct TestScene : IScene {
     Reservoir loadReservoirPrevious(int2 q) { return reservoirs[uint(q.x)]; }
     Reservoir loadReservoirInitial(int2 p) { return reservoirs[uint(p.y)]; }
     Reservoir loadReservoirTemporal(int2 p) { return reservoirs[uint(p.x + p.y)]; }
-    bool storedDomainInitial(int2 p, out Domain dom) { dom = previousDomain(p); return p.x > 0; }
-    bool storedDomainTemporal(int2 p, out Domain dom) { dom = previousDomain(p.yx); return p.y > 0; }
     bool storedDomainInitial(int2 p, uint seed, out Domain dom) { dom = previousDomain(p, seed); return p.x > 0; }
     bool storedDomainTemporal(int2 p, uint seed, out Domain dom) { dom = previousDomain(p.yx, seed); return p.y > 0; }
     bool sceneUnchanged() { return true; }
