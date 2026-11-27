@@ -363,6 +363,7 @@ public float inverseSqrt(float x) {
 }
 [ForceInline] public float3 select(float3 f, float3 t, bool cond) { return select(cond, t, f); }
 [ForceInline] public float3 select(float3 f, float3 t, bool3 cond) { return select(cond, t, f); }
+[ForceInline] public float2 select(float2 f, float2 t, bool cond) { return select(cond, t, f); }
 [ForceInline] public bool sheenUsed() {
     __target_switch {
     case glsl: __intrinsic_asm "(SHEEN)";

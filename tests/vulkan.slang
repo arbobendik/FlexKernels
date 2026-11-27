@@ -69,7 +69,7 @@ struct TestScene : IScene {
     bool slotLeaf(uint n, uint j, uint4 trail_texel) { return n == trail_texel.z; }
     Light light(uint index) { return Light(float3(float(index)), 0.0f, float3(1.0f), 1.0f, 0.1f); }
     uint triangleOffset(uint instance_index) { return instance_index; }
-    float3 calculatePointLightContrib(uint index) { return float3(float(index)); }
+    float3 calculatePointLightContrib(uint index, float3 dir, uint depth, uint lobe, float length) { return float3(float(index)); }
     float3 env_map_sample(float3 dir, uint depth, uint lobe) { return abs(dir) * float(depth + lobe); }
     bool zUp() { return true; }
     bool twoSided() { return true; }
