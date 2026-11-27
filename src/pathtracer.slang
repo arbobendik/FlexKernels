@@ -575,9 +575,10 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
     let coat_on: bool = !refracted && coated;
     // out_dir's half vector, facing n_i: refractive half-vector (eq. 16) refracted, else reflective half-vector
     let h_t: float3 = normalize(negate(eta_i * v + eta_o * out_dir));
-    let ggx_n: float3 = select(normalize(v + out_dir), h_t * sign(dot(h_t, n_i)), refracted);
+    let reflected: float3 = reflectedHalf(in_dir, out_dir);
+    let ggx_n: float3 = select(reflected, h_t * sign(dot(h_t, n_i)), refracted);
     // Coat: its own microfacet out_dir's reflective one, over the vertex's half vector
-    let coat_n: float3 = select(float3(0.0f), normalize(v + out_dir), coat_on);
+    let coat_n: float3 = select(float3(0.0f), reflected, coat_on);
     let w: Weights = lobeWeights(in_dir, v, n_i, facets.h, facets.coat_h, ggx_n, coat_n, frame, sheen_profile,
         coat_frame, coat_series, material, eta_i, eta_o);
     // Directions a lobe can't sample carry no throughput

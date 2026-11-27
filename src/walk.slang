@@ -1206,7 +1206,8 @@ public func lightPdf<S: IScene>(scene: S, origin: float3, smooth_n: float3, star
     }
     let leaf: uint4 = scene.lightNode(n);
     if (leaf.x == 2u) {
-        return probability * sphereDensity(scene.light(leaf.y).position, scene.light(leaf.y).variance, start);
+        let light: Light = scene.light(leaf.y);
+        return probability * sphereDensity(light.position, light.variance, start);
     }
     let t: float3x3 = scene.worldTriangle(leaf.y, scene.triangleOffset(leaf.y) + leaf.z);
     return solidAngle(probability, cross(t[1] - t[0], t[2] - t[0]), light_point - start);
@@ -1265,11 +1266,11 @@ func emissionWeight<S: IScene>(scene: S, vertex: NEEVertex, hit: Hit, light_poin
 // Whether the environment is light sampled: a map with its luminance distribution
 func environmentMapped<S: IScene>(scene: S) -> bool {
 #ifdef FK_FCPT_WALK
-    if (!(scene.environmentCdfSize().x > 1u && scene.environmentCdfSize().y > 1u)) {
+    if (!all(scene.environmentCdfSize() > 1u)) {
         return false;
     }
 #endif
-    return scene.environmentMapSize().x > 1u && scene.environmentMapSize().y > 1u;
+    return all(scene.environmentMapSize() > 1u);
 }
 
 // p = p(row) * p(column | row), PDF_st = p * size.x * size.y
@@ -1447,7 +1448,7 @@ func escapeWeight<S: IScene>(scene: S, pdf: float, dir: float3) -> float {
     , depth: uint, lobe: uint
 #endif
     ) -> float3 {
-    if (scene.environmentMapSize().x > 1u && scene.environmentMapSize().y > 1u) {
+    if (all(scene.environmentMapSize() > 1u)) {
 #ifdef FK_FCPT_WALK
         return scene.env_map_sample(dir, depth, lobe);
 #else
@@ -1808,6 +1809,8 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         let hair: bool = scene.hairUsed() && dot(surface.hair, surface.hair) > 0.0f;  // A strand's fiber: no side of it wrong, none opaque
         // Light sampled all around: hair, translucent surfaces and transmitting surfaces of one layer
         let sided: bool = hair || isTranslucent(material) || (material.transmission > 0.0f && scene.layers(hit) == 1u);
+#else
+        let sided: bool = isTranslucent(material);
 #endif
         // Emission met, of the surface or a point light, weighted against light sampling at the vertex the ray left
 #ifdef FK_FCPT_WALK
@@ -1856,14 +1859,11 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
         }
 #endif
         if (samples_light) {
-#ifdef FK_FCPT_WALK
             light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, sided, noiseAddress(r.seed, b)
+#ifdef FK_FCPT_WALK
                 , context
-                );
-#else
-            light = sampleLightTree(scene, ray.origin, AT_HAIR(float3(0.0f), surface.smooth_n), surface.geometry_n, surface.geometry_offset, AT_HAIR(true, isTranslucent(material)), noiseAddress(r.seed, b)
-                );
 #endif
+                );
             // BSDF only for samples bringing light
             if (any(light.radiance != float3(0.0f))) {
                 lit = AT_HAIR(hairLight(scene, surface, ray.unit_direction, light, b < scene.maxBounces()), lightBSDF(ray.unit_direction, light, surface.smooth_n, surface.geometry_n, material, eta.x, eta.y, b < scene.maxBounces(), facets));
@@ -2073,13 +2073,13 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
                     let sheen_profile: SheenProfile = sheenProfile(v, n_i, material);
                     let coat_frame: CoatFrame = coatFrame(material, n_i);
                     let coat_series: float3 = coatSeries(coat_frame, material);
-                    var ggx_n: float3 = reflectedHalf(in_dir, dir);
+                    let reflected: float3 = reflectedHalf(in_dir, dir);
+                    var ggx_n: float3 = reflected;
                     if (lobe_index == LOBE_REFRACT) {
                         ggx_n = refractedHalf(in_dir, dir, surface.smooth_n, eta.x, eta.y);
                     }
                     // The coat's own microfacet dir's reflective one, over the vertex's half vector
-                    let coat_n: float3 = select(float3(0.0f), reflectedHalf(in_dir, dir),
-                        dot(facets.coat_h, facets.coat_h) > 0.0f);
+                    let coat_n: float3 = select(float3(0.0f), reflected, dot(facets.coat_h, facets.coat_h) > 0.0f);
                     let w: Weights = lobeWeights(in_dir, v, n_i, facets.h, facets.coat_h, ggx_n, coat_n, frame,
                         sheen_profile, coat_frame, coat_series, material, eta.x, eta.y);
                     // The VNDF's density of the half vector, the refraction's and the reflection's
@@ -2141,11 +2141,7 @@ public func walk<S: IScene>(scene: S, dom: Domain, r: Reservoir, replay: bool, s
             // Translucent surfaces are thin, as in the path tracer
             let through: bool = isTranslucent(material) && lobe_index == LOBE_DIFFUSE && dot(dir, surface.geometry_n) < 0.0f;
             if (nee && !delta && !wrong_side) {
-#ifdef FK_FCPT_WALK
                 nee_vertex = NEEVertex(false, lobe.pdf, ray.origin, select(surface.smooth_n, float3(0.0f), sided), ray.origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, through));
-#else
-                nee_vertex = NEEVertex(false, lobe.pdf, ray.origin, select(surface.smooth_n, float3(0.0f), isTranslucent(material)), ray.origin + surface.geometry_offset * select(surface.smooth_n, - surface.smooth_n, through));
-#endif
             } else if (AT_HAIR(true, lobe_index != LOBE_REFRACT || eta.x != eta.y)) {
                 nee_vertex.none = true;
             }
