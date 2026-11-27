@@ -111,7 +111,7 @@ int main() {
     }
     // White velvet: alone its albedo E, over a white diffuse at most what it receives, sampled as connected and
     // evaluated, f(l, v) = f(v, l)
-    const float VELVET_ROUGHNESSES[] = {0.1f, 0.3f, 0.6f, 1};
+    const float VELVET_ROUGHNESSES[] = {0.01f, 0.03f, 0.1f, 0.3f, 0.6f, 1};
     for (const float r : VELVET_ROUGHNESSES) for (const float mu : VIEWS) {
         const Vector<float, 3> in_dir(sqrtf(1 - mu * mu), 0, -mu), v(-in_dir.x, 0, mu);
         const Material VELVET[] = {{ZERO, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ZERO, ONE, r, 0, 0, ZERO, 1},
