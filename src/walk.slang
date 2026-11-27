@@ -699,6 +699,7 @@ public interface IScene {
     public uint triangleOffset(uint instance_index);
     public float3 calculatePointLightContrib(uint index);
     public float3 env_map_sample(float3 dir, uint depth, uint lobe);
+    public bool zUp();
     public float4 environmentCdf(uint2 cell);
     public uint2 environmentCdfSize();
     public uint2 environmentMapSize();
@@ -879,6 +880,11 @@ public struct HookScene : IScene {
     __target_intrinsic(wgsl, "env_map_sample($0)")
     __target_intrinsic(cuda, "fcptEnvMapSample($0, $1, $2)")
     public float3 env_map_sample(float3 dir, uint depth, uint lobe);
+    // The scene's up axis, z or else y, the environment map's own
+    __target_intrinsic(wgsl, "(false)")
+    __target_intrinsic(cuda, "(true)")
+    __target_intrinsic(cpp, "(true)")
+    public bool zUp();
     __target_intrinsic(wgsl, "textureLoad(environment_cdf, $0, 0)")
     __target_intrinsic(cuda, "fcptEnvironmentCdf($0)")
     public float4 environmentCdf(uint2 cell);
@@ -1273,25 +1279,21 @@ func environmentMapped<S: IScene>(scene: S) -> bool {
 }
 
 // p = p(row) * p(column | row), PDF_st = p * size.x * size.y
-// dw = 2 * PI^2 * sin(theta) ds dt, sin(theta) = length(dir.xz)
+// dw = 2 * PI^2 * sin(theta) ds dt, sin(theta) = length(f.xz)
 // => PDF = p * size.x * size.y / (2 * PI^2 * sin(theta))
 func environmentPdf<S: IScene>(scene: S, dir: float3) -> float {
     let size: uint2 = scene.environmentCdfSize() - uint2(1u, 0u);
-#ifdef FK_FCPT_WALK
-    // z up: f = (-dir.x, dir.z, dir.y) of y up => atan2(- f.z, - f.x) = atan2(- dir.y, dir.x), f.y = dir.z
-    let st: float2 = float2(atan2(- dir.y, dir.x) / (2.0f * PI) + 0.5f, acos(clamp(dir.z, -1.0f, 1.0f)) / PI);
-#else
-    // Same coordinates as env_map_sample
-    let st: float2 = float2(atan2(- dir.z, - dir.x) / (2.0f * PI) + 0.5f, acos(clamp(dir.y, -1.0f, 1.0f)) / PI);
-#endif
+    // Same coordinates as env_map_sample, f of y up
+    let f: float3 = skyFrame(scene, dir);
+    let st: float2 = float2(atan2(- f.z, - f.x) / (2.0f * PI) + 0.5f, acos(clamp(f.y, -1.0f, 1.0f)) / PI);
     let cell: uint2 = min(uint2(st * float2(size)), size - 1u);
     let p: float = scene.environmentCdf(cell).y * scene.environmentCdf(uint2(size.x, cell.y)).y;
-#ifdef FK_FCPT_WALK
-    // sin(theta) = length(f.xz) = length(dir.xy)
-    return p * float(size.x * size.y) / (2.0f * PI * PI * length(dir.xy));
-#else
-    return p * float(size.x * size.y) / (2.0f * PI * PI * length(dir.xz));
-#endif
+    return p * float(size.x * size.y) / (2.0f * PI * PI * length(f.xz));
+}
+
+// The environment's y up of dir, its own inverse: z up f = (-dir.x, dir.z, dir.y)
+func skyFrame<S: IScene>(scene: S, dir: float3) -> float3 {
+    return select(dir, float3(- dir.x, dir.z, dir.y), scene.zUp());
 }
 
 // First entry of a row or of the marginal column of the environment CDF exceeding u
@@ -1346,13 +1348,7 @@ func sampleSky<S: IScene>(scene: S, ray: Ray, surface: Surface, wavelength: floa
     let row: uint = searchCDF(scene, uint2(size.x, 0u), uint2(0u, 1u), size.y, random_0.value);
     let column: uint = searchCDF(scene, uint2(0u, row), uint2(1u, 0u), size.x, random_1.value);
     let angles: float2 = (float2(float(column), float(row)) + float2(random_2.value, random_3.value)) / float2(size) * float2(2.0f * PI, PI);
-#ifdef FK_FCPT_WALK
-    // f = (sin(angles.y) * cos(angles.x), cos(angles.y), sin(angles.y) * sin(angles.x)) of y up
-    // z up: dir = (-f.x, f.z, f.y)
-    let dir: float3 = float3(- sin(angles.y) * cos(angles.x), sin(angles.y) * sin(angles.x), cos(angles.y));
-#else
-    let dir: float3 = float3(sin(angles.y) * cos(angles.x), cos(angles.y), sin(angles.y) * sin(angles.x));
-#endif
+    let dir: float3 = skyFrame(scene, float3(sin(angles.y) * cos(angles.x), cos(angles.y), sin(angles.y) * sin(angles.x)));
     let pdf: float = environmentPdf(scene, dir);
     // The material at the path's wavelength, before the shadow ray
     let material: Material = pathMaterial(surface.material, wavelength);
