@@ -91,7 +91,7 @@ __extern_cpp public struct Selection {
     __extern_cpp public float w_sum;
     __extern_cpp public float3 color;
     __extern_cpp public uint random_state;
-#ifdef FK_FCPT_WALK
+#ifdef FK_RESTIR
     // Emission of varying media along the path, added unresampled
     __extern_cpp public float3 glow = float3(0.0f);
     // Contributions summed, not resampled
@@ -963,10 +963,14 @@ public struct HookScene : IScene {
     public Shift walkCallable(Domain dom, Reservoir r, bool replay, float scale, inout Selection sel);
     __target_intrinsic(cuda, "fcptPixelOf($0, $1)")
     public float2 pixelOf(float3 position, bool previous);
+    __target_intrinsic(wgsl, "(true)")
     __target_intrinsic(cuda, "fcptRestirUsed()")
     public bool restirUsed();
+    // On wgsl no path misses, a pixel's every path its domain's, and restir_spatial stores the colour
+    __target_intrinsic(wgsl, "vec3<f32>(0.0f)")
     __target_intrinsic(cuda, "fcptMissed($0, $1, $2)")
     public float3 missed(int2 p, Domain dom, float scale);
+    __target_intrinsic(wgsl, "_ = $1")
     __target_intrinsic(cuda, "fcptAddColor($0, $1)")
     public void addColor(int2 p, float4 color);
     __target_intrinsic(wgsl, "atomicAdd(&shift_queue.counts[$0], $1)")
@@ -2664,7 +2668,14 @@ public func queuedShift<S: IScene>(scene: S, workgroup_id: uint3, local_invocati
 #endif
 
 #ifdef FK_RESTIR_PASSES
-#ifdef FK_FCPT_WALK
+// The domain of the path of seed at p, on wgsl the pixel's own, dom as given
+func seedDomain<S: IScene>(scene: S, p: int2, seed: uint, inout dom: Domain) -> bool {
+    __target_switch {
+    case wgsl: return true;
+    default: return scene.storedDomainInitial(p, seed, dom);
+    }
+}
+
 // Initial candidates of p, each path from the domain of its own seed
 public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     let p: int2 = int2(global_invocation_id.xy);
@@ -2682,7 +2693,8 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     initial.sums = !scene.restirUsed();
     // Seed of a selection of nothing, the first path's
     initial.r.seed = stream(pixel_seed, 0u);
-    var hit: Hit = noHit();
+    // The pixel's own hit where the selection holds no path
+    var hit: Hit = dom.hit;
     let scale: float = 1.0f / float(scene.samples());
     // The colour of the paths that miss, summed here and added with the rest once
     var seen: float3 = float3(0.0f);
@@ -2692,8 +2704,8 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
         r.seed = noiseOrigin(global_invocation_id.xy, k);
         r.path = insertBits(insertBits(0u, 1u, PATH_STRATIFIED, 1u), (offset + k * 2654435769u) >> 25u,
             PATH_STRATUM, 7u);
-        var path: Domain = {};
-        if (!scene.storedDomainInitial(p, r.seed, path)) {
+        var path: Domain = dom;
+        if (!seedDomain(scene, p, r.seed, path)) {
             seen += scene.missed(p, path, scale);
             continue;
         }
@@ -2708,31 +2720,6 @@ public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
     scene.addColor(p, float4(initial.sums ? seen + initial.color : seen, 1.0f));
     scene.storeReservoirInitial(p, finalize(initial, 1.0f), hit);
 }
-#else
-public func restir_initial<S: IScene>(scene: S, global_invocation_id: uint3) {
-    let p: int2 = int2(global_invocation_id.xy);
-    var dom: Domain = {};
-    if (!scene.currentDomain(p, dom)) {
-        scene.storeReservoirInitial(p, Reservoir(), dom.hit);
-        return;
-    }
-    let pixel_seed: uint = stream(hash(scene.frame()), global_invocation_id.x + scene.renderSize().x * global_invocation_id.y);
-    // Wavelength strata of the pixel's samples over all frames: k * 2^32 / golden ratio from a fixed offset per pixel
-    let offset: uint = stream(global_invocation_id.x + scene.renderSize().x * global_invocation_id.y,
-        STREAM_WAVELENGTH);
-    var initial: Selection = {};
-    initial.random_state = stream(pixel_seed, STREAM_SELECT);
-    for (var i: uint = 0u; i < scene.samples(); i++) {
-        var r: Reservoir = {};
-        let k: uint = scene.frame() * scene.samples() + i;
-        r.seed = noiseOrigin(global_invocation_id.xy, k);
-        r.path = insertBits(insertBits(0u, 1u, PATH_STRATIFIED, 1u), (offset + k * 2654435769u) >> 25u,
-            PATH_STRATUM, 7u);
-        walk(scene, dom, r, false, 1.0f / float(scene.samples()), initial);
-    }
-    scene.storeReservoirInitial(p, finalize(initial, 1.0f), dom.hit);
-}
-#endif
 
 // Temporal reuse with the shifts of the temporal round
 public func restir_temporal<S: IScene>(scene: S, global_invocation_id: uint3) {
