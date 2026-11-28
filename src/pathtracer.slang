@@ -779,6 +779,19 @@ public uint insertBits(uint e, uint newbits, uint offset, uint count) {
         coat_component * base_component_inv);
 }
 
+// The lobes' weights seen from in_dir with every half vector and coat microfacet the normal's: each lobe's albedo, as
+// a renderer's denoising guides take them (Cycles' closure albedos): diffuse_weight * albedo, F, refract_weight *
+// albedo, sheen, coat
+[CudaDeviceExport] public func normalWeights(in_dir: float3, n: float3, material: Material, eta_i: float, eta_o: float)
+    -> Weights {
+    let v: float3 = negate(in_dir);
+    let n_i: float3 = n * sign(dot(n, v));
+    let coat_frame: CoatFrame = coatFrame(material, n_i);
+    let coat_h: float3 = select(float3(0.0f), coat_frame.normal, material.coat > 0.0f);
+    return lobeWeights(in_dir, v, n_i, n_i, coat_h, n_i, coat_h, anisotropicFrame(material, n_i),
+        sheenProfile(v, n_i, material), coat_frame, coatSeries(coat_frame, material), material, eta_i, eta_o);
+}
+
 // The weights and shares of the lobes at a vertex, each by the facets reaching out_dir through it
 // h, coat_h: sampleBSDF's half vector and coat microfacet, the diffuse's, the sheen's and the toon's
 // ggx_n: out_dir's half vector under coat_h, the refraction's and the reflection's

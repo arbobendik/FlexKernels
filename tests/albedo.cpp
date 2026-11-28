@@ -36,6 +36,10 @@ int main() {
         for (int c = 0; c < 3; c++) failed |= m < 3 ? fabs(sum[c] - REFLECTED[m][c]) > 0.002f
             : sum[c] > 1.002f || (m > 3 && sum[c] < 0.99f);
     }
+    // The lobes' albedos seen straight on: a white dielectric's reflection F0 = 0.04, its diffuse the 0.96 left
+    const Weights seen = normalWeights(normal, n, MATERIALS[2], 1, 1.5f);
+    printf("normal weights: F %.4f, diffuse %.4f\n", seen.F.x, seen.diffuse_weight.x);
+    failed |= fabs(seen.F.x - 0.04f) > 1e-4f || fabs(seen.diffuse_weight.x - 0.96f) > 1e-4f;
     const Material TRANSLUCENT[] = {{ZERO, ZERO, 1, 0, 0, 1, ZERO, ONE, 1, ONE},
         {Vector<float, 3>(0.5f, 0.5f, 0.5f), ZERO, 1, 0, 0, 1, ZERO, ONE, 1, Vector<float, 3>(0.5f, 0.5f, 0.5f)}};
     for (int m = 0; m < 2; m++) for (int k = 0; k < 3; k++) {
