@@ -297,6 +297,7 @@ public func noiseSize() -> uint {
     let texel: uint = noiseRank(at.x, at.y, (f + (e * 2654435769u >> 27u)) % NOISE_LAYERS);
     let second: bool = (variable & NOISE_SECOND) != 0u;
     let white: Random = pcg(stream(address, variable & ~NOISE_SECOND));
-    return Random(address, select((float(select(texel & 0xFFFFu, texel >> 16u, second)) + 0.5f) / 65536.0f,
-        select(white.value, pcg(white.state).value, second), texel == NOISE_UNBOUND));
+    // A ternary: NVIDIA's Vulkan driver (620.70.06) miscompiles this choice as a select, the white numbers run eagerly
+    return Random(address, texel == NOISE_UNBOUND ? select(white.value, pcg(white.state).value, second)
+        : (float(select(texel & 0xFFFFu, texel >> 16u, second)) + 0.5f) / 65536.0f);
 }
