@@ -164,6 +164,7 @@ static V below(0, 0, 0);
 static bool lobe_world = false;
 bool HookScene_worldReadsPath_0() { return lobe_world; }
 V HookScene_env_map_sample_0(V dir, uint32_t depth, uint32_t lobe) {
+    lobe &= ~8u;  // An escape's flag, pathtracer.slang's LOBE_ESCAPE
     if (escapes_checked) escapes += depth == 0 && lobe == 0, escape_misfits += depth != 0 || lobe != 0 && lobe != 3;
     return scaled(ONE, (dotv(below, below) > 0 && !(dotv(dir, below) < 0) ? 0 : sky) * (lobe_world && lobe != 0 ? 0.5f : 1));
 }

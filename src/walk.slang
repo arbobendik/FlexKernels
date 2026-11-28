@@ -1609,7 +1609,7 @@ func escape<S: IScene>(scene: S, r: Reservoir, replay: bool, stop: uint, rc: uin
     let weight: float = escapeWeight(scene, select(0.0f, sky_pdf, !nee_vertex.none), ray.unit_direction);
     let f: float3 = pathColor(throughput * environment(scene, ray.unit_direction
 #ifdef FK_FCPT_WALK
-        , b, prev.lobe
+        , b, prev.lobe | LOBE_ESCAPE
 #endif
         ), spectral_weight, wavelength);
     if (replay) {

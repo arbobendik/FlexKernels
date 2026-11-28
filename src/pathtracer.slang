@@ -14,6 +14,8 @@ public static const uint LOBE_REFLECT = 2u;
 public static const uint LOBE_SHEEN_VELVET = 4u;
 public static const uint LOBE_COAT = 5u;
 public static const uint LOBE_TOON = 6u;
+// Flagging the lobe an escape leaves by, for a renderer's denoising guides, which take the sky it sees
+public static const uint LOBE_ESCAPE = 8u;
 
 __target_intrinsic(wgsl, "Material")
 __target_intrinsic(glsl, "Material")
